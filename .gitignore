@@ -25,3 +25,6 @@ __pycache__/
 .vscode/
 .idea/
 *.swp
+
+# Claude Code's per-project local settings (e.g. tool permissions)
+.claude/
