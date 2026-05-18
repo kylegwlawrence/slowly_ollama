@@ -265,7 +265,17 @@ async def generate_title(
     }
 
     try:
-        response = await client.post("/api/chat", json=payload)
+        # 10s cap on the title request. Tinyllama-class models reply
+        # in well under a second on warm load; the cap is room for a
+        # cold-load on first use. Bounded so the SSE connection (which
+        # stays open until this returns or raises) doesn't dangle if
+        # Ollama wedges or the title model is genuinely too slow to
+        # be worth waiting for. On expiry httpx raises ReadTimeout
+        # (a subclass of httpx.HTTPError), which the caller catches as
+        # OllamaUnavailable → silent skip in _maybe_generate_title.
+        response = await client.post(
+            "/api/chat", json=payload, timeout=10.0
+        )
     except (httpx.HTTPError, httpx.InvalidURL) as e:
         raise OllamaUnavailable(f"Title request failed: {e}") from e
 
