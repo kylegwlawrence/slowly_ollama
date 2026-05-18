@@ -189,14 +189,31 @@ def create_chat_endpoint(
     name: Annotated[str, Form()],
     model: Annotated[str, Form()],
 ) -> Response:
-    """Create a new conversation; return one sidebar row to prepend."""
+    """Create a new conversation; return the sidebar row AND an OOB
+    swap that loads the empty chat panel into ``#main`` so the user
+    can start typing right away. ``HX-Push-Url`` keeps the address
+    bar in sync so reload restores the same view.
+
+    Returning both fragments in one response is the HTMX-idiomatic
+    way to update two unrelated parts of the DOM at once: the main
+    response (``_chat_item.html``) is consumed by the form's
+    ``hx-target="#chats-list" hx-swap="afterbegin"``; the wrapping
+    ``<div id="main" hx-swap-oob="innerHTML">`` is processed
+    separately by HTMX's OOB-swap pass and replaces ``#main``'s
+    contents.
+    """
     chat = queries.create_conversation(db, name=name, model=model)
-    return templates.TemplateResponse(
-        request=request,
-        name="_chat_item.html",
-        context={"chat": chat},
-        status_code=status.HTTP_201_CREATED,
+    item_html = templates.get_template("_chat_item.html").render(chat=chat)
+    panel_html = templates.get_template("_chat_panel.html").render(
+        conversation=chat, messages=[]
     )
+    body = (
+        f"{item_html}\n"
+        f'<div id="main" hx-swap-oob="innerHTML">{panel_html}</div>'
+    )
+    response = HTMLResponse(content=body, status_code=status.HTTP_201_CREATED)
+    response.headers["HX-Push-Url"] = f"/chats/{chat.id}"
+    return response
 
 
 @router.get("/chats/{conversation_id}", response_class=HTMLResponse)
