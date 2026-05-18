@@ -178,6 +178,41 @@ def test_index_renders_layout_with_empty_main(
     assert 'class="chat-panel"' not in response.text
 
 
+def test_index_includes_new_chat_form(
+    make_client: ClientFactory,
+) -> None:
+    """The index page renders the new-chat form so users can create
+    conversations from the UI (not just through curl)."""
+    with make_client(_ollama_unreachable) as client:
+        response = client.get("/")
+
+    # Form posts to /chats and prepends the returned <li> into the
+    # existing chats list.
+    assert 'class="new-chat-form"' in response.text
+    assert 'hx-post="/chats"' in response.text
+    assert 'hx-target="#chats-list"' in response.text
+    assert 'hx-swap="afterbegin"' in response.text
+    # The two fields the POST /chats route expects via Form().
+    assert 'name="name"' in response.text
+    assert 'name="model"' in response.text
+
+
+def test_new_chat_form_model_dropdown_auto_loads_from_models(
+    make_client: ClientFactory,
+) -> None:
+    """The model <select> fetches /models on page load and swaps its
+    innerHTML with the returned <option> tags. Without these
+    attributes the dropdown would be permanently empty."""
+    with make_client(_ollama_unreachable) as client:
+        response = client.get("/")
+
+    assert "<select" in response.text
+    assert 'hx-get="/models"' in response.text
+    assert 'hx-trigger="load"' in response.text
+    # The placeholder is visible until /models responds.
+    assert "Loading models" in response.text
+
+
 def test_index_lists_existing_chats_in_sidebar(
     make_client: ClientFactory,
 ) -> None:
