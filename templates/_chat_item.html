@@ -5,11 +5,26 @@
      `/chats/{id}` so reload restores the same view.
    - Without HTMX: the browser follows `href` normally; the server's
      `GET /chats/{id}` route renders the full index page with this
-     chat preloaded. Same end state, full page load instead of swap. #}
+     chat preloaded. Same end state, full page load instead of swap.
+
+   The delete button uses `hx-confirm` for the browser-native
+   "are you sure?" prompt and `hx-swap="delete"` to remove the <li>
+   from the DOM on success. The inline JS check on after-request
+   redirects to `/` if the user happened to be viewing the deleted
+   chat — otherwise the URL would still say `/chats/{id}` for a
+   chat that no longer exists. #}
 <li id="chat-{{ chat.id }}" class="chat-item" data-chat-id="{{ chat.id }}">
   <a href="/chats/{{ chat.id }}"
      hx-get="/chats/{{ chat.id }}"
      hx-target="#main"
      hx-swap="innerHTML"
      hx-push-url="true">{{ chat.name }}</a>
+  <button class="chat-item__delete"
+          type="button"
+          aria-label="Delete chat"
+          hx-delete="/chats/{{ chat.id }}"
+          hx-target="closest .chat-item"
+          hx-swap="delete"
+          hx-confirm="Delete '{{ chat.name }}'?"
+          hx-on::after-request="if (event.detail.successful && window.location.pathname === '/chats/{{ chat.id }}') window.location = '/'">×</button>
 </li>

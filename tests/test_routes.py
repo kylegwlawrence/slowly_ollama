@@ -430,6 +430,27 @@ def test_index_page_references_vendored_assets(
     assert "/static/htmx-ext-sse.js" in response.text
 
 
+def test_chat_item_has_delete_button(
+    make_client: ClientFactory,
+) -> None:
+    """Each sidebar row has a delete button wired to DELETE /chats/{id}.
+
+    Must include hx-confirm (browser prompt), hx-swap="delete" (remove
+    the row from the DOM), and the after-request redirect so the URL
+    doesn't get stuck on a deleted chat's path.
+    """
+    with make_client(_ollama_unreachable) as client:
+        chat_id = _create_chat_and_get_id(client, "Topic")
+        response = client.get("/chats")
+
+    assert f'hx-delete="/chats/{chat_id}"' in response.text
+    assert 'hx-swap="delete"' in response.text
+    assert "hx-confirm=" in response.text
+    # Inline navigation guard for the "user is viewing the chat they
+    # just deleted" case.
+    assert "window.location" in response.text
+
+
 def test_chat_item_link_carries_href_and_hx_push_url(
     make_client: ClientFactory,
 ) -> None:
