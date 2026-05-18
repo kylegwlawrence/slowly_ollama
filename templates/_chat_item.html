@@ -1,36 +1,60 @@
-{# One sidebar row. Two parallel navigation paths so the page works
-   with or without HTMX:
-   - With HTMX loaded: `hx-get` intercepts the click, swaps the panel
-     into #main, and `hx-push-url="true"` updates the URL to
-     `/chats/{id}` so reload restores the same view.
+{# One sidebar row.
+
+   Two parallel navigation paths so the page works with or without
+   HTMX:
+   - With HTMX loaded: `hx-get` on the link intercepts the click,
+     swaps the panel into #main, and `hx-push-url="true"` updates the
+     URL to `/chats/{id}` so reload restores the same view.
    - Without HTMX: the browser follows `href` normally; the server's
      `GET /chats/{id}` route renders the full index page with this
-     chat preloaded. Same end state, full page load instead of swap.
+     chat preloaded.
 
-   The delete button uses `hx-confirm` for the browser-native
+   Per-row actions (rename + delete) live inside a kebab popover.
+   The popover uses CSS-only show/hide via `:focus-within` on the
+   wrapping `.chat-item__menu`: clicking the kebab focuses it,
+   CSS reveals the popup. Clicking an action inside fires its HTMX
+   request — the resulting swap removes or replaces the row,
+   naturally closing the popup. Clicking elsewhere blurs the kebab
+   and hides the popup.
+
+   The delete button still uses `hx-confirm` for the browser-native
    "are you sure?" prompt and `hx-swap="delete"` to remove the <li>
-   from the DOM on success. The inline JS check on after-request
-   redirects to `/` if the user happened to be viewing the deleted
-   chat — otherwise the URL would still say `/chats/{id}` for a
-   chat that no longer exists. #}
+   on success. The inline JS on after-request redirects to `/` if the
+   user happened to be viewing the deleted chat. #}
 <li id="chat-{{ chat.id }}" class="chat-item" data-chat-id="{{ chat.id }}">
   <a href="/chats/{{ chat.id }}"
      hx-get="/chats/{{ chat.id }}"
      hx-target="#main"
      hx-swap="innerHTML"
      hx-push-url="true">{{ chat.name }}</a>
-  <button class="chat-item__rename"
-          type="button"
-          aria-label="Rename chat"
-          hx-get="/chats/{{ chat.id }}/edit"
-          hx-target="#chat-{{ chat.id }}"
-          hx-swap="outerHTML">✎</button>
-  <button class="chat-item__delete"
-          type="button"
-          aria-label="Delete chat"
-          hx-delete="/chats/{{ chat.id }}"
-          hx-target="#chat-{{ chat.id }}"
-          hx-swap="delete"
-          hx-confirm="Delete '{{ chat.name }}'?"
-          hx-on::after-request="if (event.detail.successful && window.location.pathname === '/chats/{{ chat.id }}') window.location = '/'">×</button>
+  <div class="chat-item__menu">
+    <button class="chat-item__kebab"
+            type="button"
+            aria-label="Chat options"
+            aria-haspopup="menu">
+      <span class="material-symbols-outlined">more_vert</span>
+    </button>
+    <div class="chat-item__menu-popup" role="menu">
+      <button class="chat-item__rename"
+              type="button"
+              aria-label="Rename chat"
+              hx-get="/chats/{{ chat.id }}/edit"
+              hx-target="#chat-{{ chat.id }}"
+              hx-swap="outerHTML">
+        <span class="material-symbols-outlined">edit</span>
+        Rename
+      </button>
+      <button class="chat-item__delete"
+              type="button"
+              aria-label="Delete chat"
+              hx-delete="/chats/{{ chat.id }}"
+              hx-target="#chat-{{ chat.id }}"
+              hx-swap="delete"
+              hx-confirm="Delete '{{ chat.name }}'?"
+              hx-on::after-request="if (event.detail.successful && window.location.pathname === '/chats/{{ chat.id }}') window.location = '/'">
+        <span class="material-symbols-outlined">delete</span>
+        Delete
+      </button>
+    </div>
+  </div>
 </li>

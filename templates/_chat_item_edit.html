@@ -1,8 +1,9 @@
 {# Sidebar row in edit mode — replaces the display version when the
-   user clicks the rename button. Submit (PATCH /chats/{id}) swaps
-   back to the display version because the PATCH route returns
-   _chat_item.html. Cancel reaches for GET /chats/{id}/item which
-   re-renders the display version without saving. #}
+   user clicks the rename action in the kebab menu. Submit
+   (PATCH /chats/{id}) swaps back to the display version because the
+   PATCH route returns _chat_item.html. Cancel reaches for
+   GET /chats/{id}/item which re-renders the display version without
+   saving. #}
 <li id="chat-{{ chat.id }}"
     class="chat-item chat-item--editing"
     data-chat-id="{{ chat.id }}">
@@ -11,11 +12,15 @@
         hx-target="#chat-{{ chat.id }}"
         hx-swap="outerHTML">
     <input type="text" name="name" value="{{ chat.name }}" required autofocus>
-    <button type="submit" aria-label="Save">✓</button>
+    <button type="submit" aria-label="Save">
+      <span class="material-symbols-outlined">check</span>
+    </button>
     <button type="button"
             aria-label="Cancel"
             hx-get="/chats/{{ chat.id }}/item"
             hx-target="#chat-{{ chat.id }}"
-            hx-swap="outerHTML">✕</button>
+            hx-swap="outerHTML">
+      <span class="material-symbols-outlined">close</span>
+    </button>
   </form>
 </li>
