@@ -251,6 +251,24 @@ def test_chat_url_direct_hit_renders_full_page_with_panel(
     assert "empty-state" not in response.text
 
 
+def test_base_disables_message_button_while_streaming(
+    make_client: ClientFactory,
+) -> None:
+    """The CSS rule that soft-disables the send button is on every page.
+
+    The rule uses :has() to match when a `.message--streaming`
+    placeholder is in the DOM. Removing it would re-introduce the
+    double-submit bug; this test catches that.
+    """
+    with make_client(_ollama_unreachable) as client:
+        response = client.get("/")
+
+    assert ".chat-panel:has(.message--streaming) .message-form button" in (
+        response.text
+    )
+    assert "pointer-events: none" in response.text
+
+
 def test_chat_panel_auto_scrolls_to_bottom(
     make_client: ClientFactory,
 ) -> None:

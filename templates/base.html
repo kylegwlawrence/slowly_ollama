@@ -17,6 +17,26 @@
      while still preserving order. #}
   <script src="/static/htmx.min.js" defer></script>
   <script src="/static/htmx-ext-sse.js" defer></script>
+
+  {# Small custom rules layered on top of Pico's classless defaults.
+     Move to static/style.css if this grows past a handful of rules. #}
+  <style>
+    /* While a response is streaming, soft-disable the message form's
+       submit button. Without this, a double-click fires two POSTs
+       which open two SSE streams and save two assistant messages.
+       The placeholder element carries `.message--streaming`; once
+       the done event OOB-swaps it away the rule no longer matches
+       and the button becomes interactive again.
+
+       Caveat: pointer-events:none blocks mouse clicks but not
+       keyboard activation (Tab + Space). Acceptable for a
+       single-user local app; tighten with a JS disable if it
+       becomes a real problem. */
+    .chat-panel:has(.message--streaming) .message-form button {
+      pointer-events: none;
+      opacity: 0.5;
+    }
+  </style>
 </head>
 <body>
   {% block content %}{% endblock %}
