@@ -12,6 +12,7 @@ Build a local-only chat application for Mac (M3) that uses a locally-running Oll
 - Plans live in `docs/plans/`
 - Write tests for each phase and run them before moving on
 - Audience: this is the user's first full-stack app — frame explanations accordingly, name tradeoffs, challenge assumptions rather than silently accepting them
+- Use standard packages and libraries as much as possible 
 
 ## Scope (locked in after Phase 0 discussion)
 
