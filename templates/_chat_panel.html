@@ -42,7 +42,7 @@
         hx-target="#messages"
         hx-swap="beforeend"
         hx-on::after-request="if (event.detail.successful) { this.reset(); const ta = this.querySelector('textarea'); if (ta) ta.style.height = ''; }">
-    <div class="message-form__pill">
+    <div class="input-pill">
       <textarea name="content" required placeholder="Message Ollama…"
                 rows="1"
                 hx-on:input="this.style.height = 'auto'; this.style.height = this.scrollHeight + 'px'"

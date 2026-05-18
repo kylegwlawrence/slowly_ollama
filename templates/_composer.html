@@ -10,11 +10,10 @@
    panel (which includes the user's message and an SSE placeholder for
    the assistant's reply) and OOB-prepends the new sidebar row.
 
-   The pill markup deliberately mirrors `.message-form__pill` over in
-   `_chat_panel.html` so the two inputs feel identical — same height,
-   same focus ring, same Enter-to-send behaviour. The model select
-   sits in a toolbar below the pill (Claude-style), and auto-loads
-   options from GET /models on insert. #}
+   The pill is the shared `.input-pill` block from style.css — same
+   styling as the in-chat message form so both inputs feel identical.
+   The model select sits in a toolbar below the pill (Claude-style),
+   and auto-loads options from GET /models on insert. #}
 <section class="composer">
   <h1 class="composer__greeting">What's on your mind?</h1>
   <form class="composer__form"
@@ -22,7 +21,7 @@
         hx-target="#main"
         hx-swap="innerHTML"
         hx-push-url="true">
-    <div class="composer__pill">
+    <div class="input-pill">
       <textarea name="content" required
                 placeholder="Message Ollama…"
                 rows="1"

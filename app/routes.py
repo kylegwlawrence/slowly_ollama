@@ -39,7 +39,6 @@ Mid-stream failures emit an SSE ``event: error`` (headers already sent).
 """
 
 import html
-import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Annotated
