@@ -16,11 +16,17 @@
    and auto-loads options from GET /models on insert. #}
 <section class="composer">
   <h1 class="composer__greeting">What's on your mind?</h1>
+  {# `hx-push-url` is deliberately NOT set on the form. HTMX attributes
+     are inherited by descendants, so a form-level `hx-push-url="true"`
+     leaks onto the <select>'s `hx-get="/models"` and pushes
+     `/models?model=` into the address bar on page load. The URL update
+     after a successful chat creation is driven by the server's
+     `HX-Push-Url: /chats/{id}` response header instead — see
+     `create_chat_endpoint` in app/routes.py. #}
   <form class="composer__form"
         hx-post="/chats"
         hx-target="#main"
-        hx-swap="innerHTML"
-        hx-push-url="true">
+        hx-swap="innerHTML">
     <div class="input-pill">
       <textarea name="content" required
                 placeholder="Message Ollama…"

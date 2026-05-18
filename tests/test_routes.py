@@ -247,7 +247,15 @@ def test_index_includes_composer_form(
     # The composer replaces #main with the new chat panel; the OOB
     # sidebar row is delivered separately by the server.
     assert 'hx-target="#main"' in response.text
-    assert 'hx-push-url="true"' in response.text
+    # The composer's <form> MUST NOT carry hx-push-url. HTMX inherits
+    # that attribute onto the descendant <select hx-get="/models">,
+    # which would push `/models?model=` into the address bar on
+    # initial load. URL syncing for chat creation is driven by the
+    # server's HX-Push-Url header in POST /chats responses instead.
+    composer_start = response.text.index('class="composer__form"')
+    composer_end = response.text.index("</form>", composer_start)
+    composer_form = response.text[composer_start:composer_end]
+    assert "hx-push-url" not in composer_form
     # The two fields POST /chats now requires via Form().
     assert 'name="content"' in response.text
     assert 'name="model"' in response.text
