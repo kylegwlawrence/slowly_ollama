@@ -21,7 +21,14 @@
    "are you sure?" prompt and `hx-swap="delete"` to remove the <li>
    on success. The inline JS on after-request redirects to `/` if the
    user happened to be viewing the deleted chat. #}
-<li id="chat-{{ chat.id }}" class="chat-item" data-chat-id="{{ chat.id }}">
+{# `active_chat_id` is only set when this row is rendered as part of the
+   sidebar list for a known active chat (the index/panel endpoints pass
+   it through). Standalone renders — `list_chats_endpoint`,
+   `create_chat_endpoint`, `rename_chat_endpoint`, `get_chat_item_endpoint`
+   — don't, hence the `|default(none)` guard to avoid a Jinja
+   `UndefinedError`. #}
+<li id="chat-{{ chat.id }}" class="chat-item" data-chat-id="{{ chat.id }}"
+    {%- if chat.id == active_chat_id|default(none) %} aria-current="page"{% endif %}>
   <a href="/chats/{{ chat.id }}"
      hx-get="/chats/{{ chat.id }}"
      hx-target="#main"

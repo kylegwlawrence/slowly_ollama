@@ -81,6 +81,9 @@ def index_endpoint(request: Request, db: DB) -> Response:
             "chats": queries.list_conversations(db),
             "conversation": None,
             "messages": [],
+            # No chat is selected on the empty index — pass None so the
+            # sidebar template's `aria-current` check is always defined.
+            "active_chat_id": None,
         },
     )
 
@@ -174,7 +177,13 @@ def list_chats_endpoint(request: Request, db: DB) -> Response:
     return templates.TemplateResponse(
         request=request,
         name="_chats_list.html",
-        context={"chats": queries.list_conversations(db)},
+        # `active_chat_id` is None here — GET /chats refreshes the
+        # sidebar standalone (no conversation context). The page that
+        # owns the URL is responsible for the active highlight.
+        context={
+            "chats": queries.list_conversations(db),
+            "active_chat_id": None,
+        },
     )
 
 
@@ -252,6 +261,9 @@ def get_chat_panel_endpoint(
             "chats": queries.list_conversations(db),
             "conversation": conversation,
             "messages": messages,
+            # The active row highlight lives in the sidebar; pass the
+            # id so `_chat_item.html` can set `aria-current="page"`.
+            "active_chat_id": conversation.id,
         },
     )
 
