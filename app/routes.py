@@ -122,17 +122,41 @@ def _sse(payload: str, event: str | None = None) -> str:
 async def list_models_endpoint(
     request: Request, client: OllamaClient
 ) -> Response:
-    """Return ``<option>`` tags for the model dropdown."""
+    """Return ``<option>`` tags for the model dropdown.
+
+    On Ollama failure this returns 200 with a single disabled
+    ``<option>`` carrying an explanatory message. The reason for not
+    returning 5xx: HTMX won't swap the dropdown's contents on a
+    non-2xx response by default, which would leave the placeholder
+    stuck at "Loading models…" with no indication that anything's
+    wrong. A 200 with a disabled option still blocks submission
+    (empty value + the form's `required` attribute) while giving the
+    user a clear message to act on.
+    """
     try:
         models = await ollama.list_models(client)
-    except OllamaUnavailable as e:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(e))
-    except OllamaProtocolError as e:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(e))
+    except OllamaUnavailable:
+        return templates.TemplateResponse(
+            request=request,
+            name="_model_options.html",
+            context={
+                "models": [],
+                "error": "Ollama is unreachable — start it and reload.",
+            },
+        )
+    except OllamaProtocolError:
+        return templates.TemplateResponse(
+            request=request,
+            name="_model_options.html",
+            context={
+                "models": [],
+                "error": "Ollama returned an unexpected response.",
+            },
+        )
     return templates.TemplateResponse(
         request=request,
         name="_model_options.html",
-        context={"models": models},
+        context={"models": models, "error": None},
     )
 
 

@@ -86,24 +86,41 @@ def test_models_returns_option_tags(make_client: ClientFactory) -> None:
     assert response.text.index("llama3") < response.text.index("qwen2.5")
 
 
-def test_models_503_when_ollama_unreachable(
+def test_models_returns_disabled_option_when_ollama_unreachable(
     make_client: ClientFactory,
 ) -> None:
-    """OllamaUnavailable → 503."""
+    """When Ollama is down, /models returns 200 with a disabled option.
+
+    Returning 5xx would leave the dropdown stuck at "Loading…"
+    because HTMX won't swap on a non-2xx response. A 200 with a
+    disabled option lets HTMX swap normally and shows the user a
+    clear message; the empty value + the form's `required` still
+    block submission.
+    """
     with make_client(_ollama_unreachable) as client:
         response = client.get("/models")
-    assert response.status_code == 503
+
+    assert response.status_code == 200
+    assert '<option value="" disabled>' in response.text
+    assert "unreachable" in response.text.lower()
 
 
-def test_models_502_on_protocol_error(make_client: ClientFactory) -> None:
-    """OllamaProtocolError → 502."""
+def test_models_returns_disabled_option_on_protocol_error(
+    make_client: ClientFactory,
+) -> None:
+    """A protocol-level Ollama failure also surfaces as a disabled
+    option (200 with text), not a 502 — same rationale as the
+    unreachable case."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=b"<html>not json</html>")
 
     with make_client(handler) as client:
         response = client.get("/models")
-    assert response.status_code == 502
+
+    assert response.status_code == 200
+    assert '<option value="" disabled>' in response.text
+    assert "unexpected" in response.text.lower()
 
 
 # ---------------------------------------------------------------------------
