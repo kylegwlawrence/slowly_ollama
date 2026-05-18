@@ -36,6 +36,15 @@
       pointer-events: none;
       opacity: 0.5;
     }
+
+    /* Regenerate is rendered on every assistant message bubble so the
+       SSE done event's payload includes it automatically. CSS hides
+       it everywhere except on the most-recent assistant message
+       that isn't currently streaming. */
+    .message__regenerate { display: none; }
+    .messages .message:last-child.message--assistant:not(.message--streaming) .message__regenerate {
+      display: inline-block;
+    }
   </style>
 </head>
 <body>

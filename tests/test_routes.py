@@ -750,6 +750,83 @@ def test_stream_escapes_html_in_token_content(
 # ---------------------------------------------------------------------------
 
 
+def test_assistant_message_bubble_has_regenerate_button(
+    make_client: ClientFactory,
+) -> None:
+    """Every assistant bubble carries a regenerate button.
+
+    CSS in base.html hides all but the last one; the button itself
+    is always rendered so the SSE done event's payload contains it
+    automatically (the regenerated message has to also be
+    re-regeneratable).
+    """
+    ndjson = (
+        b'{"message":{"content":"Hi"},"done":false}\n'
+        b'{"message":{"content":""},"done":true}\n'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=ndjson)
+
+    with make_client(handler) as client:
+        chat_id = _create_chat_and_get_id(client, "X")
+        client.post(
+            f"/chats/{chat_id}/messages", data={"content": "hi"}
+        )
+        # Drive the stream so the assistant message is persisted.
+        client.get(f"/chats/{chat_id}/stream")
+
+        response = client.get(f"/chats/{chat_id}")
+
+    # The button targets the existing message bubble for replacement
+    # (outerHTML swap) and POSTs to the regenerate endpoint.
+    assert "message__regenerate" in response.text
+    assert f'hx-post="/chats/{chat_id}/regenerate"' in response.text
+    assert 'hx-target="closest .message"' in response.text
+
+
+def test_user_message_bubble_has_no_regenerate_button(
+    make_client: ClientFactory,
+) -> None:
+    """Only assistant bubbles get the regenerate button.
+
+    Regenerating a user message makes no semantic sense — it'd be
+    asking the model to "redo" the user's own input.
+    """
+    with make_client(_ollama_unreachable) as client:
+        chat_id = _create_chat_and_get_id(client, "X")
+        # Save just a user message (no Ollama call) by going through
+        # POST /chats/{id}/messages — it returns the user bubble plus
+        # an SSE placeholder; we only check the user bubble.
+        response = client.post(
+            f"/chats/{chat_id}/messages", data={"content": "hi"}
+        )
+
+    # The user bubble should NOT contain the regenerate button.
+    # (The response also contains the streaming placeholder, but
+    # that's a separate <div> and has no regen button either.)
+    user_section = response.text.split('data-role="assistant"')[0]
+    assert "message__regenerate" not in user_section
+
+
+def test_base_css_hides_regenerate_except_on_last_assistant(
+    make_client: ClientFactory,
+) -> None:
+    """The CSS rule that conditionally shows the regenerate button is
+    on every page — removing it would make the button show on every
+    assistant bubble in a conversation, which would be confusing."""
+    with make_client(_ollama_unreachable) as client:
+        response = client.get("/")
+
+    # Default-hidden rule.
+    assert ".message__regenerate { display: none; }" in response.text
+    # Conditional override targeting only the last non-streaming
+    # assistant bubble.
+    assert ":last-child.message--assistant:not(.message--streaming)" in (
+        response.text
+    )
+
+
 def test_regenerate_returns_placeholder_for_replacement(
     make_client: ClientFactory,
 ) -> None:

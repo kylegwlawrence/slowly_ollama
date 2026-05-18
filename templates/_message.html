@@ -15,4 +15,16 @@
      data-role="{{ message.role }}"
      {%- if swap_target %} hx-swap-oob="outerHTML:{{ swap_target }}"{% endif %}>
   <div class="message__content">{{ message.content }}</div>
+  {%- if message.role == "assistant" %}
+  {# Regenerate is rendered on every assistant bubble; CSS in
+     base.html hides it unless the bubble is the last child of
+     #messages AND not a streaming placeholder. That way only the
+     most-recent finished assistant message shows the button. #}
+  <button class="message__regenerate"
+          type="button"
+          aria-label="Regenerate response"
+          hx-post="/chats/{{ message.conversation_id }}/regenerate"
+          hx-target="closest .message"
+          hx-swap="outerHTML">↻ Regenerate</button>
+  {%- endif %}
 </div>
