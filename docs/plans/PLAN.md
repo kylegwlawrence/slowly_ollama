@@ -101,6 +101,17 @@ Requirements and tech stack clarified above. Scope reduced from the original dra
 - Streaming responses appended to the chat panel via SSE (`htmx-ext-sse`)
 - Model dropdown, rename/delete controls, regenerate button
 
-### Phase 8 — full test suite
+### Phase 8 — frontend polish (Google Chat aesthetic)
+- Vendor Material Symbols Outlined font under `static/`
+- Single hand-written `static/style.css` layered over Pico classless
+- Pill-shaped message bubbles, user-right (tonal blue) / assistant-left (white)
+- Google Chat-style bubble grouping via CSS sibling selectors
+- "Compose" disclosure (`<details>`) for the new-chat form
+- Kebab popover (`:focus-within`) for per-row Rename / Delete
+- Pill message input with inline circular send icon; auto-grows via `field-sizing`
+- Animated typing dots via `:empty::before` while a response is loading
+- Blue accent reserved for Send button + focus rings; everything else grayscale
+
+### Phase 9 — full test suite
 - Round out tests across all layers
 - Decide on Ollama mocking strategy for tests (likely: mock httpx for unit tests; optional integration tests against a real Ollama instance)
