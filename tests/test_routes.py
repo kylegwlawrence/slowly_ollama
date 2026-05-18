@@ -52,6 +52,13 @@ def make_client(
 
     from main import app
 
+    # Snapshot whatever's in dependency_overrides BEFORE this fixture
+    # touches it, so teardown can restore exactly that state. Using
+    # `.clear()` here would also wipe overrides added by some future
+    # conftest.py-level fixture; restoring the snapshot only undoes
+    # what *this* fixture put in.
+    saved_overrides = dict(app.dependency_overrides)
+
     def _make(handler: Callable[[httpx.Request], httpx.Response]) -> TestClient:
         mock_client = httpx.AsyncClient(
             transport=httpx.MockTransport(handler),
@@ -61,9 +68,10 @@ def make_client(
         return TestClient(app)
 
     yield _make
-    # Clear overrides between tests — the `app` object is a module-level
-    # singleton imported once, so override state would otherwise leak.
+    # pytest's yield-fixture machinery runs this teardown even when the
+    # test raises, so we don't need an explicit try/finally here.
     app.dependency_overrides.clear()
+    app.dependency_overrides.update(saved_overrides)
 
 
 # ---------------------------------------------------------------------------
