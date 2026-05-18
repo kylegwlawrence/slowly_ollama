@@ -251,6 +251,27 @@ def test_chat_url_direct_hit_renders_full_page_with_panel(
     assert "empty-state" not in response.text
 
 
+def test_chat_panel_auto_scrolls_to_bottom(
+    make_client: ClientFactory,
+) -> None:
+    """Long conversations open at the latest message, not the top.
+
+    Two mechanisms must be in the rendered panel:
+    - `hx-on::after-swap` on `#messages` so streaming tokens and
+      newly-sent messages keep the bottom in view.
+    - An inline script that scrolls on initial render (chat-panel
+      load) since no swap event fires at that point.
+    """
+    with make_client(_ollama_unreachable) as client:
+        chat_id = _create_chat_and_get_id(client, "X")
+        response = client.get(f"/chats/{chat_id}")
+
+    # After-swap handler on the messages container.
+    assert "scrollTop = this.scrollHeight" in response.text
+    # Initial-render scroll script.
+    assert "scrollTop = m.scrollHeight" in response.text
+
+
 def test_chat_panel_form_only_resets_on_successful_response(
     make_client: ClientFactory,
 ) -> None:

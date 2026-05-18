@@ -8,7 +8,12 @@
     <span class="chat-panel__model">{{ conversation.model }}</span>
   </header>
 
-  <div id="messages" class="messages">
+  {# `hx-on::after-swap` keeps the bottom of the conversation in view
+     whenever HTMX swaps content anywhere inside `#messages` — events
+     bubble, so token swaps into the streaming placeholder also
+     trigger this. `this` is `#messages` itself. #}
+  <div id="messages" class="messages"
+       hx-on::after-swap="this.scrollTop = this.scrollHeight">
     {% for message in messages %}
       {% include "_message.html" %}
     {% endfor %}
@@ -23,3 +28,15 @@
     <button type="submit">Send</button>
   </form>
 </section>
+
+{# After-swap handles streaming + new messages. This separate script
+   handles INITIAL render: when the user picks a chat (or reloads
+   /chats/{id}), the panel ships with messages already in it and no
+   swap event fires. Without this scroll, longer conversations would
+   open scrolled to the top. #}
+<script>
+  (function () {
+    const m = document.getElementById("messages");
+    if (m) m.scrollTop = m.scrollHeight;
+  })();
+</script>
