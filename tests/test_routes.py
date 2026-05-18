@@ -813,6 +813,45 @@ def test_stream_escapes_html_in_token_content(
     assert "data: <b>boom" not in response.text
 
 
+def test_stream_endpoint_404_for_unknown_conversation(
+    make_client: ClientFactory,
+) -> None:
+    """GET /chats/999/stream on a missing chat returns 404 before
+    opening the SSE connection. Without the 404, an EventSource that
+    bound to a stale chat id would error in the browser confusingly."""
+    with make_client(_ollama_unreachable) as client:
+        response = client.get("/chats/999/stream")
+    assert response.status_code == 404
+
+
+def test_stream_endpoint_emits_protocol_error_for_malformed_ollama(
+    make_client: ClientFactory,
+) -> None:
+    """Ollama returning garbage NDJSON mid-stream surfaces as an SSE
+    `error` event whose payload mentions a protocol error. Without
+    this branch the OllamaProtocolError would crash the generator
+    silently from the browser's perspective."""
+    body = (
+        b'{"message":{"content":"OK"},"done":false}\n'
+        b'this is not valid json\n'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body)
+
+    with make_client(handler) as client:
+        chat_id = _create_chat_and_get_id(client, "X")
+        client.post(
+            f"/chats/{chat_id}/messages", data={"content": "hi"}
+        )
+
+        response = client.get(f"/chats/{chat_id}/stream")
+
+    assert response.status_code == 200
+    assert "event: error" in response.text
+    assert "protocol error" in response.text.lower()
+
+
 # ---------------------------------------------------------------------------
 # /chats/{id}/regenerate
 # ---------------------------------------------------------------------------
@@ -945,6 +984,37 @@ def test_regenerate_400_when_no_assistant_message(
 
         response = client.post(f"/chats/{chat_id}/regenerate")
 
+    assert response.status_code == 400
+
+
+def test_regenerate_404_for_unknown_conversation(
+    make_client: ClientFactory,
+) -> None:
+    """POST /chats/999/regenerate on a missing chat returns 404."""
+    with make_client(_ollama_unreachable) as client:
+        response = client.post("/chats/999/regenerate")
+    assert response.status_code == 404
+
+
+def test_regenerate_stream_404_for_unknown_conversation(
+    make_client: ClientFactory,
+) -> None:
+    """GET /chats/999/regenerate-stream on a missing chat returns 404."""
+    with make_client(_ollama_unreachable) as client:
+        response = client.get("/chats/999/regenerate-stream")
+    assert response.status_code == 404
+
+
+def test_regenerate_stream_400_when_no_assistant_message(
+    make_client: ClientFactory,
+) -> None:
+    """GET /chats/{id}/regenerate-stream returns 400 if the conversation
+    has no assistant message to regenerate. Mirrors the same check on
+    the POST /regenerate route; without both checks, a hand-crafted
+    GET would bypass the validation."""
+    with make_client(_ollama_unreachable) as client:
+        chat_id = _create_chat_and_get_id(client, "X")
+        response = client.get(f"/chats/{chat_id}/regenerate-stream")
     assert response.status_code == 400
 
 
