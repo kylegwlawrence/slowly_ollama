@@ -275,6 +275,12 @@ body {
   border-radius: var(--radius-md);
   padding: var(--space-xs) var(--space-sm);
   font-size: 14px;
+  /* Pico picks a dark form-element background under
+     `prefers-color-scheme: dark`; explicit white + primary text
+     color matches the chat-window pill input (style.css's
+     `.message-form textarea`). */
+  background: var(--bg);
+  color: var(--text-primary);
   /* Pico's defaults are sized for full-page forms (height ~50px,
      margin-bottom 1rem) — far too big for a sidebar row. Reset to
      auto / 0 so the input matches the row height. */
