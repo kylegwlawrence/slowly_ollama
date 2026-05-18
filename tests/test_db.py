@@ -6,7 +6,6 @@ boilerplate of "give me a freshly-initialized DB at a throwaway path."
 """
 
 import sqlite3
-from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -66,7 +65,7 @@ def test_initialize_is_idempotent(initialized_db: Path) -> None:
     # Second call must not raise; both tables must still be present.
     initialize_database(initialized_db)
 
-    with closing(_open(initialized_db)) as conn:
+    with _open(initialized_db) as conn:
         tables = {
             row[0]
             for row in conn.execute(
@@ -78,7 +77,7 @@ def test_initialize_is_idempotent(initialized_db: Path) -> None:
 
 def test_role_check_accepts_documented_roles(initialized_db: Path) -> None:
     """The two v1 roles ('user', 'assistant') insert without error."""
-    with closing(_open(initialized_db)) as conn:
+    with _open(initialized_db) as conn:
         conn.execute(
             "INSERT INTO conversations"
             " (id, name, model, created_at, updated_at)"
@@ -95,7 +94,7 @@ def test_role_check_accepts_documented_roles(initialized_db: Path) -> None:
 
 def test_role_check_rejects_unknown_role(initialized_db: Path) -> None:
     """Anything outside the documented v1 roles is rejected at insert."""
-    with closing(_open(initialized_db)) as conn:
+    with _open(initialized_db) as conn:
         conn.execute(
             "INSERT INTO conversations"
             " (id, name, model, created_at, updated_at)"
@@ -115,7 +114,7 @@ def test_cascade_delete_removes_child_messages(initialized_db: Path) -> None:
     Only works because `_open` enables `PRAGMA foreign_keys = ON`. If a
     future change drops that pragma, this test fails — which is the point.
     """
-    with closing(_open(initialized_db)) as conn:
+    with _open(initialized_db) as conn:
         conn.execute(
             "INSERT INTO conversations"
             " (id, name, model, created_at, updated_at)"
@@ -135,7 +134,7 @@ def test_cascade_delete_removes_child_messages(initialized_db: Path) -> None:
 
 def test_messages_index_exists(initialized_db: Path) -> None:
     """The composite index supporting per-conversation reads is present."""
-    with closing(_open(initialized_db)) as conn:
+    with _open(initialized_db) as conn:
         indexes = {
             row[0]
             for row in conn.execute(
