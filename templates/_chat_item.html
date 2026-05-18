@@ -29,7 +29,7 @@
           type="button"
           aria-label="Delete chat"
           hx-delete="/chats/{{ chat.id }}"
-          hx-target="closest .chat-item"
+          hx-target="#chat-{{ chat.id }}"
           hx-swap="delete"
           hx-confirm="Delete '{{ chat.name }}'?"
           hx-on::after-request="if (event.detail.successful && window.location.pathname === '/chats/{{ chat.id }}') window.location = '/'">×</button>
