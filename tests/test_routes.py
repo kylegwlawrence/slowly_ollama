@@ -572,6 +572,41 @@ def test_get_chat_item_404_for_unknown_id(
     assert response.status_code == 404
 
 
+def test_rename_round_trip_via_edit_and_patch(
+    make_client: ClientFactory,
+) -> None:
+    """End-to-end rename round-trip at the HTTP layer.
+
+    Mirrors what the browser-side kebab→Rename→type→submit flow
+    triggers: GET /chats/{id}/edit returns the edit fragment with
+    the current name pre-filled; PATCH /chats/{id} with a new name
+    returns the display fragment showing the new name.
+
+    A user-reported "renaming doesn't work" bug in Phase 9 surfaced
+    only in the browser — the HTTP layer was correct. This test
+    catches future regressions that *would* affect the HTTP layer
+    (e.g. a route change that breaks the body parsing of the PATCH
+    form data).
+    """
+    with make_client(_ollama_unreachable) as client:
+        chat_id = _create_chat_and_get_id(client, "Original")
+
+        edit_response = client.get(f"/chats/{chat_id}/edit")
+        assert edit_response.status_code == 200
+        assert "chat-item--editing" in edit_response.text
+        assert 'value="Original"' in edit_response.text
+        assert f'hx-patch="/chats/{chat_id}"' in edit_response.text
+
+        patch_response = client.patch(
+            f"/chats/{chat_id}", data={"name": "Renamed"}
+        )
+        assert patch_response.status_code == 200
+        assert "Renamed" in patch_response.text
+        assert "Original" not in patch_response.text
+        # Came back as display fragment, not edit fragment.
+        assert "chat-item--editing" not in patch_response.text
+
+
 def test_rename_chat_returns_updated_item(
     make_client: ClientFactory,
 ) -> None:
