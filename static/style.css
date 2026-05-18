@@ -257,14 +257,29 @@ body {
   gap: var(--space-xs);
   flex: 1;
   align-items: center;
+  /* Pico sets `form { margin-bottom: 1rem }`; we don't want extra
+     vertical space inside a sidebar row. */
+  margin-bottom: 0;
+  /* min-width: 0 lets the form (and its flex input) shrink below
+     the natural width of its content if the sidebar is narrow. */
+  min-width: 0;
 }
 
 .chat-item__edit-form input {
   flex: 1;
+  /* min-width: 0 is essential here — without it the input refuses
+     to shrink below its intrinsic content width and overflows the
+     sidebar. */
+  min-width: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   padding: var(--space-xs) var(--space-sm);
   font-size: 14px;
+  /* Pico's defaults are sized for full-page forms (height ~50px,
+     margin-bottom 1rem) — far too big for a sidebar row. Reset to
+     auto / 0 so the input matches the row height. */
+  height: auto;
+  margin-bottom: 0;
 }
 
 .chat-item__edit-form button {
@@ -274,6 +289,14 @@ body {
   color: var(--text-secondary);
   padding: var(--space-xs);
   border-radius: 50%;
+  /* CRITICAL: Pico has `button[type=submit] { width: 100% }` which
+     would make the Save button consume the entire flex container
+     and crush the input to 0px wide. flex: 0 0 auto pins each icon
+     button at its content size so the input keeps its grow space. */
+  width: auto;
+  flex: 0 0 auto;
+  /* Same margin reset reason as the input. */
+  margin-bottom: 0;
 }
 
 .chat-item__edit-form button:hover { background: var(--surface-hover); }
