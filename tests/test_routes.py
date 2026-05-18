@@ -251,6 +251,25 @@ def test_chat_url_direct_hit_renders_full_page_with_panel(
     assert "empty-state" not in response.text
 
 
+def test_chat_panel_form_only_resets_on_successful_response(
+    make_client: ClientFactory,
+) -> None:
+    """Resetting the textarea must be gated on a successful response.
+
+    Without the `event.detail.successful` guard, a failed POST (e.g.
+    the conversation was deleted in another tab → 404) would wipe the
+    user's typed message and leave them with no indication of what
+    happened.
+    """
+    with make_client(_ollama_unreachable) as client:
+        chat_id = _create_chat_and_get_id(client, "X")
+        response = client.get(f"/chats/{chat_id}")
+
+    # The conditional must be visible in the rendered template.
+    assert "event.detail.successful" in response.text
+    assert "this.reset()" in response.text
+
+
 def test_chat_url_htmx_request_returns_fragment_only(
     make_client: ClientFactory,
 ) -> None:
