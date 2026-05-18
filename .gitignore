@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+
+# Virtualenv
+.venv/
+
+# Local config (may contain secrets / host-specific paths)
+.env
+
+# SQLite databases (data lives in ~/Library/Application Support/, but ignore
+# any stray .db files that land in the repo during development)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# macOS
+.DS_Store
+
+# Editors
+.vscode/
+.idea/
+*.swp

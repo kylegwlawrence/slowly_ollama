@@ -1,0 +1,23 @@
+# Direct dependencies for ollama_slowly.
+# Pinned to the versions resolved on Python 3.13.13 during Phase 1.
+# Transitive deps are intentionally left unpinned — for a simple local app,
+# that's a readability/maintainability win; switch to a full `pip freeze`
+# lockfile later if reproducibility bites.
+
+# Web framework + ASGI server (uvicorn[standard] pulls in uvloop, httptools,
+# watchfiles, websockets — the "production-ish" extras).
+fastapi==0.136.1
+uvicorn[standard]==0.47.0
+
+# HTTP client for talking to the local Ollama server (supports streaming).
+httpx==0.28.1
+
+# Server-side templating for the HTMX frontend.
+jinja2==3.1.6
+
+# Typed config loaded from .env (wraps pydantic v2).
+pydantic-settings==2.14.1
+
+# Testing.
+pytest==9.0.3
+pytest-asyncio==1.3.0
