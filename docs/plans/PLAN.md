@@ -112,6 +112,14 @@ Requirements and tech stack clarified above. Scope reduced from the original dra
 - Animated typing dots via `:empty::before` while a response is loading
 - Blue accent reserved for Send button + focus rings; everything else grayscale
 
-### Phase 9 — full test suite
+### Phase 9 — frontend bug fixes
+- POST /chats opens the new chat (OOB swap of #main + HX-Push-Url)
+- Enter sends a message; Shift+Enter inserts a newline
+- Textarea text color set explicitly (Pico default is too muted)
+- Delete clears the chat panel when viewing the deleted chat
+  (server-side HX-Location via Referer)
+- Repair the rename flow (kebab popup → edit form → PATCH)
+
+### Phase 10 — full test suite
 - Round out tests across all layers
 - Decide on Ollama mocking strategy for tests (likely: mock httpx for unit tests; optional integration tests against a real Ollama instance)
