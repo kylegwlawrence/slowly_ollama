@@ -261,6 +261,65 @@ def test_chat_url_htmx_request_404_for_unknown_id(
     assert response.status_code == 404
 
 
+# ---------------------------------------------------------------------------
+# Static assets (vendored Pico + HTMX)
+# ---------------------------------------------------------------------------
+
+
+def test_static_mount_serves_htmx(make_client: ClientFactory) -> None:
+    """GET /static/htmx.min.js returns the vendored HTMX bundle.
+
+    Guards the StaticFiles mount in main.py — if the mount path or
+    the directory resolution breaks, this test catches it before the
+    UI silently fails to load HTMX.
+    """
+    with make_client(_ollama_unreachable) as client:
+        response = client.get("/static/htmx.min.js")
+
+    assert response.status_code == 200
+    # The first bytes of the file are distinctive enough to verify
+    # we're serving the right asset (not, e.g., an index.html error
+    # page from a misconfigured fallback).
+    assert response.text.startswith("var htmx=function()")
+
+
+def test_static_mount_serves_sse_extension(
+    make_client: ClientFactory,
+) -> None:
+    """The htmx-ext-sse extension is served alongside HTMX core."""
+    with make_client(_ollama_unreachable) as client:
+        response = client.get("/static/htmx-ext-sse.js")
+
+    assert response.status_code == 200
+    assert "Server Sent Events Extension" in response.text
+
+
+def test_static_mount_serves_pico_css(make_client: ClientFactory) -> None:
+    """Pico CSS is served from the same /static mount."""
+    with make_client(_ollama_unreachable) as client:
+        response = client.get("/static/pico.classless.min.css")
+
+    assert response.status_code == 200
+    assert "Pico CSS" in response.text
+
+
+def test_index_page_references_vendored_assets(
+    make_client: ClientFactory,
+) -> None:
+    """base.html references the vendored URLs (not CDN/commented-out).
+
+    Re-commenting the script tags during a future refactor would
+    silently break the UI; this catches the regression at the route
+    layer rather than at the browser.
+    """
+    with make_client(_ollama_unreachable) as client:
+        response = client.get("/")
+
+    assert "/static/pico.classless.min.css" in response.text
+    assert "/static/htmx.min.js" in response.text
+    assert "/static/htmx-ext-sse.js" in response.text
+
+
 def test_chat_item_link_carries_href_and_hx_push_url(
     make_client: ClientFactory,
 ) -> None:
