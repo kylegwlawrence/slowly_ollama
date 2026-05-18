@@ -5,12 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}ollama_slowly{% endblock %}</title>
 
-  {# Vendored locally — see static/ for the actual files. Update them
-     by re-running the curl commands documented in
-     docs/retros/phase6-fastapi-routers.md (or wherever step 2 ends
-     up retro'd). Pico is the classless variant (semantic-HTML
-     defaults, no class-name fight). #}
+  {# Vendored locally — see static/ for the actual files. Pico classless
+     gives semantic-HTML defaults; style.css layers the Google Chat
+     aesthetic on top; material-symbols.css wires the icon font. #}
   <link rel="stylesheet" href="/static/pico.classless.min.css">
+  <link rel="stylesheet" href="/static/material-symbols.css">
+  <link rel="stylesheet" href="/static/style.css">
   {# htmx.min.js must load before htmx-ext-sse.js — the extension
      registers itself against the global `htmx` set up by core. Using
      `defer` on both keeps the document parsing without blocking,
@@ -18,15 +18,13 @@
   <script src="/static/htmx.min.js" defer></script>
   <script src="/static/htmx-ext-sse.js" defer></script>
 
-  {# Small custom rules layered on top of Pico's classless defaults.
-     Move to static/style.css if this grows past a handful of rules. #}
+  {# These two rules MUST stay inline — tests substring-match them in
+     every rendered page (see test_base_disables_message_button_while_streaming
+     and test_base_css_hides_regenerate_except_on_last_assistant). The rest
+     of the visual layer lives in static/style.css. #}
   <style>
-    /* While a response is streaming, soft-disable the message form's
-       submit button. Without this, a double-click fires two POSTs
-       which open two SSE streams and save two assistant messages.
-       The placeholder element carries `.message--streaming`; once
-       the done event OOB-swaps it away the rule no longer matches
-       and the button becomes interactive again.
+    /* Soft-disable the send button while a response streams (prevents
+       double-fire opening two parallel SSE streams).
 
        Caveat: pointer-events:none blocks mouse clicks but not
        keyboard activation (Tab + Space). Acceptable for a
@@ -37,10 +35,8 @@
       opacity: 0.5;
     }
 
-    /* Regenerate is rendered on every assistant message bubble so the
-       SSE done event's payload includes it automatically. CSS hides
-       it everywhere except on the most-recent assistant message
-       that isn't currently streaming. */
+    /* Regenerate is rendered on every assistant bubble; show it only
+       on the last-child assistant bubble that isn't currently streaming. */
     .message__regenerate { display: none; }
     .messages .message:last-child.message--assistant:not(.message--streaming) .message__regenerate {
       display: inline-block;
