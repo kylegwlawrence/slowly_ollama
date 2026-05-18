@@ -324,15 +324,30 @@ def rename_chat_endpoint(
     response_class=HTMLResponse,
     status_code=status.HTTP_200_OK,
 )
-def delete_chat_endpoint(conversation_id: int, db: DB) -> Response:
-    """Delete a conversation; return empty 200 (HTMX removes the row).
+def delete_chat_endpoint(
+    conversation_id: int, request: Request, db: DB
+) -> Response:
+    """Delete a conversation; return empty 200 so HTMX's
+    ``hx-swap="delete"`` removes the row from the sidebar.
 
-    Returning 200 with no body (rather than 204) keeps things simple
-    for HTMX consumers — some HTMX extensions ignore 204 responses,
-    and an empty 200 body works uniformly across swap strategies.
+    If the user is currently viewing the chat they just deleted
+    (``Referer`` ends with ``/chats/{id}``), set ``HX-Location: /``
+    on the response so HTMX navigates the page to the index —
+    otherwise they'd be left looking at a stale chat panel whose URL
+    404s on reload.
+
+    Server-side check (rather than client-side ``window.location``
+    comparison) avoids a brittle timing race: the row's
+    ``hx-swap="delete"`` removes the button's parent ``<li>`` before
+    ``htmx:after-request`` fires, and event delivery to detached
+    elements isn't reliable across browsers.
     """
     queries.delete_conversation(db, conversation_id)
-    return Response(content="", status_code=status.HTTP_200_OK)
+    response = Response(content="", status_code=status.HTTP_200_OK)
+    referer = request.headers.get("Referer", "")
+    if referer.endswith(f"/chats/{conversation_id}"):
+        response.headers["HX-Location"] = "/"
+    return response
 
 
 # ---------------------------------------------------------------------------

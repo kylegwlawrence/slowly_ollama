@@ -435,9 +435,11 @@ def test_chat_item_has_delete_button(
 ) -> None:
     """Each sidebar row has a delete button wired to DELETE /chats/{id}.
 
-    Must include hx-confirm (browser prompt), hx-swap="delete" (remove
-    the row from the DOM), and the after-request redirect so the URL
-    doesn't get stuck on a deleted chat's path.
+    Must include hx-confirm (browser prompt) and hx-swap="delete"
+    (remove the row from the DOM). The "navigate away when viewing
+    the deleted chat" behavior used to live in inline JS on this
+    button; it's now server-side (see
+    `test_delete_chat_emits_hx_location_when_viewing_deleted_chat`).
     """
     with make_client(_ollama_unreachable) as client:
         chat_id = _create_chat_and_get_id(client, "Topic")
@@ -446,9 +448,40 @@ def test_chat_item_has_delete_button(
     assert f'hx-delete="/chats/{chat_id}"' in response.text
     assert 'hx-swap="delete"' in response.text
     assert "hx-confirm=" in response.text
-    # Inline navigation guard for the "user is viewing the chat they
-    # just deleted" case.
-    assert "window.location" in response.text
+
+
+def test_delete_chat_emits_hx_location_when_viewing_deleted_chat(
+    make_client: ClientFactory,
+) -> None:
+    """When Referer points at the chat being deleted, the response
+    carries HX-Location: / so HTMX navigates the page away from the
+    now-404'd URL."""
+    with make_client(_ollama_unreachable) as client:
+        chat_id = _create_chat_and_get_id(client, "Topic")
+        response = client.delete(
+            f"/chats/{chat_id}",
+            headers={"Referer": f"http://test/chats/{chat_id}"},
+        )
+
+    assert response.status_code == 200
+    assert response.headers.get("HX-Location") == "/"
+
+
+def test_delete_chat_omits_hx_location_when_viewing_different_chat(
+    make_client: ClientFactory,
+) -> None:
+    """No HX-Location when the user is on a different chat (or no
+    chat). Avoids redirecting them away from a chat they're still
+    using."""
+    with make_client(_ollama_unreachable) as client:
+        chat_id = _create_chat_and_get_id(client, "Topic")
+        response = client.delete(
+            f"/chats/{chat_id}",
+            headers={"Referer": "http://test/"},
+        )
+
+    assert response.status_code == 200
+    assert "HX-Location" not in response.headers
 
 
 def test_chat_item_link_carries_href_and_hx_push_url(

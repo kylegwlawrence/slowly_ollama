@@ -50,8 +50,7 @@
               hx-delete="/chats/{{ chat.id }}"
               hx-target="#chat-{{ chat.id }}"
               hx-swap="delete"
-              hx-confirm="Delete '{{ chat.name }}'?"
-              hx-on::after-request="if (event.detail.successful && window.location.pathname === '/chats/{{ chat.id }}') window.location = '/'">
+              hx-confirm="Delete '{{ chat.name }}'?">
         <span class="material-symbols-outlined">delete</span>
         Delete
       </button>
