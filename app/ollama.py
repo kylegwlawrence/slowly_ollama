@@ -49,6 +49,28 @@ class OllamaProtocolError(Exception):
     """
 
 
+class OllamaModelMissing(Exception):
+    """Raised when Ollama answers but the requested model isn't installed.
+
+    Distinct from ``OllamaUnavailable`` (Ollama itself is down) and
+    ``OllamaProtocolError`` (Ollama is up but the response was malformed).
+    Phase 11d's auto-titler surfaces this specifically so the UI can
+    show a one-time "install this model to enable auto-titles" banner
+    rather than a generic error.
+
+    The model name is preserved as the first arg so the caller can
+    include it in the banner copy.
+    """
+
+
+# Phase 11d: hardcoded model for auto-generated chat titles. Small,
+# fast, low-memory — runs alongside the user's chat model without
+# noticeable contention. If it's not installed, `generate_title`
+# raises `OllamaModelMissing` and the caller surfaces a banner asking
+# the user to `ollama pull` it.
+TITLE_MODEL = "tinyllama:1.1b-chat-v1-fp16"
+
+
 @dataclass(frozen=True)
 class ChatChunk:
     """One streamed chunk of an assistant response.
@@ -186,3 +208,120 @@ async def stream_chat(
                 )
     except (httpx.HTTPError, httpx.InvalidURL) as e:
         raise OllamaUnavailable(f"Ollama stream failed: {e}") from e
+
+
+async def generate_title(
+    client: httpx.AsyncClient,
+    history: list[dict[str, str]],
+) -> str:
+    """Ask the title model to summarize the conversation as a 3-6 word title.
+
+    Single-shot, non-streaming POST to ``/api/chat``. Appends a final
+    user prompt asking for the title, sends the whole conversation,
+    and returns the trimmed reply.
+
+    Args:
+        client: An ``httpx.AsyncClient`` pointed at the Ollama host.
+        history: The conversation so far — the same wire-format list
+            that ``stream_chat`` accepts (``[{"role", "content"}, ...]``).
+            The function appends a title-request user turn before
+            sending; callers don't need to.
+
+    Returns:
+        The model-generated title, stripped of surrounding quotes and
+        truncated to one line and 80 characters. Empty strings are
+        possible if the model misbehaves; the caller is expected to
+        treat empty as "skip the rename".
+
+    Raises:
+        OllamaUnavailable: Ollama is unreachable, the request timed
+            out, or the server returned a non-2xx non-404 status.
+        OllamaModelMissing: Ollama returned 404 — the configured
+            ``TITLE_MODEL`` isn't installed locally. Distinct from
+            ``OllamaUnavailable`` so the UI can show a specific
+            "install this model" banner.
+        OllamaProtocolError: Ollama responded with JSON we couldn't
+            parse into the expected ``{"message": {"content": ...}}``
+            shape.
+    """
+    # Instruction is delivered as a final user turn so the model treats
+    # it as the current request, not a system directive (tinyllama
+    # ignores `system` messages in practice). Verb-first ("Title
+    # this...") beats "Summarize..." because tinyllama parses the
+    # latter literally and includes the phrase "in 3-6 words" in its
+    # answer; verb-first treats the count as a constraint, not text
+    # to echo.
+    title_request = {
+        "role": "user",
+        "content": (
+            "Title this conversation in 3 to 6 words."
+            " Reply with only the title."
+        ),
+    }
+    payload = {
+        "model": TITLE_MODEL,
+        "messages": [*history, title_request],
+        "stream": False,
+    }
+
+    try:
+        response = await client.post("/api/chat", json=payload)
+    except (httpx.HTTPError, httpx.InvalidURL) as e:
+        raise OllamaUnavailable(f"Title request failed: {e}") from e
+
+    # Ollama returns 404 when asked to use a model it hasn't pulled.
+    # Catch it before raise_for_status so the caller can distinguish
+    # "model missing" from generic server failures.
+    if response.status_code == 404:
+        raise OllamaModelMissing(TITLE_MODEL)
+
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        raise OllamaUnavailable(f"Title request failed: {e}") from e
+
+    try:
+        text = response.json()["message"]["content"]
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        raise OllamaProtocolError(
+            f"Ollama returned an unexpected /api/chat shape: {e}"
+        ) from e
+
+    # Defensive post-processing: tinyllama tends to wrap titles in
+    # quotes despite the instruction, sometimes adds a trailing period,
+    # and occasionally spits out a multi-line "reasoning" preamble.
+    # Strip those and cap length so a runaway response can't become a
+    # 5000-char sidebar row.
+    text = text.strip()
+
+    # Take the first non-empty line — guards against the model
+    # emitting "Here is your title:\n\nFoo Bar".
+    for line in text.splitlines():
+        if line.strip():
+            text = line.strip()
+            break
+
+    # Strip a balanced set of common surrounding quote characters.
+    text = text.strip(' "“”‘’\'.')
+
+    # Strip preambles tinyllama loves to add despite the instructions.
+    # Each entry is checked case-insensitively at the start of the
+    # string. Order doesn't matter — only one match is stripped per
+    # run, and the loop is cheap.
+    preambles = (
+        "title:",
+        "chat title:",
+        "conversation title:",
+        "conversation:",
+        "summary:",
+        "here is the title:",
+        "here is your title:",
+        "the title is:",
+    )
+    lowered = text.lower()
+    for prefix in preambles:
+        if lowered.startswith(prefix):
+            text = text[len(prefix):].lstrip(' "“”‘’\'')
+            break
+
+    return text[:80]

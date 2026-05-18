@@ -14,9 +14,12 @@ import pytest
 
 from app.ollama import (
     ChatChunk,
+    OllamaModelMissing,
     OllamaProtocolError,
     OllamaUnavailable,
+    TITLE_MODEL,
     create_client,
+    generate_title,
     list_models,
     stream_chat,
 )
@@ -292,3 +295,120 @@ async def test_create_client_uses_ollama_host_env(
         # around trailing-slash normalization in the URL string.
         assert client.base_url.host == "example.com"
         assert client.base_url.port == 9999
+
+
+# ---------------------------------------------------------------------------
+# Phase 11d: generate_title
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_generate_title_sends_history_and_title_request() -> None:
+    """generate_title appends a user turn asking for a title and posts it.
+
+    The handler captures the outgoing payload so we can assert the
+    history was forwarded and a title-request turn was tacked onto
+    the end.
+    """
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200, json={"message": {"content": "A Concise Title"}}
+        )
+
+    async with _client_with(handler) as client:
+        title = await generate_title(
+            client,
+            [
+                {"role": "user", "content": "Hi"},
+                {"role": "assistant", "content": "Hello!"},
+            ],
+        )
+
+    assert title == "A Concise Title"
+    assert captured["path"] == "/api/chat"
+    # The configured TITLE_MODEL is used (not whatever the chat used).
+    assert captured["body"]["model"] == TITLE_MODEL
+    # Non-streaming — title responses are tiny, no need for SSE.
+    assert captured["body"]["stream"] is False
+    # History forwarded; a third (title-request) turn appended.
+    msgs = captured["body"]["messages"]
+    assert len(msgs) == 3
+    assert msgs[0] == {"role": "user", "content": "Hi"}
+    assert msgs[1] == {"role": "assistant", "content": "Hello!"}
+    assert msgs[2]["role"] == "user"
+    assert "Title" in msgs[2]["content"]
+
+
+@pytest.mark.asyncio
+async def test_generate_title_raises_model_missing_on_404() -> None:
+    """A 404 from Ollama maps to OllamaModelMissing (not Unavailable).
+
+    The UI uses this to surface the "install this model" banner
+    instead of a generic "Ollama down" error.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"error": "model not found"})
+
+    async with _client_with(handler) as client:
+        with pytest.raises(OllamaModelMissing) as info:
+            await generate_title(client, [])
+
+    # The exception preserves the model name so the banner can name it.
+    assert TITLE_MODEL in str(info.value.args[0])
+
+
+@pytest.mark.asyncio
+async def test_generate_title_raises_unavailable_on_5xx() -> None:
+    """5xx → OllamaUnavailable (not protocol error)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500)
+
+    async with _client_with(handler) as client:
+        with pytest.raises(OllamaUnavailable):
+            await generate_title(client, [])
+
+
+@pytest.mark.asyncio
+async def test_generate_title_strips_quotes_and_preambles() -> None:
+    """Post-processing scrubs the tinyllama-style decorations we see."""
+    samples = [
+        ('  "Hello World"  ', "Hello World"),
+        ('Title: My Chat Title', "My Chat Title"),
+        ('Conversation: Wine Tasting Tonight', "Wine Tasting Tonight"),
+        ("Here is the title: The Thing", "The Thing"),
+        # Multi-line: take the first non-empty line.
+        ("\n\nThe Picked Line\n\nIgnored", "The Picked Line"),
+        # Curly quotes get stripped too.
+        ('“Smart Quotes Are Fun”', "Smart Quotes Are Fun"),
+    ]
+
+    for raw, expected in samples:
+        def make_handler(payload: str):
+            def handler(_request: httpx.Request) -> httpx.Response:
+                return httpx.Response(
+                    200, json={"message": {"content": payload}}
+                )
+            return handler
+
+        async with _client_with(make_handler(raw)) as client:
+            assert await generate_title(client, []) == expected, raw
+
+
+@pytest.mark.asyncio
+async def test_generate_title_caps_at_80_chars() -> None:
+    """A runaway title is truncated so the sidebar row stays sane."""
+    long = "A " * 200  # 400 chars
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"message": {"content": long}})
+
+    async with _client_with(handler) as client:
+        title = await generate_title(client, [])
+
+    assert len(title) == 80

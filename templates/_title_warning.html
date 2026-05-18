@@ -1,0 +1,31 @@
+{# One-time banner explaining that the auto-titler is disabled because
+   the title model isn't installed.
+
+   Delivered as an SSE `title-warning` event from the streaming endpoint
+   when `ollama.generate_title` raises `OllamaModelMissing`. The root
+   `hx-swap-oob="true"` is critical — without it HTMX would dump this
+   into the streaming assistant placeholder. With it, HTMX finds the
+   element with matching id (`#title-warning` in the sidebar footer of
+   index.html) and replaces it in place.
+
+   The `htmx:load` handler is the per-session de-duplication: the FIRST
+   time this fragment lands, sessionStorage doesn't have the flag, so
+   we set it and the banner stays. On the SECOND or later landings in
+   the same session, the flag is already set, so the handler removes
+   the freshly-rendered element before the user sees it. Closing the
+   tab clears sessionStorage, so the user gets one banner per session
+   if the model is still missing. #}
+<div id="title-warning" class="title-warning" hx-swap-oob="true"
+     hx-on:htmx:load="if (sessionStorage.getItem('title_warning_seen')) { this.remove(); }
+                      else { sessionStorage.setItem('title_warning_seen', '1'); }">
+  <span class="material-symbols-outlined">info</span>
+  <span class="title-warning__text">
+    Auto-titles disabled — install
+    <code>tinyllama:1.1b-chat-v1-fp16</code> in Ollama to enable.
+  </span>
+  <button type="button" class="title-warning__dismiss"
+          aria-label="Dismiss"
+          onclick="this.parentElement.remove()">
+    <span class="material-symbols-outlined">close</span>
+  </button>
+</div>

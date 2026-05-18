@@ -28,14 +28,19 @@
    `|default(none)` guard to avoid a Jinja `UndefinedError`.
 
    `oob_position` is set when the row is rendered as part of a piggy-
-   back response that should swap the row into the sidebar (e.g.
-   POST /chats prepends the new row OOB). Use the explicit
-   `<swap-style>:<selector>` form because HTMX's bare `hx-swap-oob`
-   values only target by id; `afterbegin` requires us to name
-   `#chats-list` as the target. #}
+   back response that should INSERT into the sidebar (e.g. POST /chats
+   prepends the new row OOB). Use the explicit `<swap-style>:<selector>`
+   form because HTMX's bare `hx-swap-oob` values only target by id;
+   `afterbegin` requires us to name `#chats-list` as the target.
+
+   `oob_swap` (boolean) is set when the row should REPLACE the existing
+   sidebar row with the matching id (e.g. phase 11d's auto-titler
+   yielding the renamed row). Bare `hx-swap-oob="true"` is the right
+   value here — HTMX matches by id and swaps the element in place. #}
 <li id="chat-{{ chat.id }}" class="chat-item" data-chat-id="{{ chat.id }}"
     {%- if chat.id == active_chat_id|default(none) %} aria-current="page"{% endif %}
-    {%- if oob_position is defined and oob_position %} hx-swap-oob="{{ oob_position }}"{% endif %}>
+    {%- if oob_position is defined and oob_position %} hx-swap-oob="{{ oob_position }}"{% endif %}
+    {%- if oob_swap is defined and oob_swap %} hx-swap-oob="true"{% endif %}>
   <a href="/chats/{{ chat.id }}"
      hx-get="/chats/{{ chat.id }}"
      hx-target="#main"

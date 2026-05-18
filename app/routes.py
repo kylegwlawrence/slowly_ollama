@@ -632,3 +632,90 @@ async def _stream_assistant_reply(
         swap_target=f"#assistant-stream-{conversation_id}",
     )
     yield _sse(final_html, event="done")
+
+    # Phase 11d: auto-generated title.
+    #
+    # Fires only on the "new message" path — regenerate-driven streams
+    # don't add an assistant message (they replace one), so the count-
+    # based gate would either no-op or double-fire and we'd end up
+    # arguing with the user about renames.
+    if on_complete != "append":
+        return
+    async for sse_event in _maybe_generate_title(
+        client, db, conversation_id
+    ):
+        yield sse_event
+
+
+async def _maybe_generate_title(
+    client,
+    db,
+    conversation_id: int,
+) -> AsyncIterator[str]:
+    """Fire the auto-titler after the 1st, 2nd, or 3rd assistant reply.
+
+    Runs as the tail of `_stream_assistant_reply` AFTER the `done` event
+    has been yielded — keeps the user-visible streaming latency
+    unchanged, at the cost of holding the SSE connection open for the
+    title-generation roundtrip (typically a couple seconds against
+    tinyllama). Acceptable for a single-user local app; revisit if
+    we ever multiplex SSE connections.
+
+    Yields zero or one SSE event:
+    - ``title``: an OOB sidebar-row swap with the new name.
+    - ``title-warning``: a one-time banner asking the user to install
+      the title model (only when Ollama returns 404 for TITLE_MODEL).
+
+    Silent skips (no event yielded):
+    - The chat has been manually renamed (`name_locked`).
+    - The count is outside 1..3 (cap on how many times we refresh).
+    - Generic Ollama failures (down, malformed reply). The user
+      didn't ask for a title; we don't owe them an error.
+    - The model returns empty text after stripping.
+    """
+    conversation = queries.get_conversation(db, conversation_id)
+    if conversation.name_locked:
+        return
+
+    count = queries.count_assistant_messages(db, conversation_id)
+    if not 1 <= count <= 3:
+        return
+
+    full_history = queries.list_messages(db, conversation_id)
+    try:
+        title = await ollama.generate_title(
+            client, _build_history_payload(full_history)
+        )
+    except ollama.OllamaModelMissing:
+        # Surface the install hint exactly once per session. The banner
+        # template handles the de-dupe via sessionStorage so subsequent
+        # turns in the same session don't re-show it.
+        yield _sse(
+            templates.get_template("_title_warning.html").render(),
+            event="title-warning",
+        )
+        return
+    except (OllamaUnavailable, OllamaProtocolError):
+        # Silent — the chat keeps its current name (placeholder or
+        # last successful auto-title). User can rename manually.
+        return
+
+    if not title:
+        return
+
+    updated = queries.set_name_auto(db, conversation_id, title)
+    if updated is None:
+        # User renamed between get_conversation above and this UPDATE.
+        # The name_locked check inside set_name_auto kept us from
+        # overwriting their choice.
+        return
+
+    # Render the sidebar row WITH hx-swap-oob="true" baked into the
+    # root <li>. The id="chat-{id}" already matches the live row, so
+    # HTMX swaps in place via the OOB pass.
+    row_html = templates.get_template("_chat_item.html").render(
+        chat=updated,
+        active_chat_id=updated.id,
+        oob_swap=True,
+    )
+    yield _sse(row_html, event="title")

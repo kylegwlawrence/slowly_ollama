@@ -16,6 +16,7 @@ from app.connection import open_connection
 from app.db import initialize_database
 from app.queries import (
     append_message,
+    count_assistant_messages,
     create_conversation,
     delete_conversation,
     get_conversation,
@@ -23,6 +24,7 @@ from app.queries import (
     list_messages,
     rename_conversation,
     replace_last_assistant_message,
+    set_name_auto,
 )
 
 
@@ -246,3 +248,90 @@ def test_replace_last_assistant_message_raises_when_no_assistant_yet(
 
     with pytest.raises(LookupError):
         replace_last_assistant_message(conn, c.id, "Anything")
+
+
+# ---------------------------------------------------------------------------
+# Phase 11d: name_locked + auto-title helpers
+# ---------------------------------------------------------------------------
+
+
+def test_create_conversation_starts_unlocked(
+    conn: sqlite3.Connection,
+) -> None:
+    """New chats are unlocked so the auto-titler can refresh the name."""
+    c = create_conversation(conn, "New chat", "llama3")
+    assert c.name_locked is False
+
+
+def test_rename_conversation_locks_the_name(
+    conn: sqlite3.Connection,
+) -> None:
+    """Manual rename flips name_locked to True so future auto-runs skip."""
+    c = create_conversation(conn, "New chat", "llama3")
+    assert c.name_locked is False
+
+    renamed = rename_conversation(conn, c.id, "Renamed")
+
+    assert renamed.name_locked is True
+    # And the lock persists across reads — not just the returned row.
+    assert get_conversation(conn, c.id).name_locked is True
+
+
+def test_set_name_auto_updates_unlocked_chat(
+    conn: sqlite3.Connection,
+) -> None:
+    """An unlocked chat takes the auto-generated name."""
+    c = create_conversation(conn, "New chat", "llama3")
+
+    updated = set_name_auto(conn, c.id, "Auto Title")
+
+    assert updated is not None
+    assert updated.name == "Auto Title"
+    assert updated.name_locked is False  # auto-title does NOT lock
+    assert get_conversation(conn, c.id).name == "Auto Title"
+
+
+def test_set_name_auto_respects_manual_lock(
+    conn: sqlite3.Connection,
+) -> None:
+    """After a manual rename, auto-title attempts must no-op."""
+    c = create_conversation(conn, "New chat", "llama3")
+    rename_conversation(conn, c.id, "I Chose This Name")
+
+    result = set_name_auto(conn, c.id, "Auto wants to overwrite")
+
+    # None signals "nothing changed"; the row's name should be intact.
+    assert result is None
+    assert get_conversation(conn, c.id).name == "I Chose This Name"
+
+
+def test_set_name_auto_returns_none_for_unknown_id(
+    conn: sqlite3.Connection,
+) -> None:
+    """A missing id is treated the same as a locked one — no error, no write."""
+    assert set_name_auto(conn, 999, "ignored") is None
+
+
+def test_count_assistant_messages_steps_per_reply(
+    conn: sqlite3.Connection,
+) -> None:
+    """Count rises by 1 per assistant append; user messages don't move it."""
+    c = create_conversation(conn, "New chat", "llama3")
+    assert count_assistant_messages(conn, c.id) == 0
+
+    append_message(conn, c.id, "user", "Q1")
+    assert count_assistant_messages(conn, c.id) == 0
+
+    append_message(conn, c.id, "assistant", "A1")
+    assert count_assistant_messages(conn, c.id) == 1
+
+    append_message(conn, c.id, "user", "Q2")
+    append_message(conn, c.id, "assistant", "A2")
+    assert count_assistant_messages(conn, c.id) == 2
+
+
+def test_count_assistant_messages_zero_for_unknown_id(
+    conn: sqlite3.Connection,
+) -> None:
+    """An id with no rows returns 0 cleanly — no LookupError."""
+    assert count_assistant_messages(conn, 999) == 0

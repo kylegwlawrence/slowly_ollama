@@ -1137,3 +1137,198 @@ def test_regenerate_stream_replaces_last_assistant_in_place(
     # verifying it has the assistant role + the new content covers
     # the round-trip from stream → DB → render.
     assert 'data-role="assistant"' in response.text
+
+
+# ---------------------------------------------------------------------------
+# Phase 11d: auto-title generation
+# ---------------------------------------------------------------------------
+
+
+def _stream_ndjson_once() -> bytes:
+    """Build a minimal NDJSON `/api/chat` body the SSE pipeline can consume.
+
+    A single one-token reply plus the trailing done marker — that's the
+    smallest valid Ollama response, and it lets the title flow fire
+    after the assistant message gets persisted.
+    """
+    return (
+        b'{"message":{"content":"reply"},"done":false}\n'
+        b'{"message":{"content":""},"done":true}\n'
+    )
+
+
+def test_stream_emits_title_event_after_assistant_reply(
+    make_client: ClientFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After the first assistant reply the SSE stream emits a `title`
+    event carrying the OOB-swap sidebar row with the new name."""
+    import app.routes as routes
+
+    async def fake_generate_title(client, history):
+        return "Sandwiches in Space"
+
+    monkeypatch.setattr(routes.ollama, "generate_title", fake_generate_title)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=_stream_ndjson_once())
+
+    with make_client(handler) as client:
+        chat_id = _create_chat_and_get_id(client)
+
+        response = client.get(f"/chats/{chat_id}/stream")
+
+    assert response.status_code == 200
+    text = response.text
+    assert "event: title" in text
+    # The title event payload is the rendered sidebar row with
+    # hx-swap-oob="true" so HTMX replaces #chat-{id} in place.
+    assert 'id="chat-' in text
+    assert 'hx-swap-oob="true"' in text
+    assert "Sandwiches in Space" in text
+
+
+def test_stream_skips_title_when_chat_is_locked(
+    make_client: ClientFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A manual rename locks the name; no title event fires after that."""
+    import app.routes as routes
+
+    called = {"n": 0}
+
+    async def fake_generate_title(client, history):
+        called["n"] += 1
+        return "Should Not Be Used"
+
+    monkeypatch.setattr(routes.ollama, "generate_title", fake_generate_title)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=_stream_ndjson_once())
+
+    with make_client(handler) as client:
+        chat_id = _create_chat_and_get_id(client)
+        # User renames immediately, locking the chat.
+        client.patch(f"/chats/{chat_id}", data={"name": "I Chose This"})
+
+        response = client.get(f"/chats/{chat_id}/stream")
+
+    text = response.text
+    assert "event: title" not in text
+    # The lock check short-circuits BEFORE we call generate_title.
+    assert called["n"] == 0
+
+
+def test_stream_stops_title_after_third_assistant_reply(
+    make_client: ClientFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The auto-titler refreshes through the 3rd reply, then stops.
+
+    Drive four full message/stream rounds and count title calls. The
+    first three must each trigger generate_title; the fourth must not.
+    """
+    import app.routes as routes
+
+    calls = []
+
+    async def fake_generate_title(client, history):
+        calls.append(len(history))
+        return f"Title {len(calls)}"
+
+    monkeypatch.setattr(routes.ollama, "generate_title", fake_generate_title)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=_stream_ndjson_once())
+
+    with make_client(handler) as client:
+        chat_id = _create_chat_and_get_id(client)
+        # First round: the create flow saved the user message already.
+        # Stream the assistant reply (count → 1, title fires).
+        client.get(f"/chats/{chat_id}/stream")
+
+        # Rounds 2 and 3: send + stream. Title fires each time
+        # (count → 2 then 3).
+        for _ in range(2):
+            client.post(
+                f"/chats/{chat_id}/messages", data={"content": "ping"}
+            )
+            client.get(f"/chats/{chat_id}/stream")
+
+        assert len(calls) == 3, (
+            f"expected title called 3 times after replies 1-3,"
+            f" got {len(calls)}"
+        )
+
+        # Round 4: count → 4, title MUST NOT fire.
+        client.post(
+            f"/chats/{chat_id}/messages", data={"content": "ping4"}
+        )
+        last = client.get(f"/chats/{chat_id}/stream")
+
+    assert len(calls) == 3
+    assert "event: title" not in last.text
+
+
+def test_stream_emits_title_warning_when_model_missing(
+    make_client: ClientFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the title model isn't installed, the stream emits a one-time
+    `title-warning` event carrying the install-this-model banner."""
+    import app.routes as routes
+    from app.ollama import OllamaModelMissing
+
+    async def fake_generate_title(client, history):
+        raise OllamaModelMissing("tinyllama:1.1b-chat-v1-fp16")
+
+    monkeypatch.setattr(routes.ollama, "generate_title", fake_generate_title)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=_stream_ndjson_once())
+
+    with make_client(handler) as client:
+        chat_id = _create_chat_and_get_id(client)
+        response = client.get(f"/chats/{chat_id}/stream")
+
+    text = response.text
+    assert "event: title-warning" in text
+    # The banner fragment carries hx-swap-oob so HTMX targets
+    # #title-warning in the sidebar instead of dumping into the
+    # assistant placeholder.
+    assert 'id="title-warning"' in text
+    assert 'hx-swap-oob="true"' in text
+    assert "tinyllama:1.1b-chat-v1-fp16" in text
+
+
+def test_regenerate_stream_does_not_emit_title(
+    make_client: ClientFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regenerate replaces an assistant message — it must NOT trigger
+    a title refresh (the count would be misleading, and the user
+    expects regeneration to leave metadata alone)."""
+    import app.routes as routes
+
+    called = {"n": 0}
+
+    async def fake_generate_title(client, history):
+        called["n"] += 1
+        return "Should not be set by regenerate"
+
+    monkeypatch.setattr(routes.ollama, "generate_title", fake_generate_title)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=_stream_ndjson_once())
+
+    with make_client(handler) as client:
+        chat_id = _create_chat_and_get_id(client)
+        # Drive one stream so an assistant message exists (title WILL
+        # fire here — that's the new-message path).
+        client.get(f"/chats/{chat_id}/stream")
+        baseline = called["n"]
+
+        # Now regenerate. The replace path must NOT call generate_title.
+        client.post(f"/chats/{chat_id}/regenerate")
+        regen_response = client.get(
+            f"/chats/{chat_id}/regenerate-stream"
+        )
+
+    assert regen_response.status_code == 200
+    assert "event: title" not in regen_response.text
+    assert called["n"] == baseline, "generate_title fired on regenerate"

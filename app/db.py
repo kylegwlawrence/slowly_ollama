@@ -30,11 +30,15 @@ from app.config import db_path
 #   primary read pattern, "give me this conversation's messages in order."
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS conversations (
-    id         INTEGER PRIMARY KEY,
-    name       TEXT NOT NULL,
-    model      TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    id          INTEGER PRIMARY KEY,
+    name        TEXT NOT NULL,
+    model       TEXT NOT NULL,
+    -- Phase 11d: when 1, the auto-titler must leave the name alone.
+    -- Set to 1 by `rename_conversation` so a manual rename always wins
+    -- over a subsequent automated title refresh.
+    name_locked INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -49,6 +53,28 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_messages_conversation_created
 ON messages (conversation_id, created_at);
 """
+
+
+def _ensure_name_locked_column(conn: sqlite3.Connection) -> None:
+    """Backfill the `name_locked` column on databases that pre-date 11d.
+
+    `CREATE TABLE IF NOT EXISTS` is a no-op when the table exists, even
+    with a different schema, so adding a column to the SQL above
+    doesn't reach existing databases. Apply the change via `ALTER TABLE
+    ADD COLUMN`, guarded by a `PRAGMA table_info` check so re-runs are
+    safe.
+
+    Args:
+        conn: Open SQLite connection.
+    """
+    columns = {row[1] for row in conn.execute(
+        "PRAGMA table_info(conversations);"
+    )}
+    if "name_locked" not in columns:
+        conn.execute(
+            "ALTER TABLE conversations"
+            " ADD COLUMN name_locked INTEGER NOT NULL DEFAULT 0;"
+        )
 
 
 def initialize_database(path: Path | None = None) -> Path:
@@ -83,5 +109,7 @@ def initialize_database(path: Path | None = None) -> Path:
         # executescript runs multiple `;`-separated statements; it issues an
         # implicit COMMIT first so DDL applies cleanly.
         conn.executescript(_SCHEMA_SQL)
+        # One-shot migration for databases created before phase 11d.
+        _ensure_name_locked_column(conn)
 
     return target

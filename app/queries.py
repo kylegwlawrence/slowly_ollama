@@ -29,6 +29,9 @@ class Conversation:
         id: Auto-assigned primary key.
         name: Human-readable label shown in the sidebar.
         model: Ollama model identifier (e.g. "llama3:latest").
+        name_locked: When True, the auto-titler must leave `name` alone.
+            Flipped to True by `rename_conversation` so a manual rename
+            always beats a later automated title refresh.
         created_at: When the row was first inserted (UTC).
         updated_at: When the row was last touched — bumped by rename, by
             appending a message, or by replacing the last assistant message.
@@ -38,6 +41,7 @@ class Conversation:
     id: int
     name: str
     model: str
+    name_locked: bool
     created_at: datetime
     updated_at: datetime
 
@@ -77,12 +81,15 @@ def _row_to_conversation(row: sqlite3.Row) -> Conversation:
     """Map a `conversations` row to the `Conversation` dataclass.
 
     Parses the stored ISO 8601 timestamps into `datetime` so the rest of the
-    app doesn't deal in raw strings.
+    app doesn't deal in raw strings. `name_locked` is stored as INTEGER in
+    SQLite (0 or 1); `bool()` widens it to the Python type the dataclass
+    declares.
     """
     return Conversation(
         id=row["id"],
         name=row["name"],
         model=row["model"],
+        name_locked=bool(row["name_locked"]),
         created_at=datetime.fromisoformat(row["created_at"]),
         updated_at=datetime.fromisoformat(row["updated_at"]),
     )
@@ -121,11 +128,15 @@ def create_conversation(
     now = _now_iso()
     with conn:
         # RETURNING (SQLite 3.35+) avoids a follow-up SELECT to pick up the
-        # auto-assigned id and the timestamps we just wrote.
+        # auto-assigned id and the timestamps we just wrote. New rows always
+        # start unlocked (name_locked = 0) — phase 11d's auto-titler is
+        # free to refresh the placeholder until the user manually renames.
         row = conn.execute(
-            "INSERT INTO conversations (name, model, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?)"
-            " RETURNING id, name, model, created_at, updated_at;",
+            "INSERT INTO conversations"
+            " (name, model, name_locked, created_at, updated_at)"
+            " VALUES (?, ?, 0, ?, ?)"
+            " RETURNING id, name, model, name_locked,"
+            "          created_at, updated_at;",
             (name, model, now, now),
         ).fetchone()
     return _row_to_conversation(row)
@@ -137,7 +148,8 @@ def get_conversation(
     """Look up a single conversation by id.
 
     Phase 6's streaming endpoint uses this to read the conversation's
-    model before calling Ollama.
+    model before calling Ollama; phase 11d's auto-titler also reads
+    `name_locked` from the returned dataclass.
 
     Args:
         conn: Open SQLite connection.
@@ -150,7 +162,7 @@ def get_conversation(
         LookupError: If no conversation exists with that id.
     """
     row = conn.execute(
-        "SELECT id, name, model, created_at, updated_at"
+        "SELECT id, name, model, name_locked, created_at, updated_at"
         " FROM conversations WHERE id = ?;",
         (conversation_id,),
     ).fetchone()
@@ -170,7 +182,7 @@ def list_conversations(conn: sqlite3.Connection) -> list[Conversation]:
         this order so the chat the user just touched is on top.
     """
     rows = conn.execute(
-        "SELECT id, name, model, created_at, updated_at"
+        "SELECT id, name, model, name_locked, created_at, updated_at"
         " FROM conversations"
         " ORDER BY updated_at DESC, id DESC;"
     ).fetchall()
@@ -180,7 +192,13 @@ def list_conversations(conn: sqlite3.Connection) -> list[Conversation]:
 def rename_conversation(
     conn: sqlite3.Connection, conversation_id: int, new_name: str
 ) -> Conversation:
-    """Change a conversation's name; bumps its `updated_at`.
+    """Change a conversation's name; locks it against future auto-rename.
+
+    Bumps `updated_at` and flips `name_locked` to 1 in the same write so
+    the auto-titler's subsequent runs see the lock and skip. The
+    business rule: a deliberate human action always wins over the next
+    automated refresh — even if the model was about to produce a great
+    title.
 
     Args:
         conn: Open SQLite connection.
@@ -188,7 +206,7 @@ def rename_conversation(
         new_name: Replacement name.
 
     Returns:
-        The updated Conversation.
+        The updated Conversation, with `name_locked=True`.
 
     Raises:
         LookupError: If no conversation exists with that id.
@@ -196,14 +214,51 @@ def rename_conversation(
     now = _now_iso()
     with conn:
         row = conn.execute(
-            "UPDATE conversations SET name = ?, updated_at = ?"
+            "UPDATE conversations"
+            " SET name = ?, name_locked = 1, updated_at = ?"
             " WHERE id = ?"
-            " RETURNING id, name, model, created_at, updated_at;",
+            " RETURNING id, name, model, name_locked,"
+            "          created_at, updated_at;",
             (new_name, now, conversation_id),
         ).fetchone()
     if row is None:
         raise LookupError(f"Conversation {conversation_id} not found.")
     return _row_to_conversation(row)
+
+
+def set_name_auto(
+    conn: sqlite3.Connection, conversation_id: int, new_name: str
+) -> Conversation | None:
+    """Auto-set the name iff it hasn't been manually renamed yet.
+
+    Used by phase 11d's title-generation flow. The `WHERE name_locked = 0`
+    clause is the race-condition guard: if the user clicks Rename between
+    the title request firing and this UPDATE running, the row's
+    `name_locked` is already 1 and the UPDATE matches zero rows. Returning
+    None lets the caller skip the OOB sidebar swap entirely so the
+    just-set manual name stays put.
+
+    Args:
+        conn: Open SQLite connection.
+        conversation_id: Id of the conversation whose name to refresh.
+        new_name: Model-generated title.
+
+    Returns:
+        The updated Conversation if the write landed; None if the row
+        was locked or the id didn't exist (both treated the same — the
+        caller has nothing to do in either case).
+    """
+    now = _now_iso()
+    with conn:
+        row = conn.execute(
+            "UPDATE conversations"
+            " SET name = ?, updated_at = ?"
+            " WHERE id = ? AND name_locked = 0"
+            " RETURNING id, name, model, name_locked,"
+            "          created_at, updated_at;",
+            (new_name, now, conversation_id),
+        ).fetchone()
+    return _row_to_conversation(row) if row is not None else None
 
 
 def delete_conversation(
@@ -345,3 +400,30 @@ def replace_last_assistant_message(
             (_now_iso(), conversation_id),
         )
     return _row_to_message(row)
+
+
+def count_assistant_messages(
+    conn: sqlite3.Connection, conversation_id: int
+) -> int:
+    """Return the number of assistant messages in a conversation.
+
+    Phase 11d's auto-titler uses this to decide whether to fire: it
+    runs only when this count is 1, 2, or 3 (the first three assistant
+    responses). After the third reply the title is considered "settled"
+    and won't refresh on subsequent turns.
+
+    Args:
+        conn: Open SQLite connection.
+        conversation_id: Id of the conversation to count messages for.
+
+    Returns:
+        The count of `role = 'assistant'` rows. Returns 0 for unknown
+        conversation ids (no error — the caller's "if count not in 1..3"
+        check naturally skips).
+    """
+    row = conn.execute(
+        "SELECT COUNT(*) FROM messages"
+        " WHERE conversation_id = ? AND role = 'assistant';",
+        (conversation_id,),
+    ).fetchone()
+    return row[0]

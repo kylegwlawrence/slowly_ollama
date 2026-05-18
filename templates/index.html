@@ -28,6 +28,10 @@
       </a>
     </div>
     {% include "_chats_list.html" %}
+    {# Mount point for phase 11d's auto-title warning. Empty by
+       default; replaced via hx-swap-oob when the title model isn't
+       installed. The id MUST match the one in _title_warning.html. #}
+    <div id="title-warning"></div>
   </aside>
 
   {# `id="main"` is the HTMX swap target when the user clicks a chat
