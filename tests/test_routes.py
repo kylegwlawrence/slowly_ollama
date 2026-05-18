@@ -147,39 +147,135 @@ def test_create_chat_returns_201_with_chat_item(
     assert "data-chat-id=" in response.text
 
 
-def test_get_chat_panel_renders_messages(
+def _create_chat_and_get_id(client: TestClient, name: str = "Topic") -> int:
+    """Create a chat via the route, return its id parsed from data-chat-id.
+
+    Used by tests that need an existing conversation to act on; avoids
+    duplicating the marker-parsing dance in every test body.
+    """
+    response = client.post("/chats", data={"name": name, "model": "llama3"})
+    marker = 'data-chat-id="'
+    start = response.text.index(marker) + len(marker)
+    end = response.text.index('"', start)
+    return int(response.text[start:end])
+
+
+def test_index_renders_layout_with_empty_main(
     make_client: ClientFactory,
 ) -> None:
-    """GET /chats/{id} renders the panel including any existing messages."""
+    """GET / returns the full page with sidebar and an empty-state main."""
     with make_client(_ollama_unreachable) as client:
-        created = client.post(
-            "/chats", data={"name": "Topic", "model": "llama3"}
-        )
-        # Extract the new chat's id from the data-chat-id attribute.
-        # Quick-and-dirty regex-free parse: find the substring and
-        # read the digits.
-        marker = 'data-chat-id="'
-        start = created.text.index(marker) + len(marker)
-        end = created.text.index('"', start)
-        chat_id = int(created.text[start:end])
+        response = client.get("/")
+
+    assert response.status_code == 200
+    # Page shell from base.html.
+    assert "<!DOCTYPE html>" in response.text
+    # Sidebar layout.
+    assert 'class="sidebar"' in response.text
+    assert 'id="chats-list"' in response.text
+    # Empty state in main when no chat is loaded.
+    assert "empty-state" in response.text
+    assert 'class="chat-panel"' not in response.text
+
+
+def test_index_lists_existing_chats_in_sidebar(
+    make_client: ClientFactory,
+) -> None:
+    """GET / populates the sidebar from the DB."""
+    with make_client(_ollama_unreachable) as client:
+        client.post("/chats", data={"name": "First", "model": "llama3"})
+        client.post("/chats", data={"name": "Second", "model": "llama3"})
+
+        response = client.get("/")
+
+    assert "First" in response.text
+    assert "Second" in response.text
+
+
+def test_chat_url_direct_hit_renders_full_page_with_panel(
+    make_client: ClientFactory,
+) -> None:
+    """A direct browser hit to /chats/{id} (no HX-Request) returns the
+    full index page with the chat panel preloaded. This is the reload /
+    bookmark / back-button path — the URL alone is enough to restore
+    the same view.
+    """
+    with make_client(_ollama_unreachable) as client:
+        chat_id = _create_chat_and_get_id(client, "Topic")
 
         response = client.get(f"/chats/{chat_id}")
 
     assert response.status_code == 200
+    # It's the full index page, not just a fragment.
+    assert "<!DOCTYPE html>" in response.text
+    assert 'class="sidebar"' in response.text
+    # And the chat panel is preloaded into #main.
     assert 'class="chat-panel"' in response.text
     assert "Topic" in response.text
-    # Includes the message form so the user can send something.
-    assert "<form" in response.text
-    assert f'/chats/{chat_id}/messages' in response.text
+    # The empty-state placeholder is replaced by the chat panel.
+    assert "empty-state" not in response.text
 
 
-def test_get_chat_panel_404_for_unknown_id(
+def test_chat_url_htmx_request_returns_fragment_only(
     make_client: ClientFactory,
 ) -> None:
-    """GET on a missing chat returns 404."""
+    """GET /chats/{id} with HX-Request: true returns just the panel.
+
+    HTMX adds this header on every request it fires. The branching
+    keeps the fragment small (no <html>, no sidebar redraw) so the
+    swap into #main stays cheap.
+    """
+    with make_client(_ollama_unreachable) as client:
+        chat_id = _create_chat_and_get_id(client, "Topic")
+
+        response = client.get(
+            f"/chats/{chat_id}", headers={"HX-Request": "true"}
+        )
+
+    assert response.status_code == 200
+    # Just the fragment — no full-page wrapping.
+    assert "<!DOCTYPE html>" not in response.text
+    assert 'class="sidebar"' not in response.text
+    # But the panel is there with its content.
+    assert 'class="chat-panel"' in response.text
+    assert "Topic" in response.text
+
+
+def test_chat_url_direct_hit_404_for_unknown_id(
+    make_client: ClientFactory,
+) -> None:
+    """A direct hit on a missing chat returns 404 regardless of branch."""
     with make_client(_ollama_unreachable) as client:
         response = client.get("/chats/999")
     assert response.status_code == 404
+
+
+def test_chat_url_htmx_request_404_for_unknown_id(
+    make_client: ClientFactory,
+) -> None:
+    """The HTMX branch also returns 404 for a missing id."""
+    with make_client(_ollama_unreachable) as client:
+        response = client.get(
+            "/chats/999", headers={"HX-Request": "true"}
+        )
+    assert response.status_code == 404
+
+
+def test_chat_item_link_carries_href_and_hx_push_url(
+    make_client: ClientFactory,
+) -> None:
+    """Sidebar links must work both with and without HTMX.
+
+    The href powers normal browser navigation (and page reload). The
+    hx-push-url tells HTMX to sync the URL with the swap, so the two
+    paths converge on the same observable URL.
+    """
+    with make_client(_ollama_unreachable) as client:
+        chat_id = _create_chat_and_get_id(client, "X")
+        response = client.get("/chats")
+
+    assert f'href="/chats/{chat_id}"' in response.text
+    assert 'hx-push-url="true"' in response.text
 
 
 def test_rename_chat_returns_updated_item(

@@ -6,12 +6,17 @@ endpoints). The query layer (``app.queries``) and Ollama client
 (``app.ollama``) are unchanged from earlier phases — this module just
 swaps their results into Jinja2 templates instead of JSON.
 
-Path layout (no /api prefix — every consumer is HTMX):
+Path layout:
 
+  GET    /                             — full index page (sidebar + empty
+                                         main panel)
   GET    /models                       — option tags for the model dropdown
   GET    /chats                        — sidebar list
   POST   /chats                        — create + return one row
-  GET    /chats/{id}                   — chat panel (messages + form)
+  GET    /chats/{id}                   — chat panel: full index page on
+                                         direct hit (browser nav / reload),
+                                         just the panel fragment when HTMX
+                                         requests it (HX-Request header)
   PATCH  /chats/{id}                   — rename + return one row
   DELETE /chats/{id}                   — delete + return empty 200
   POST   /chats/{id}/messages          — save user msg, return user bubble
@@ -51,6 +56,30 @@ _TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=_TEMPLATE_DIR)
 
 router = APIRouter()
+
+
+# ---------------------------------------------------------------------------
+# Index page
+# ---------------------------------------------------------------------------
+
+
+@router.get("/", response_class=HTMLResponse)
+def index_endpoint(request: Request, db: DB) -> Response:
+    """Render the full layout — sidebar list + empty main panel.
+
+    Direct hits to ``/`` (the user opens the app) land here. The
+    sidebar is populated from the DB; the main panel shows an empty
+    state until the user clicks a chat or creates one.
+    """
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html",
+        context={
+            "chats": queries.list_conversations(db),
+            "conversation": None,
+            "messages": [],
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -147,16 +176,39 @@ def create_chat_endpoint(
 def get_chat_panel_endpoint(
     request: Request, conversation_id: int, db: DB
 ) -> Response:
-    """Render the chat panel (messages + form) for one conversation."""
+    """Return the chat panel — as a fragment for HTMX, or the full page
+    on a direct browser hit.
+
+    HTMX sets the ``HX-Request: true`` header on every request it
+    fires. We branch on that header:
+
+    - Present: return just ``_chat_panel.html``. The HTMX swap puts
+      it inside ``#main`` and ``hx-push-url`` updates the address bar.
+    - Absent: render the full ``index.html`` with the panel preloaded
+      in the main slot. This is what the browser sees on a direct
+      visit, a reload, or the back/forward buttons — so the URL
+      ``/chats/{id}`` is bookmarkable and reload-safe.
+    """
     try:
         conversation = queries.get_conversation(db, conversation_id)
     except LookupError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
     messages = queries.list_messages(db, conversation_id)
+
+    if request.headers.get("HX-Request"):
+        return templates.TemplateResponse(
+            request=request,
+            name="_chat_panel.html",
+            context={"conversation": conversation, "messages": messages},
+        )
     return templates.TemplateResponse(
         request=request,
-        name="_chat_panel.html",
-        context={"conversation": conversation, "messages": messages},
+        name="index.html",
+        context={
+            "chats": queries.list_conversations(db),
+            "conversation": conversation,
+            "messages": messages,
+        },
     )
 
 

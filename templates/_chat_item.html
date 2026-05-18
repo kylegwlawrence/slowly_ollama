@@ -1,9 +1,15 @@
-{# One sidebar row. Clicking the link swaps the chat panel into #main.
-   `id="chat-{{ chat.id }}"` lets PATCH and DELETE target this exact
-   row via `hx-target="#chat-42"`. #}
+{# One sidebar row. Two parallel navigation paths so the page works
+   with or without HTMX:
+   - With HTMX loaded: `hx-get` intercepts the click, swaps the panel
+     into #main, and `hx-push-url="true"` updates the URL to
+     `/chats/{id}` so reload restores the same view.
+   - Without HTMX: the browser follows `href` normally; the server's
+     `GET /chats/{id}` route renders the full index page with this
+     chat preloaded. Same end state, full page load instead of swap. #}
 <li id="chat-{{ chat.id }}" class="chat-item" data-chat-id="{{ chat.id }}">
-  <a href="#"
+  <a href="/chats/{{ chat.id }}"
      hx-get="/chats/{{ chat.id }}"
      hx-target="#main"
-     hx-swap="innerHTML">{{ chat.name }}</a>
+     hx-swap="innerHTML"
+     hx-push-url="true">{{ chat.name }}</a>
 </li>

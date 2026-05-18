@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+
+{# Page title includes the loaded conversation's name when there is
+   one — easier to tell tabs apart when several chats are open. #}
+{% block title %}
+  {% if conversation %}{{ conversation.name }} — {% endif %}ollama_slowly
+{% endblock %}
+
+{% block content %}
+<div class="layout">
+  <aside class="sidebar">
+    <h1>ollama_slowly</h1>
+    {% include "_chats_list.html" %}
+  </aside>
+
+  {# `id="main"` is the HTMX swap target when the user clicks a chat
+     in the sidebar. On a direct page load the panel is rendered
+     inline so reloading /chats/{id} restores the same view. #}
+  <main id="main">
+    {% if conversation %}
+      {% include "_chat_panel.html" %}
+    {% else %}
+      <p class="empty-state">Select a chat from the sidebar, or create a new one.</p>
+    {% endif %}
+  </main>
+</div>
+{% endblock %}

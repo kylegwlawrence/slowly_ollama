@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}ollama_slowly{% endblock %}</title>
+
+  {# Static assets are vendored in step 2 of Phase 7. Until then the
+     page renders unstyled and HTMX swaps fall back to full browser
+     navigation via the <a href> on each sidebar item. #}
+  {# <link rel="stylesheet" href="/static/pico.min.css"> #}
+  {# <script src="/static/htmx.min.js" defer></script> #}
+  {# <script src="/static/htmx-ext-sse.js" defer></script> #}
+</head>
+<body>
+  {% block content %}{% endblock %}
+</body>
+</html>
