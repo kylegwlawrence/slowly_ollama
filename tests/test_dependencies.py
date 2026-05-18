@@ -9,16 +9,13 @@ import importlib
 
 import pytest
 
-# Module (import) names. These differ from the distribution names in
-# requirements.txt for two of the seven packages:
-#   pydantic-settings -> pydantic_settings
-#   pytest-asyncio    -> pytest_asyncio
+# Module (import) names. These differ from the distribution name in
+# requirements.txt for `pytest-asyncio` (imports as `pytest_asyncio`).
 MODULES: list[str] = [
     "fastapi",
     "uvicorn",
     "httpx",
     "jinja2",
-    "pydantic_settings",
     "pytest",
     "pytest_asyncio",
 ]
