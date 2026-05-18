@@ -1,0 +1,7 @@
+{# `<option>` tags for the model dropdown. Renders directly into a
+   `<select>` via `hx-target="#model-select" hx-swap="innerHTML"` so
+   the dropdown stays in sync with whatever models Ollama has
+   installed. #}
+{% for model_name in models %}
+  <option value="{{ model_name }}">{{ model_name }}</option>
+{% endfor %}

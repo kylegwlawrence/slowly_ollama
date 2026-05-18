@@ -13,12 +13,15 @@ import pytest
 # requirements.txt for two packages:
 #   pytest-asyncio  -> pytest_asyncio
 #   python-dotenv   -> dotenv
+# (python-multipart imports as `python_multipart` since 0.0.13; the
+# legacy `multipart` import name is deprecated.)
 MODULES: list[str] = [
     "fastapi",
     "uvicorn",
     "httpx",
     "jinja2",
     "dotenv",
+    "python_multipart",
     "pytest",
     "pytest_asyncio",
 ]

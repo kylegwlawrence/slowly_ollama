@@ -1,0 +1,14 @@
+{# Empty assistant bubble that opens an SSE connection on insert.
+   htmx-ext-sse: `sse-connect` opens an EventSource to the URL;
+   `sse-swap="token"` routes any `event: token` payload into this
+   element; `hx-swap="beforeend"` appends each token rather than
+   replacing. The final `event: done` from the server replaces this
+   placeholder with the final, persisted assistant message. #}
+<div id="assistant-stream-{{ conversation_id }}"
+     class="message message--assistant message--streaming"
+     data-role="assistant"
+     hx-ext="sse"
+     sse-connect="{{ stream_url }}"
+     sse-swap="token,done,error"
+     hx-swap="beforeend">
+</div>

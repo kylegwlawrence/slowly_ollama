@@ -15,6 +15,10 @@ httpx==0.28.1
 # Server-side templating for the HTMX frontend.
 jinja2==3.1.6
 
+# Form parsing — required by FastAPI when endpoints accept `Form(...)`
+# parameters. HTMX sends form-encoded bodies by default.
+python-multipart==0.0.29
+
 # .env file loading. The standard, focused library for this job; no
 # transitive deps. Reads .env at the project root into os.environ at
 # app startup so the rest of the code reads via os.environ.get(...).

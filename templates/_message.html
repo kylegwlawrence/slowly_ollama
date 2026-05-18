@@ -1,0 +1,10 @@
+{# One message bubble. The `data-message-id` lets the regenerate flow
+   target the last assistant message via a CSS selector when it needs
+   to replace the bubble in place. Jinja auto-escapes `content`, so a
+   message containing `<script>` is safe. #}
+<div id="message-{{ message.id }}"
+     class="message message--{{ message.role }}"
+     data-message-id="{{ message.id }}"
+     data-role="{{ message.role }}">
+  <div class="message__content">{{ message.content }}</div>
+</div>
