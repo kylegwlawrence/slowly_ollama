@@ -8,12 +8,7 @@ opens a private connection only long enough to create the file and tables.
 import sqlite3
 from pathlib import Path
 
-# macOS convention for app-private data. Putting the file inside our own
-# subdirectory keeps it easy to find (and easy to nuke) if the user ever
-# wants to start fresh.
-DEFAULT_DB_PATH: Path = (
-    Path.home() / "Library" / "Application Support" / "ollama_slowly" / "chats.db"
-)
+from app.config import db_path
 
 # All schema lives in one string so the file reads top-to-bottom and so
 # `executescript` can apply it in a single call.
@@ -63,25 +58,24 @@ def initialize_database(path: Path | None = None) -> Path:
     NOT EXISTS` are no-ops once the objects are present.
 
     Args:
-        path: Where to put the database. Defaults to the macOS app-support
-            location. The parameter exists primarily so tests can point at a
-            tempfile; production callers should rely on the default.
+        path: Where to put the database. Defaults to the DB_PATH value from
+            .env (resolved fresh on each call). The parameter exists
+            primarily so tests can point at a tempfile.
 
     Returns:
-        The path the database was created at (the resolved default if `path`
-        was None, otherwise the given path unchanged).
+        The path the database was created at.
     """
-    db_path = path if path is not None else DEFAULT_DB_PATH
+    target = path if path is not None else db_path()
 
     # parents=True creates Application Support/ and ollama_slowly/ as needed;
     # exist_ok=True makes this a no-op after the first run.
-    db_path.parent.mkdir(parents=True, exist_ok=True)
+    target.parent.mkdir(parents=True, exist_ok=True)
 
     # sqlite3.Connection's context manager commits/rolls back on exit but does
     # NOT close the connection — close happens via CPython GC when `conn`
     # falls out of scope at function return. Acceptable for a one-shot init;
     # Phase 3 will manage a long-lived connection explicitly.
-    with sqlite3.connect(db_path) as conn:
+    with sqlite3.connect(target) as conn:
         # FK enforcement is per-connection. Setting it here documents intent
         # for this init connection; every connection Phase 3+ opens must set
         # it again, otherwise REFERENCES clauses become documentation-only.
@@ -90,4 +84,4 @@ def initialize_database(path: Path | None = None) -> Path:
         # implicit COMMIT first so DDL applies cleanly.
         conn.executescript(_SCHEMA_SQL)
 
-    return db_path
+    return target

@@ -261,26 +261,34 @@ async def test_stream_chat_raises_when_ollama_unreachable() -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_client_uses_default_when_env_unset(
+async def test_create_client_raises_when_ollama_host_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Without OLLAMA_HOST set, create_client targets Ollama's default."""
+    """No OLLAMA_HOST anywhere → KeyError at create_client call.
+
+    There is no in-code fallback by design; the setup ritual is
+    `cp .env.example .env` before first run.
+    """
     monkeypatch.delenv("OLLAMA_HOST", raising=False)
+
+    with pytest.raises(KeyError):
+        create_client()
+
+
+@pytest.mark.asyncio
+async def test_create_client_uses_ollama_host_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The OLLAMA_HOST env var sets the client's base URL.
+
+    `monkeypatch.setenv` wins over the value loaded from .env at import
+    time (python-dotenv doesn't override existing env vars), so the
+    accessor in app.config sees the patched value.
+    """
+    monkeypatch.setenv("OLLAMA_HOST", "http://example.com:9999")
 
     async with create_client() as client:
         # httpx.URL components — comparing host/port avoids fragility
         # around trailing-slash normalization in the URL string.
-        assert client.base_url.host == "localhost"
-        assert client.base_url.port == 11434
-
-
-@pytest.mark.asyncio
-async def test_create_client_honors_env_override(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """OLLAMA_HOST env var overrides the default base URL."""
-    monkeypatch.setenv("OLLAMA_HOST", "http://example.com:9999")
-
-    async with create_client() as client:
         assert client.base_url.host == "example.com"
         assert client.base_url.port == 9999

@@ -18,16 +18,12 @@ Two failure classes are surfaced so the UI can present different errors:
 """
 
 import json
-import os
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 import httpx
 
-# Ollama's default bind address. The OLLAMA_HOST env var overrides this
-# at `create_client` time; we resolve it on each call so tests that
-# monkeypatch the env are honored.
-DEFAULT_OLLAMA_HOST = "http://localhost:11434"
+from app.config import ollama_host
 
 
 class OllamaUnavailable(Exception):
@@ -73,18 +69,20 @@ class ChatChunk:
 def create_client() -> httpx.AsyncClient:
     """Build an ``httpx.AsyncClient`` targeting the local Ollama server.
 
-    Reads ``OLLAMA_HOST`` from the environment, falling back to
-    ``http://localhost:11434`` (Ollama's default). The returned client
-    is not entered as a context manager — the caller is responsible for
-    closing it (typically Phase 6's FastAPI lifespan).
+    Reads ``OLLAMA_HOST`` from ``.env`` (via ``app.config``). The
+    returned client is not entered as a context manager — the caller is
+    responsible for closing it (typically Phase 6's FastAPI lifespan).
 
     Returns:
         A freshly built ``httpx.AsyncClient`` with ``base_url`` set so
         the rest of the module can use relative paths like
         ``/api/tags``.
+
+    Raises:
+        KeyError: If ``OLLAMA_HOST`` is not set in ``.env`` or the
+            environment.
     """
-    host = os.environ.get("OLLAMA_HOST", DEFAULT_OLLAMA_HOST)
-    return httpx.AsyncClient(base_url=host)
+    return httpx.AsyncClient(base_url=ollama_host())
 
 
 async def list_models(client: httpx.AsyncClient) -> list[str]:

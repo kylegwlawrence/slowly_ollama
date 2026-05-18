@@ -9,7 +9,7 @@ their own.
 import sqlite3
 from pathlib import Path
 
-from app.db import DEFAULT_DB_PATH
+from app.config import db_path
 
 
 def open_connection(path: Path | None = None) -> sqlite3.Connection:
@@ -36,20 +36,21 @@ def open_connection(path: Path | None = None) -> sqlite3.Connection:
       single-user local app the per-call serialization is irrelevant.
 
     Args:
-        path: Where the database file lives. Defaults to
-            ``DEFAULT_DB_PATH``; tests should pass an explicit path.
+        path: Where the database file lives. Defaults to the DB_PATH value
+            from .env (resolved fresh on each call); tests should pass an
+            explicit path.
 
     Returns:
         A configured ``sqlite3.Connection``. The caller owns its
         lifecycle — typically Phase 6's FastAPI lifespan holds a single
         instance for the duration of the app and closes it on shutdown.
     """
-    db_path = path if path is not None else DEFAULT_DB_PATH
+    target = path if path is not None else db_path()
 
     # check_same_thread=False relaxes Python's sqlite3 module guard; SQLite
     # itself (in default "serialized" threading mode) remains responsible
     # for concurrent-call safety on the connection object.
-    conn = sqlite3.connect(db_path, check_same_thread=False)
+    conn = sqlite3.connect(target, check_same_thread=False)
 
     conn.execute("PRAGMA foreign_keys = ON;")
     conn.execute("PRAGMA journal_mode = WAL;")
