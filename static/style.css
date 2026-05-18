@@ -89,6 +89,13 @@ body {
   padding: var(--space-xl);
 }
 
+.empty-state__icon {
+  /* Override the default 20px from `.material-symbols-outlined` so the
+     icon is large enough to anchor the empty-state visually. */
+  font-size: 64px;
+  opacity: 0.5;
+}
+
 /* ===== Compose disclosure (<details> wrapping new-chat-form) ============= */
 
 .compose__button {

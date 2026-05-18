@@ -19,14 +19,21 @@
     {% endfor %}
   </div>
 
+  {# Auto-grow textarea: Chrome 123+ handles this natively via
+     `field-sizing: content` in style.css. The hx-on:input handler is
+     the fallback for Safari / Firefox — recalculates height to fit
+     the content. After a successful submit the form's after-request
+     also clears the inline height so the (now empty) textarea
+     collapses back to one row. #}
   <form class="message-form"
         hx-post="/chats/{{ conversation.id }}/messages"
         hx-target="#messages"
         hx-swap="beforeend"
-        hx-on::after-request="if (event.detail.successful) this.reset()">
+        hx-on::after-request="if (event.detail.successful) { this.reset(); const ta = this.querySelector('textarea'); if (ta) ta.style.height = ''; }">
     <div class="message-form__pill">
       <textarea name="content" required placeholder="Message Ollama…"
-                rows="1"></textarea>
+                rows="1"
+                hx-on:input="this.style.height = 'auto'; this.style.height = this.scrollHeight + 'px'"></textarea>
       <button type="submit" aria-label="Send">
         <span class="material-symbols-outlined">send</span>
       </button>

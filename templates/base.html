@@ -36,10 +36,12 @@
     }
 
     /* Regenerate is rendered on every assistant bubble; show it only
-       on the last-child assistant bubble that isn't currently streaming. */
+       on the last-child assistant bubble that isn't currently streaming.
+       `inline-flex` (not inline-block) so the icon + label inside the
+       button can use align-items/gap from style.css. */
     .message__regenerate { display: none; }
     .messages .message:last-child.message--assistant:not(.message--streaming) .message__regenerate {
-      display: inline-block;
+      display: inline-flex;
     }
   </style>
 </head>
