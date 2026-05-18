@@ -468,6 +468,77 @@ def test_chat_item_link_carries_href_and_hx_push_url(
     assert 'hx-push-url="true"' in response.text
 
 
+def test_chat_item_has_rename_button(
+    make_client: ClientFactory,
+) -> None:
+    """Each sidebar row has a rename button that fetches the edit
+    fragment via GET /chats/{id}/edit and swaps the row into edit mode."""
+    with make_client(_ollama_unreachable) as client:
+        chat_id = _create_chat_and_get_id(client, "Topic")
+        response = client.get("/chats")
+
+    assert "chat-item__rename" in response.text
+    assert f'hx-get="/chats/{chat_id}/edit"' in response.text
+
+
+def test_get_chat_edit_returns_edit_fragment(
+    make_client: ClientFactory,
+) -> None:
+    """GET /chats/{id}/edit returns the row in edit mode (form + input)."""
+    with make_client(_ollama_unreachable) as client:
+        chat_id = _create_chat_and_get_id(client, "Topic")
+
+        response = client.get(f"/chats/{chat_id}/edit")
+
+    assert response.status_code == 200
+    # The edit fragment carries the same id (it's an outerHTML swap
+    # target on the existing row) but a distinguishing class.
+    assert f'id="chat-{chat_id}"' in response.text
+    assert "chat-item--editing" in response.text
+    # Has the rename form with the current name pre-filled.
+    assert f'hx-patch="/chats/{chat_id}"' in response.text
+    assert 'name="name"' in response.text
+    assert 'value="Topic"' in response.text
+
+
+def test_get_chat_edit_404_for_unknown_id(
+    make_client: ClientFactory,
+) -> None:
+    """Editing a non-existent chat returns 404."""
+    with make_client(_ollama_unreachable) as client:
+        response = client.get("/chats/999/edit")
+    assert response.status_code == 404
+
+
+def test_get_chat_item_returns_display_fragment(
+    make_client: ClientFactory,
+) -> None:
+    """GET /chats/{id}/item returns the row in display mode.
+
+    Used by the Cancel button in the edit fragment to swap back
+    without saving.
+    """
+    with make_client(_ollama_unreachable) as client:
+        chat_id = _create_chat_and_get_id(client, "Topic")
+
+        response = client.get(f"/chats/{chat_id}/item")
+
+    assert response.status_code == 200
+    assert "chat-item" in response.text
+    # No edit form in the display fragment.
+    assert "chat-item--editing" not in response.text
+    assert "Topic" in response.text
+
+
+def test_get_chat_item_404_for_unknown_id(
+    make_client: ClientFactory,
+) -> None:
+    """Display fragment for a non-existent chat returns 404."""
+    with make_client(_ollama_unreachable) as client:
+        response = client.get("/chats/999/item")
+    assert response.status_code == 404
+
+
 def test_rename_chat_returns_updated_item(
     make_client: ClientFactory,
 ) -> None:

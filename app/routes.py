@@ -17,6 +17,9 @@ Path layout:
                                          direct hit (browser nav / reload),
                                          just the panel fragment when HTMX
                                          requests it (HX-Request header)
+  GET    /chats/{id}/edit              — sidebar row in edit mode (form)
+  GET    /chats/{id}/item              — sidebar row in display mode
+                                         (used by rename's Cancel button)
   PATCH  /chats/{id}                   — rename + return one row
   DELETE /chats/{id}                   — delete + return empty 200
   POST   /chats/{id}/messages          — save user msg, return user bubble
@@ -233,6 +236,50 @@ def get_chat_panel_endpoint(
             "conversation": conversation,
             "messages": messages,
         },
+    )
+
+
+@router.get("/chats/{conversation_id}/edit", response_class=HTMLResponse)
+def get_chat_edit_endpoint(
+    request: Request, conversation_id: int, db: DB
+) -> Response:
+    """Return the sidebar row in edit mode (a form with the name input).
+
+    Wired to the rename button on the display row, which swaps this
+    fragment into place (outerHTML on the <li>). On submit the form
+    PATCHes /chats/{id}, which returns the display fragment that
+    swaps back over the edit fragment. On cancel the edit fragment
+    triggers GET /chats/{id}/item below.
+    """
+    try:
+        chat = queries.get_conversation(db, conversation_id)
+    except LookupError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
+    return templates.TemplateResponse(
+        request=request,
+        name="_chat_item_edit.html",
+        context={"chat": chat},
+    )
+
+
+@router.get("/chats/{conversation_id}/item", response_class=HTMLResponse)
+def get_chat_item_endpoint(
+    request: Request, conversation_id: int, db: DB
+) -> Response:
+    """Return the sidebar row in display mode.
+
+    Exists for the rename flow's Cancel button: clicking it swaps
+    this display fragment back over the edit fragment, restoring the
+    original row without modifying anything.
+    """
+    try:
+        chat = queries.get_conversation(db, conversation_id)
+    except LookupError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
+    return templates.TemplateResponse(
+        request=request,
+        name="_chat_item.html",
+        context={"chat": chat},
     )
 
 

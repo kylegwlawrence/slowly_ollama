@@ -19,6 +19,12 @@
      hx-target="#main"
      hx-swap="innerHTML"
      hx-push-url="true">{{ chat.name }}</a>
+  <button class="chat-item__rename"
+          type="button"
+          aria-label="Rename chat"
+          hx-get="/chats/{{ chat.id }}/edit"
+          hx-target="#chat-{{ chat.id }}"
+          hx-swap="outerHTML">✎</button>
   <button class="chat-item__delete"
           type="button"
           aria-label="Delete chat"
