@@ -10,11 +10,4 @@
      and the row gets a stable `id="message-{N}"`.
    - `error`: a small error fragment, appended like a token so it
      surfaces where the user was expecting the assistant reply. #}
-<div id="assistant-stream-{{ conversation_id }}"
-     class="message message--assistant message--streaming"
-     data-role="assistant"
-     hx-ext="sse"
-     sse-connect="{{ stream_url }}"
-     sse-swap="token,done,error"
-     hx-swap="beforeend">
-</div>
+<div id="assistant-stream-{{ conversation_id }}" class="message message--assistant message--streaming" data-role="assistant" hx-ext="sse" sse-connect="{{ stream_url }}" sse-swap="token,done,error" hx-swap="beforeend"></div>

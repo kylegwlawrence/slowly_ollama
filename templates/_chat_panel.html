@@ -24,8 +24,13 @@
         hx-target="#messages"
         hx-swap="beforeend"
         hx-on::after-request="if (event.detail.successful) this.reset()">
-    <textarea name="content" required placeholder="Message..."></textarea>
-    <button type="submit">Send</button>
+    <div class="message-form__pill">
+      <textarea name="content" required placeholder="Message Ollama…"
+                rows="1"></textarea>
+      <button type="submit" aria-label="Send">
+        <span class="material-symbols-outlined">send</span>
+      </button>
+    </div>
   </form>
 </section>
 

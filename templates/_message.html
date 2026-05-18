@@ -25,6 +25,9 @@
           aria-label="Regenerate response"
           hx-post="/chats/{{ message.conversation_id }}/regenerate"
           hx-target="closest .message"
-          hx-swap="outerHTML">↻ Regenerate</button>
+          hx-swap="outerHTML">
+    <span class="material-symbols-outlined">refresh</span>
+    Regenerate
+  </button>
   {%- endif %}
 </div>
