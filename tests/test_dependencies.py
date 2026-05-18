@@ -24,6 +24,7 @@ MODULES: list[str] = [
     "python_multipart",
     "pytest",
     "pytest_asyncio",
+    "pytest_cov",
 ]
 
 
