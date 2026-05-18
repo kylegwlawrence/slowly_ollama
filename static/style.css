@@ -445,6 +445,10 @@ body {
   font-family: inherit;
   font-size: 14px;
   line-height: 1.5;
+  /* Pico's default form-element color is a muted gray that reads
+     poorly against the white pill background; override to the same
+     dark gray we use for message bubble content. */
+  color: var(--text-primary);
   background: transparent;
   field-sizing: content;
   min-height: 24px;
