@@ -1,9 +1,15 @@
-{# Empty assistant bubble that opens an SSE connection on insert.
-   htmx-ext-sse: `sse-connect` opens an EventSource to the URL;
-   `sse-swap="token"` routes any `event: token` payload into this
-   element; `hx-swap="beforeend"` appends each token rather than
-   replacing. The final `event: done` from the server replaces this
-   placeholder with the final, persisted assistant message. #}
+{# Empty assistant bubble. Opens an SSE connection on insert and
+   handles three named events (sse-swap="token,done,error"):
+
+   - `token`: each chunk's HTML-escaped text gets appended inside this
+     div (`hx-swap="beforeend"`), so the response materializes as it
+     streams.
+   - `done`: the server sends the final persisted message bubble with
+     `hx-swap-oob` set. HTMX takes that out-of-band and uses it to
+     replace this whole placeholder — the streaming class goes away
+     and the row gets a stable `id="message-{N}"`.
+   - `error`: a small error fragment, appended like a token so it
+     surfaces where the user was expecting the assistant reply. #}
 <div id="assistant-stream-{{ conversation_id }}"
      class="message message--assistant message--streaming"
      data-role="assistant"

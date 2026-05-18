@@ -1,10 +1,18 @@
 {# One message bubble. The `data-message-id` lets the regenerate flow
    target the last assistant message via a CSS selector when it needs
    to replace the bubble in place. Jinja auto-escapes `content`, so a
-   message containing `<script>` is safe. #}
+   message containing `<script>` is safe.
+
+   `swap_target` is set only when this template renders as the data
+   payload of an SSE `done` event. The hx-swap-oob attribute then
+   tells HTMX to take this element out-of-band and use it to replace
+   whatever matches the selector (the streaming placeholder div) —
+   so the placeholder disappears, replaced by the persisted message
+   row. #}
 <div id="message-{{ message.id }}"
      class="message message--{{ message.role }}"
      data-message-id="{{ message.id }}"
-     data-role="{{ message.role }}">
+     data-role="{{ message.role }}"
+     {%- if swap_target %} hx-swap-oob="outerHTML:{{ swap_target }}"{% endif %}>
   <div class="message__content">{{ message.content }}</div>
 </div>

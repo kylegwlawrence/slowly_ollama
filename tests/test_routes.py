@@ -527,9 +527,14 @@ def test_stream_endpoint_emits_token_and_done_events(
     assert "data: Hello " in text
     assert "data: world" in text
     # The stream finishes with a "done" event whose data contains the
-    # final persisted message bubble.
+    # final persisted message bubble carrying hx-swap-oob — that's
+    # what tells HTMX to replace the streaming placeholder rather
+    # than nest the final bubble inside it.
     assert "event: done" in text
     assert 'data-role="assistant"' in text
+    assert (
+        f'hx-swap-oob="outerHTML:#assistant-stream-{chat_id}"' in text
+    )
 
 
 def test_stream_endpoint_emits_error_event_when_ollama_unreachable(

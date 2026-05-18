@@ -286,12 +286,11 @@ def send_message_endpoint(
     # The browser receives them both, swaps them into #messages, and
     # the placeholder's `sse-connect` triggers the streaming GET.
     user_html = templates.get_template("_message.html").render(
-        request=request, message=user_message
+        message=user_message
     )
     placeholder_html = templates.get_template(
         "_assistant_placeholder.html"
     ).render(
-        request=request,
         conversation_id=conversation_id,
         stream_url=f"/chats/{conversation_id}/stream",
     )
@@ -353,7 +352,6 @@ def regenerate_endpoint(
     placeholder_html = templates.get_template(
         "_assistant_placeholder.html"
     ).render(
-        request=request,
         conversation_id=conversation_id,
         stream_url=f"/chats/{conversation_id}/regenerate-stream",
     )
@@ -465,10 +463,13 @@ async def _stream_assistant_reply(
             db, conversation_id, full_text
         )
 
-    # On completion, hand back the final persisted message bubble so
-    # the frontend can replace the streaming placeholder with the
-    # "real" message row (which has a stable id for regenerate).
+    # On completion, hand back the final persisted message bubble
+    # carrying `hx-swap-oob` so HTMX replaces the streaming
+    # placeholder element with this real row (rather than nesting it
+    # inside, which would leave the placeholder and its `streaming`
+    # class around forever).
     final_html = templates.get_template("_message.html").render(
-        message=message
+        message=message,
+        swap_target=f"#assistant-stream-{conversation_id}",
     )
     yield _sse(final_html, event="done")
