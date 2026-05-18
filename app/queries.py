@@ -131,6 +131,34 @@ def create_conversation(
     return _row_to_conversation(row)
 
 
+def get_conversation(
+    conn: sqlite3.Connection, conversation_id: int
+) -> Conversation:
+    """Look up a single conversation by id.
+
+    Phase 6's streaming endpoint uses this to read the conversation's
+    model before calling Ollama.
+
+    Args:
+        conn: Open SQLite connection.
+        conversation_id: Id to look up.
+
+    Returns:
+        The matching Conversation.
+
+    Raises:
+        LookupError: If no conversation exists with that id.
+    """
+    row = conn.execute(
+        "SELECT id, name, model, created_at, updated_at"
+        " FROM conversations WHERE id = ?;",
+        (conversation_id,),
+    ).fetchone()
+    if row is None:
+        raise LookupError(f"Conversation {conversation_id} not found.")
+    return _row_to_conversation(row)
+
+
 def list_conversations(conn: sqlite3.Connection) -> list[Conversation]:
     """Return every conversation, most-recently-updated first.
 

@@ -18,6 +18,7 @@ from app.queries import (
     append_message,
     create_conversation,
     delete_conversation,
+    get_conversation,
     list_conversations,
     list_messages,
     rename_conversation,
@@ -60,6 +61,25 @@ def test_create_conversation_returns_populated_row(
     # marker somewhere in the read path).
     assert c.created_at.tzinfo is not None
     assert c.updated_at == c.created_at
+
+
+def test_get_conversation_returns_the_row(conn: sqlite3.Connection) -> None:
+    """get_conversation returns the Conversation for a known id."""
+    c = create_conversation(conn, "X", "llama3")
+
+    fetched = get_conversation(conn, c.id)
+
+    assert fetched.id == c.id
+    assert fetched.name == "X"
+    assert fetched.model == "llama3"
+
+
+def test_get_conversation_raises_for_unknown_id(
+    conn: sqlite3.Connection,
+) -> None:
+    """get_conversation raises LookupError when no row matches."""
+    with pytest.raises(LookupError):
+        get_conversation(conn, 999)
 
 
 def test_list_conversations_orders_most_recently_updated_first(
