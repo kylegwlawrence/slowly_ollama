@@ -17,6 +17,18 @@
     {% for message in messages %}
       {% include "_message.html" %}
     {% endfor %}
+    {# `pending_stream_url` is set ONLY when the panel renders as the
+       response to POST /chats — the user has just sent the first
+       message and we need an assistant placeholder waiting for
+       streaming tokens. Rendering it inline (rather than via an OOB
+       swap into `#messages`) sidesteps an ordering race: at OOB-
+       processing time `#main` has just been replaced, and HTMX may
+       not see the freshly-injected `#messages` reliably. #}
+    {% if pending_stream_url is defined and pending_stream_url %}
+      {% set conversation_id = conversation.id %}
+      {% set stream_url = pending_stream_url %}
+      {% include "_assistant_placeholder.html" %}
+    {% endif %}
   </div>
 
   {# Auto-grow textarea: Chrome 123+ handles this natively via

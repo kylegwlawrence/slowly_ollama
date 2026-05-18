@@ -9,22 +9,37 @@
 {% block content %}
 <div class="layout">
   <aside class="sidebar">
-    <h1>ollama_slowly</h1>
-    {% include "_new_chat_form.html" %}
+    {# Sidebar header: app name on the left, "+ New chat" affordance
+       on the right. The link `hx-get`s the composer fragment so it
+       replaces only `#main` (no full page reload, no sidebar flash)
+       and pushes the URL back to `/` so reload restores the empty
+       state. #}
+    <div class="sidebar__header">
+      <h1>ollama_slowly</h1>
+      <a class="sidebar__new-chat"
+         href="/"
+         hx-get="/new"
+         hx-target="#main"
+         hx-swap="innerHTML"
+         hx-push-url="/"
+         aria-label="New chat">
+        <span class="material-symbols-outlined">add</span>
+        New chat
+      </a>
+    </div>
     {% include "_chats_list.html" %}
   </aside>
 
   {# `id="main"` is the HTMX swap target when the user clicks a chat
-     in the sidebar. On a direct page load the panel is rendered
-     inline so reloading /chats/{id} restores the same view. #}
+     in the sidebar OR sends the first message via the composer. On a
+     direct page load the panel is rendered inline so reloading
+     /chats/{id} restores the same view; when no chat is open the
+     composer takes over the main area. #}
   <main id="main">
     {% if conversation %}
       {% include "_chat_panel.html" %}
     {% else %}
-      <div class="empty-state">
-        <span class="material-symbols-outlined empty-state__icon">chat</span>
-        <p>Select a chat from the sidebar, or create a new one.</p>
-      </div>
+      {% include "_composer.html" %}
     {% endif %}
   </main>
 </div>

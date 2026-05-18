@@ -68,11 +68,12 @@ router = APIRouter()
 
 @router.get("/", response_class=HTMLResponse)
 def index_endpoint(request: Request, db: DB) -> Response:
-    """Render the full layout — sidebar list + empty main panel.
+    """Render the full layout — sidebar list + empty-state composer.
 
     Direct hits to ``/`` (the user opens the app) land here. The
-    sidebar is populated from the DB; the main panel shows an empty
-    state until the user clicks a chat or creates one.
+    sidebar is populated from the DB; the main panel shows the
+    centered composer (greeting + textarea + model dropdown) until
+    the user clicks a chat or sends a first message.
     """
     return templates.TemplateResponse(
         request=request,
@@ -85,6 +86,23 @@ def index_endpoint(request: Request, db: DB) -> Response:
             # sidebar template's `aria-current` check is always defined.
             "active_chat_id": None,
         },
+    )
+
+
+@router.get("/new", response_class=HTMLResponse)
+def new_chat_endpoint(request: Request) -> Response:
+    """Return just the empty-state composer fragment.
+
+    Wired to the sidebar "+ New chat" link, which `hx-get`s this URL
+    and swaps the response into ``#main``. The fragment-only response
+    keeps the swap cheap and avoids re-rendering the sidebar (which
+    would briefly lose the current active-row highlight before the
+    push-url updates).
+    """
+    return templates.TemplateResponse(
+        request=request,
+        name="_composer.html",
+        context={},
     )
 
 
@@ -195,31 +213,57 @@ def list_chats_endpoint(request: Request, db: DB) -> Response:
 def create_chat_endpoint(
     request: Request,
     db: DB,
-    name: Annotated[str, Form()],
     model: Annotated[str, Form()],
+    content: Annotated[str, Form()],
 ) -> Response:
-    """Create a new conversation; return the sidebar row AND an OOB
-    swap that loads the empty chat panel into ``#main`` so the user
-    can start typing right away. ``HX-Push-Url`` keeps the address
-    bar in sync so reload restores the same view.
+    """Create a conversation AND save the first message in one request.
 
-    Returning both fragments in one response is the HTMX-idiomatic
-    way to update two unrelated parts of the DOM at once: the main
-    response (``_chat_item.html``) is consumed by the form's
-    ``hx-target="#chats-list" hx-swap="afterbegin"``; the wrapping
-    ``<div id="main" hx-swap-oob="innerHTML">`` is processed
-    separately by HTMX's OOB-swap pass and replaces ``#main``'s
-    contents.
+    The empty-state composer is the only caller — it posts ``model``
+    and the user's first ``content``. The response is the rendered
+    chat panel (with the user's message + an assistant streaming
+    placeholder waiting inside ``#messages``), targeted at ``#main``
+    by the composer form. A second fragment carries the new sidebar
+    row OOB-prepended into ``#chats-list``. ``HX-Push-Url`` syncs the
+    address bar to the new chat's URL.
+
+    Why both in one round-trip: the composer's job is to *start a
+    conversation*, not just to create an empty shell. Splitting this
+    into "POST /chats → empty panel → manually POST first message"
+    would double-render the panel and add a perceived delay before
+    the streaming placeholder appears.
+
+    The placeholder name "New chat" is a stand-in; phase 11d will
+    auto-rename via a tiny local model after the first assistant
+    response completes.
     """
-    chat = queries.create_conversation(db, name=name, model=model)
-    item_html = templates.get_template("_chat_item.html").render(chat=chat)
+    chat = queries.create_conversation(db, name="New chat", model=model)
+    queries.append_message(db, chat.id, "user", content)
+    messages = queries.list_messages(db, chat.id)
+
+    # Panel includes the just-saved user bubble AND an inline assistant
+    # placeholder that opens the SSE stream on insert. Inlining the
+    # placeholder (via `pending_stream_url`) avoids an OOB-vs-main
+    # swap-ordering race against `#messages`, which doesn't exist in
+    # the live DOM until the main swap finishes.
     panel_html = templates.get_template("_chat_panel.html").render(
-        conversation=chat, messages=[]
+        conversation=chat,
+        messages=messages,
+        pending_stream_url=f"/chats/{chat.id}/stream",
+        active_chat_id=chat.id,
     )
-    body = (
-        f"{item_html}\n"
-        f'<div id="main" hx-swap-oob="innerHTML">{panel_html}</div>'
+
+    # New sidebar row, marked OOB with selector syntax so HTMX prepends
+    # it to the existing `#chats-list` <ul>. The bare `hx-swap-oob`
+    # values (`true`, `outerHTML`, `innerHTML`) only target an element
+    # by matching id; for `afterbegin` we need the explicit selector
+    # form `<swap-style>:<selector>` (HTMX docs §"Out of Band Swaps").
+    item_html = templates.get_template("_chat_item.html").render(
+        chat=chat,
+        active_chat_id=chat.id,
+        oob_position="afterbegin:#chats-list",
     )
+
+    body = panel_html + item_html
     response = HTMLResponse(content=body, status_code=status.HTTP_201_CREATED)
     response.headers["HX-Push-Url"] = f"/chats/{chat.id}"
     return response

@@ -87,11 +87,14 @@ body {
 }
 
 .sidebar h1 {
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 500;
   color: var(--text-primary);
   margin: 0;
-  padding: var(--space-sm) var(--space-md);
+  /* No padding — the h1 sits inside `.sidebar__header` (flex row with
+     the "+ New chat" link) and the sidebar's own 20px padding already
+     insets it from the right edge. */
+  padding: 0;
 }
 
 #main {
@@ -102,82 +105,148 @@ body {
   overflow: hidden;
 }
 
-.empty-state {
-  margin: auto;
-  color: var(--text-secondary);
-  text-align: center;
-  padding: var(--space-xl);
-}
+/* ===== Sidebar header (logo + New chat link) ============================ */
 
-.empty-state__icon {
-  /* Override the default 20px from `.material-symbols-outlined` so the
-     icon is large enough to anchor the empty-state visually. */
-  font-size: 64px;
-  opacity: 0.5;
-}
-
-/* ===== Compose disclosure (<details> wrapping new-chat-form) ============= */
-
-.compose__button {
-  /* the <summary> styled as a filled button */
-  list-style: none;
-  background: var(--accent);
-  color: var(--accent-on);
-  border-radius: var(--radius-pill);
-  padding: var(--space-md) var(--space-lg);
-  font-weight: 500;
-  font-size: 14px;
-  cursor: pointer;
+.sidebar__header {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: var(--space-sm);
-  user-select: none;
-  transition: background 0.15s ease;
+  justify-content: space-between;
+  gap: var(--space-md);
 }
 
-.compose__button::-webkit-details-marker { display: none; }
-.compose__button:hover { background: var(--accent-hover); }
-.compose[open] .compose__button { background: var(--accent-hover); }
-
-.new-chat-form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-sm);
-  padding: var(--space-md) 0;
-}
-
-.new-chat-form label {
-  display: flex;
-  flex-direction: column;
+/* Sidebar "+ New chat" link — replaces the old filled Compose button.
+   Small, low-key affordance for returning to the empty-state composer
+   from inside an existing chat. */
+.sidebar__new-chat {
+  display: inline-flex;
+  align-items: center;
   gap: var(--space-xs);
-  font-size: 12px;
   color: var(--text-secondary);
+  text-decoration: none;
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease;
 }
 
-.new-chat-form input,
-.new-chat-form select {
-  padding: var(--space-sm) var(--space-md);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  font-size: 14px;
-  background: var(--bg);
+.sidebar__new-chat:hover {
+  background: var(--surface-hover);
   color: var(--text-primary);
 }
 
-.new-chat-form button[type="submit"] {
+/* ===== Empty-state composer ============================================= */
+
+/* The composer takes over the main panel when no chat is open. The
+   greeting + pill + model toolbar is a Claude-style first-message
+   experience: type, pick a model, send. */
+.composer {
+  margin: auto;
+  width: min(720px, 90%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+}
+
+.composer__greeting {
+  font-size: 28px;
+  font-weight: 500;
+  color: var(--text-primary);
+  text-align: center;
+  margin: 0;
+}
+
+.composer__form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  /* Pico's default form { margin-bottom: 1rem } would add an extra
+     gap below the toolbar — kill it so the composer sizes to its
+     content only. */
+  margin: 0;
+}
+
+/* Pill markup mirrors `.message-form__pill` so the two inputs feel
+   identical. (Kept as a sibling rule rather than a shared class to
+   stay narrow — refactor to `.input-pill` later if a third pill
+   appears.) */
+.composer__pill {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-sm);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  padding: var(--space-sm) var(--space-sm) var(--space-sm) var(--space-lg);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.composer__pill:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.composer__pill textarea {
+  flex: 1;
+  border: none;
+  outline: none;
+  resize: none;
+  font-family: inherit;
+  font-size: var(--font-size-base);
+  line-height: 1.5;
+  color: var(--text-primary);
+  background: transparent;
+  field-sizing: content;
+  min-height: 24px;
+  max-height: 200px;
+  padding: var(--space-xs) 0;
+}
+
+.composer__pill button[type="submit"] {
   background: var(--accent);
   color: var(--accent-on);
   border: none;
-  padding: var(--space-sm) var(--space-md);
-  border-radius: var(--radius-md);
+  border-radius: 50%;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
-  font-size: 14px;
-  font-weight: 500;
-  align-self: flex-end;
+  flex-shrink: 0;
+  transition: background 0.15s ease;
 }
 
-.new-chat-form button[type="submit"]:hover { background: var(--accent-hover); }
+.composer__pill button[type="submit"]:hover { background: var(--accent-hover); }
+
+.composer__toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding-left: var(--space-md);
+}
+
+.composer__toolbar-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  /* Pico labels block-display by default which forces the select onto
+     a new line — flatten it so the toolbar reads "Model: [select]". */
+  display: inline;
+  margin: 0;
+}
+
+.composer__toolbar select {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-xs) var(--space-md);
+  background: var(--bg);
+  color: var(--text-primary);
+  font-size: 13px;
+  /* Pico's select gets a generous height + bottom margin meant for
+     full-page forms; reset to match the toolbar's compact baseline. */
+  height: auto;
+  margin: 0;
+}
 
 /* ===== Chats list ======================================================== */
 

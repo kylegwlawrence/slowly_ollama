@@ -131,56 +131,88 @@ def test_models_returns_disabled_option_on_protocol_error(
 def test_list_chats_returns_ul_with_items(
     make_client: ClientFactory,
 ) -> None:
-    """GET /chats returns a <ul> containing one <li> per conversation."""
+    """GET /chats returns a <ul> containing one <li> per conversation.
+
+    With the composer flow, chats are created with the placeholder
+    name "New chat" so we can't distinguish A vs. B by name; instead
+    we count rows and verify the most-recently-created one appears
+    first (the route sorts by updated_at DESC).
+    """
     with make_client(_ollama_unreachable) as client:
-        client.post("/chats", data={"name": "A", "model": "llama3"})
-        client.post("/chats", data={"name": "B", "model": "llama3"})
+        first_id = _create_chat_and_get_id(client, "first")
+        second_id = _create_chat_and_get_id(client, "second")
 
         response = client.get("/chats")
 
     assert response.status_code == 200
     # Wrapper present.
     assert 'id="chats-list"' in response.text
-    # Both items present, in most-recently-updated-first order.
-    assert response.text.index(">B<") < response.text.index(">A<")
+    # Both items present, second-created first (most recent → top).
+    assert (
+        response.text.index(f'data-chat-id="{second_id}"')
+        < response.text.index(f'data-chat-id="{first_id}"')
+    )
 
 
-def test_create_chat_returns_201_with_chat_item(
+def test_create_chat_returns_201_with_panel_and_oob_row(
     make_client: ClientFactory,
 ) -> None:
-    """POST /chats creates the row and returns just that <li>."""
+    """POST /chats creates a chat AND saves the first user message.
+
+    The response is composed of two fragments:
+    - The rendered chat panel (replaces #main via the composer's
+      hx-target="#main").
+    - The new sidebar row marked hx-swap-oob="afterbegin:#chats-list"
+      so HTMX prepends it to the existing list.
+
+    Both pieces must land in a single response — the composer's
+    job is to start a conversation, not to create an empty shell.
+    """
     with make_client(_ollama_unreachable) as client:
         response = client.post(
-            "/chats", data={"name": "My chat", "model": "llama3"}
+            "/chats", data={"model": "llama3", "content": "hello there"}
         )
 
     assert response.status_code == 201
-    # The returned HTML is one row, not the whole list.
-    assert "<ul" not in response.text
-    assert 'class="chat-item"' in response.text
-    assert "My chat" in response.text
-    # Includes the data-chat-id attribute so HTMX can target later
-    # rename/delete operations against this specific row.
-    assert "data-chat-id=" in response.text
+    # Main-target fragment: the chat panel with the user's first
+    # message AND an inline assistant placeholder waiting on SSE.
+    assert 'class="chat-panel"' in response.text
+    assert "hello there" in response.text
+    assert 'data-role="user"' in response.text
+    assert 'data-role="assistant"' in response.text
+    assert "sse-connect=" in response.text
+    # OOB sidebar row: marked for the chats-list with the selector
+    # form. The bare hx-swap-oob="true" wouldn't work because we
+    # need afterbegin against a parent <ul>.
+    assert 'hx-swap-oob="afterbegin:#chats-list"' in response.text
+    assert 'data-chat-id=' in response.text
+    # URL push so reload restores the new chat's view.
+    assert response.headers["HX-Push-Url"].startswith("/chats/")
 
 
-def _create_chat_and_get_id(client: TestClient, name: str = "Topic") -> int:
+def _create_chat_and_get_id(
+    client: TestClient, content: str = "first message"
+) -> int:
     """Create a chat via the route, return its id parsed from data-chat-id.
 
-    Used by tests that need an existing conversation to act on; avoids
-    duplicating the marker-parsing dance in every test body.
+    The composer always posts (model, content). Chats land in the DB
+    with the placeholder name "New chat" (phase 11d will auto-rename).
+    The data-chat-id attribute lives in the OOB sidebar row of the
+    response, so the existing marker-parsing still works.
     """
-    response = client.post("/chats", data={"name": name, "model": "llama3"})
+    response = client.post(
+        "/chats", data={"model": "llama3", "content": content}
+    )
     marker = 'data-chat-id="'
     start = response.text.index(marker) + len(marker)
     end = response.text.index('"', start)
     return int(response.text[start:end])
 
 
-def test_index_renders_layout_with_empty_main(
+def test_index_renders_layout_with_composer(
     make_client: ClientFactory,
 ) -> None:
-    """GET / returns the full page with sidebar and an empty-state main."""
+    """GET / returns the full page: sidebar + empty-state composer."""
     with make_client(_ollama_unreachable) as client:
         response = client.get("/")
 
@@ -190,36 +222,46 @@ def test_index_renders_layout_with_empty_main(
     # Sidebar layout.
     assert 'class="sidebar"' in response.text
     assert 'id="chats-list"' in response.text
-    # Empty state in main when no chat is loaded.
-    assert "empty-state" in response.text
+    # Composer takes the main area when no chat is loaded.
+    assert 'class="composer"' in response.text
     assert 'class="chat-panel"' not in response.text
+    # Sidebar "+ New chat" affordance for returning to the composer
+    # from inside an existing chat.
+    assert 'class="sidebar__new-chat"' in response.text
 
 
-def test_index_includes_new_chat_form(
+def test_index_includes_composer_form(
     make_client: ClientFactory,
 ) -> None:
-    """The index page renders the new-chat form so users can create
-    conversations from the UI (not just through curl)."""
+    """The composer posts to /chats with model + content (no name).
+
+    Phase 11b removed the standalone "Compose" disclosure + named
+    new-chat form in favour of a Claude-style empty-state composer
+    that starts a conversation in one round trip.
+    """
     with make_client(_ollama_unreachable) as client:
         response = client.get("/")
 
-    # Form posts to /chats and prepends the returned <li> into the
-    # existing chats list.
-    assert 'class="new-chat-form"' in response.text
+    assert 'class="composer__form"' in response.text
     assert 'hx-post="/chats"' in response.text
-    assert 'hx-target="#chats-list"' in response.text
-    assert 'hx-swap="afterbegin"' in response.text
-    # The two fields the POST /chats route expects via Form().
-    assert 'name="name"' in response.text
+    # The composer replaces #main with the new chat panel; the OOB
+    # sidebar row is delivered separately by the server.
+    assert 'hx-target="#main"' in response.text
+    assert 'hx-push-url="true"' in response.text
+    # The two fields POST /chats now requires via Form().
+    assert 'name="content"' in response.text
     assert 'name="model"' in response.text
+    # The old Compose disclosure is gone.
+    assert 'class="compose__button"' not in response.text
+    assert 'class="new-chat-form"' not in response.text
 
 
-def test_new_chat_form_model_dropdown_auto_loads_from_models(
+def test_composer_model_dropdown_auto_loads_from_models(
     make_client: ClientFactory,
 ) -> None:
-    """The model <select> fetches /models on page load and swaps its
-    innerHTML with the returned <option> tags. Without these
-    attributes the dropdown would be permanently empty."""
+    """The composer's model <select> fetches /models on page load and
+    swaps its innerHTML with the returned <option> tags. Without
+    these attributes the dropdown would be permanently empty."""
     with make_client(_ollama_unreachable) as client:
         response = client.get("/")
 
@@ -230,18 +272,42 @@ def test_new_chat_form_model_dropdown_auto_loads_from_models(
     assert "Loading models" in response.text
 
 
+def test_new_route_returns_composer_fragment(
+    make_client: ClientFactory,
+) -> None:
+    """GET /new returns just the composer fragment (no <html> shell).
+
+    Wired to the sidebar "+ New chat" link via hx-get so it can swap
+    into #main without re-rendering the sidebar.
+    """
+    with make_client(_ollama_unreachable) as client:
+        response = client.get("/new")
+
+    assert response.status_code == 200
+    assert "<!DOCTYPE html>" not in response.text
+    assert 'class="sidebar"' not in response.text
+    assert 'class="composer"' in response.text
+    assert 'hx-post="/chats"' in response.text
+
+
 def test_index_lists_existing_chats_in_sidebar(
     make_client: ClientFactory,
 ) -> None:
-    """GET / populates the sidebar from the DB."""
+    """GET / populates the sidebar from the DB.
+
+    The placeholder name "New chat" is used for every conversation
+    until phase 11d's auto-titler runs, so all rows render with the
+    same name until then — that's expected and we just count them.
+    """
     with make_client(_ollama_unreachable) as client:
-        client.post("/chats", data={"name": "First", "model": "llama3"})
-        client.post("/chats", data={"name": "Second", "model": "llama3"})
+        _create_chat_and_get_id(client, "first")
+        _create_chat_and_get_id(client, "second")
 
         response = client.get("/")
 
-    assert "First" in response.text
-    assert "Second" in response.text
+    # Two rows expected; both carry the placeholder name.
+    assert response.text.count('class="chat-item"') == 2
+    assert response.text.count(">New chat<") == 2
 
 
 def test_chat_url_direct_hit_renders_full_page_with_panel(
@@ -263,9 +329,13 @@ def test_chat_url_direct_hit_renders_full_page_with_panel(
     assert 'class="sidebar"' in response.text
     # And the chat panel is preloaded into #main.
     assert 'class="chat-panel"' in response.text
+    # The helper passes "Topic" as the first message content, so it
+    # should render as a user bubble inside the panel.
     assert "Topic" in response.text
-    # The empty-state placeholder is replaced by the chat panel.
-    assert "empty-state" not in response.text
+    # When viewing a chat, the empty-state composer must NOT render —
+    # otherwise both would appear stacked. (Confirms the index
+    # template's {% if conversation %} branching.)
+    assert 'class="composer"' not in response.text
 
 
 def test_base_disables_message_button_while_streaming(
@@ -519,7 +589,7 @@ def test_get_chat_edit_returns_edit_fragment(
 ) -> None:
     """GET /chats/{id}/edit returns the row in edit mode (form + input)."""
     with make_client(_ollama_unreachable) as client:
-        chat_id = _create_chat_and_get_id(client, "Topic")
+        chat_id = _create_chat_and_get_id(client)
 
         response = client.get(f"/chats/{chat_id}/edit")
 
@@ -528,10 +598,12 @@ def test_get_chat_edit_returns_edit_fragment(
     # target on the existing row) but a distinguishing class.
     assert f'id="chat-{chat_id}"' in response.text
     assert "chat-item--editing" in response.text
-    # Has the rename form with the current name pre-filled.
+    # Has the rename form with the current placeholder name pre-filled.
+    # (Phase 11d's auto-titler will replace "New chat" with a model-
+    # generated title; until that's wired the placeholder sticks.)
     assert f'hx-patch="/chats/{chat_id}"' in response.text
     assert 'name="name"' in response.text
-    assert 'value="Topic"' in response.text
+    assert 'value="New chat"' in response.text
 
 
 def test_get_chat_edit_404_for_unknown_id(
@@ -552,7 +624,7 @@ def test_get_chat_item_returns_display_fragment(
     without saving.
     """
     with make_client(_ollama_unreachable) as client:
-        chat_id = _create_chat_and_get_id(client, "Topic")
+        chat_id = _create_chat_and_get_id(client)
 
         response = client.get(f"/chats/{chat_id}/item")
 
@@ -560,7 +632,8 @@ def test_get_chat_item_returns_display_fragment(
     assert "chat-item" in response.text
     # No edit form in the display fragment.
     assert "chat-item--editing" not in response.text
-    assert "Topic" in response.text
+    # Placeholder name from the composer-driven create path.
+    assert "New chat" in response.text
 
 
 def test_get_chat_item_404_for_unknown_id(
@@ -589,20 +662,25 @@ def test_rename_round_trip_via_edit_and_patch(
     form data).
     """
     with make_client(_ollama_unreachable) as client:
-        chat_id = _create_chat_and_get_id(client, "Original")
+        chat_id = _create_chat_and_get_id(client)
 
         edit_response = client.get(f"/chats/{chat_id}/edit")
         assert edit_response.status_code == 200
         assert "chat-item--editing" in edit_response.text
-        assert 'value="Original"' in edit_response.text
+        # The composer always assigns the placeholder name "New chat";
+        # the edit form pre-fills it for the user to overwrite.
+        assert 'value="New chat"' in edit_response.text
         assert f'hx-patch="/chats/{chat_id}"' in edit_response.text
 
         patch_response = client.patch(
-            f"/chats/{chat_id}", data={"name": "Renamed"}
+            f"/chats/{chat_id}", data={"name": "Renamed Topic"}
         )
         assert patch_response.status_code == 200
-        assert "Renamed" in patch_response.text
-        assert "Original" not in patch_response.text
+        # Use bracket-anchored substrings so "Renamed" doesn't also
+        # match part of "Renamed Topic" — we want the post-rename
+        # name visible as link text and the placeholder gone.
+        assert ">Renamed Topic<" in patch_response.text
+        assert ">New chat<" not in patch_response.text
         # Came back as display fragment, not edit fragment.
         assert "chat-item--editing" not in patch_response.text
 
@@ -612,20 +690,17 @@ def test_rename_chat_returns_updated_item(
 ) -> None:
     """PATCH /chats/{id} updates the name and returns the row."""
     with make_client(_ollama_unreachable) as client:
-        created = client.post(
-            "/chats", data={"name": "Old", "model": "llama3"}
-        )
-        marker = 'data-chat-id="'
-        start = created.text.index(marker) + len(marker)
-        chat_id = int(created.text[start: created.text.index('"', start)])
+        chat_id = _create_chat_and_get_id(client)
 
         response = client.patch(
-            f"/chats/{chat_id}", data={"name": "New"}
+            f"/chats/{chat_id}", data={"name": "Renamed"}
         )
 
     assert response.status_code == 200
-    assert "New" in response.text
-    assert "Old" not in response.text
+    assert ">Renamed<" in response.text
+    # The placeholder name set by POST /chats should be gone after the
+    # rename. Anchor on >…< so we don't accidentally match other text.
+    assert ">New chat<" not in response.text
 
 
 def test_rename_chat_404_for_unknown_id(
@@ -643,7 +718,7 @@ def test_delete_chat_returns_empty_200(
     """DELETE /chats/{id} returns an empty body with status 200."""
     with make_client(_ollama_unreachable) as client:
         created = client.post(
-            "/chats", data={"name": "X", "model": "llama3"}
+            "/chats", data={"model": "llama3", "content": "hi"}
         )
         marker = 'data-chat-id="'
         start = created.text.index(marker) + len(marker)
@@ -674,7 +749,7 @@ def test_send_message_returns_user_bubble_and_placeholder(
     """
     with make_client(_ollama_unreachable) as client:
         created = client.post(
-            "/chats", data={"name": "X", "model": "llama3"}
+            "/chats", data={"model": "llama3", "content": "hi"}
         )
         marker = 'data-chat-id="'
         start = created.text.index(marker) + len(marker)
@@ -720,7 +795,7 @@ def test_stream_endpoint_emits_token_and_done_events(
 
     with make_client(handler) as client:
         created = client.post(
-            "/chats", data={"name": "X", "model": "llama3"}
+            "/chats", data={"model": "llama3", "content": "hi"}
         )
         marker = 'data-chat-id="'
         start = created.text.index(marker) + len(marker)
@@ -759,7 +834,7 @@ def test_stream_endpoint_emits_error_event_when_ollama_unreachable(
     """A mid-stream Ollama failure surfaces as SSE event: error."""
     with make_client(_ollama_unreachable) as client:
         created = client.post(
-            "/chats", data={"name": "X", "model": "llama3"}
+            "/chats", data={"model": "llama3", "content": "hi"}
         )
         marker = 'data-chat-id="'
         start = created.text.index(marker) + len(marker)
@@ -796,7 +871,7 @@ def test_stream_escapes_html_in_token_content(
 
     with make_client(handler) as client:
         created = client.post(
-            "/chats", data={"name": "X", "model": "llama3"}
+            "/chats", data={"model": "llama3", "content": "hi"}
         )
         marker = 'data-chat-id="'
         start = created.text.index(marker) + len(marker)
@@ -948,7 +1023,7 @@ def test_regenerate_returns_placeholder_for_replacement(
 
     with make_client(handler) as client:
         created = client.post(
-            "/chats", data={"name": "X", "model": "llama3"}
+            "/chats", data={"model": "llama3", "content": "hi"}
         )
         marker = 'data-chat-id="'
         start = created.text.index(marker) + len(marker)
@@ -976,7 +1051,7 @@ def test_regenerate_400_when_no_assistant_message(
     """Regenerate without an assistant message yet → 400."""
     with make_client(_ollama_unreachable) as client:
         created = client.post(
-            "/chats", data={"name": "X", "model": "llama3"}
+            "/chats", data={"model": "llama3", "content": "hi"}
         )
         marker = 'data-chat-id="'
         start = created.text.index(marker) + len(marker)
@@ -1041,7 +1116,7 @@ def test_regenerate_stream_replaces_last_assistant_in_place(
 
     with make_client(handler) as client:
         created = client.post(
-            "/chats", data={"name": "X", "model": "llama3"}
+            "/chats", data={"model": "llama3", "content": "hi"}
         )
         marker = 'data-chat-id="'
         start = created.text.index(marker) + len(marker)

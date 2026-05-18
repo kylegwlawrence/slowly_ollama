@@ -1,0 +1,49 @@
+{# Empty-state composer.
+
+   Shown by `index_endpoint` when no chat is open, and by
+   `new_chat_endpoint` (GET /new) when the user clicks the sidebar
+   "+ New chat" link from inside an existing chat.
+
+   Submitting the form creates a new conversation AND saves the first
+   user message in a single round trip (see `create_chat_endpoint` in
+   app/routes.py). The response replaces #main with the rendered chat
+   panel (which includes the user's message and an SSE placeholder for
+   the assistant's reply) and OOB-prepends the new sidebar row.
+
+   The pill markup deliberately mirrors `.message-form__pill` over in
+   `_chat_panel.html` so the two inputs feel identical — same height,
+   same focus ring, same Enter-to-send behaviour. The model select
+   sits in a toolbar below the pill (Claude-style), and auto-loads
+   options from GET /models on insert. #}
+<section class="composer">
+  <h1 class="composer__greeting">What's on your mind?</h1>
+  <form class="composer__form"
+        hx-post="/chats"
+        hx-target="#main"
+        hx-swap="innerHTML"
+        hx-push-url="true">
+    <div class="composer__pill">
+      <textarea name="content" required
+                placeholder="Message Ollama…"
+                rows="1"
+                hx-on:input="this.style.height = 'auto'; this.style.height = this.scrollHeight + 'px'"
+                hx-on:keydown="if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); this.form.requestSubmit(); }"></textarea>
+      <button type="submit" aria-label="Send">
+        <span class="material-symbols-outlined">arrow_upward</span>
+      </button>
+    </div>
+    {# Model selector lives in a toolbar below the input. The placeholder
+       option blocks submission via the `required` attribute until /models
+       responds (or until the user manually picks). #}
+    <div class="composer__toolbar">
+      <label class="composer__toolbar-label" for="composer-model">Model</label>
+      <select id="composer-model" name="model" required
+              hx-get="/models"
+              hx-trigger="load"
+              hx-target="this"
+              hx-swap="innerHTML">
+        <option value="">Loading models…</option>
+      </select>
+    </div>
+  </form>
+</section>

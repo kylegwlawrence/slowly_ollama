@@ -24,11 +24,18 @@
 {# `active_chat_id` is only set when this row is rendered as part of the
    sidebar list for a known active chat (the index/panel endpoints pass
    it through). Standalone renders — `list_chats_endpoint`,
-   `create_chat_endpoint`, `rename_chat_endpoint`, `get_chat_item_endpoint`
-   — don't, hence the `|default(none)` guard to avoid a Jinja
-   `UndefinedError`. #}
+   `rename_chat_endpoint`, `get_chat_item_endpoint` — don't, hence the
+   `|default(none)` guard to avoid a Jinja `UndefinedError`.
+
+   `oob_position` is set when the row is rendered as part of a piggy-
+   back response that should swap the row into the sidebar (e.g.
+   POST /chats prepends the new row OOB). Use the explicit
+   `<swap-style>:<selector>` form because HTMX's bare `hx-swap-oob`
+   values only target by id; `afterbegin` requires us to name
+   `#chats-list` as the target. #}
 <li id="chat-{{ chat.id }}" class="chat-item" data-chat-id="{{ chat.id }}"
-    {%- if chat.id == active_chat_id|default(none) %} aria-current="page"{% endif %}>
+    {%- if chat.id == active_chat_id|default(none) %} aria-current="page"{% endif %}
+    {%- if oob_position is defined and oob_position %} hx-swap-oob="{{ oob_position }}"{% endif %}>
   <a href="/chats/{{ chat.id }}"
      hx-get="/chats/{{ chat.id }}"
      hx-target="#main"

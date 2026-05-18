@@ -90,66 +90,68 @@ def test_full_user_journey(integration_client: TestClient) -> None:
     Asserts state at every step so a regression in any single
     request's contract surfaces as a clear failure rather than
     cascading silently through subsequent steps.
+
+    The post-11b flow: the composer (empty state) posts the model +
+    first message together; the response carries the rendered chat
+    panel (with the user bubble and an inline SSE placeholder) and
+    an OOB sidebar row in the same body.
     """
     client = integration_client
 
-    # 1. Index page renders with the empty-state.
+    # 1. Index page renders the composer (empty-state was removed
+    # in phase 11b).
     index = client.get("/")
     assert index.status_code == 200
-    assert "empty-state" in index.text
+    assert 'class="composer"' in index.text
     assert "chats-list" in index.text
 
-    # 2. Create a chat. Response is the sidebar row + OOB swap for
-    # #main + an HX-Push-Url header pointing at the new chat.
+    # 2. Create a chat AND send the first message in one POST.
+    # Response carries the rendered chat panel + an OOB sidebar row
+    # marked for afterbegin into #chats-list + the HX-Push-Url
+    # header pointing at the new chat.
     created = client.post(
-        "/chats", data={"name": "My journey", "model": "llama3"}
+        "/chats", data={"model": "llama3", "content": "hello"}
     )
     assert created.status_code == 201
     match = re.search(r'data-chat-id="(\d+)"', created.text)
     assert match is not None
     chat_id = int(match.group(1))
+    assert 'class="chat-panel"' in created.text
     assert 'class="chat-item"' in created.text
-    assert 'hx-swap-oob="innerHTML"' in created.text
+    assert 'hx-swap-oob="afterbegin:#chats-list"' in created.text
+    # The first user message is already in the panel and an
+    # assistant placeholder is waiting on SSE.
+    assert 'data-role="user"' in created.text
+    assert "hello" in created.text
+    assert f'sse-connect="/chats/{chat_id}/stream"' in created.text
     assert created.headers.get("HX-Push-Url") == f"/chats/{chat_id}"
 
-    # 3. Sidebar now shows the chat.
+    # 3. Sidebar now shows the chat (placeholder name "New chat" —
+    # phase 11d will auto-title later).
     chats = client.get("/chats")
-    assert "My journey" in chats.text
+    assert "New chat" in chats.text
     assert f'data-chat-id="{chat_id}"' in chats.text
 
     # 4. Reload-safe: a direct browser hit on /chats/{id} returns the
     # full index page with the chat preloaded.
     panel = client.get(f"/chats/{chat_id}")
     assert panel.status_code == 200
-    assert "My journey" in panel.text
+    assert "hello" in panel.text  # first user message persisted
     assert "chat-panel" in panel.text
 
-    # 5. Send a user message. Response is the user bubble + the
-    # streaming-assistant placeholder (no streaming yet — that
-    # happens on the GET below).
-    sent = client.post(
-        f"/chats/{chat_id}/messages", data={"content": "hello"}
-    )
-    assert sent.status_code == 200
-    assert 'data-role="user"' in sent.text
-    assert "hello" in sent.text
-    assert (
-        f'sse-connect="/chats/{chat_id}/stream"' in sent.text
-    )
-
-    # 6. Drive the SSE stream.
+    # 5. Drive the SSE stream for the first assistant reply.
     stream = client.get(f"/chats/{chat_id}/stream")
     assert stream.status_code == 200
     assert "event: token" in stream.text
     assert "data: First " in stream.text
     assert "event: done" in stream.text
 
-    # 7. Conversation now has both messages persisted.
+    # 6. Conversation now has both messages persisted.
     panel_after = client.get(f"/chats/{chat_id}")
     assert "hello" in panel_after.text
     assert "First reply" in panel_after.text
 
-    # 8. Regenerate the last assistant response.
+    # 7. Regenerate the last assistant response.
     regen_placeholder = client.post(f"/chats/{chat_id}/regenerate")
     assert regen_placeholder.status_code == 200
     assert (
@@ -157,28 +159,28 @@ def test_full_user_journey(integration_client: TestClient) -> None:
         in regen_placeholder.text
     )
 
-    # 9. Drive the regenerate stream.
+    # 8. Drive the regenerate stream.
     regen_stream = client.get(f"/chats/{chat_id}/regenerate-stream")
     assert regen_stream.status_code == 200
     assert "Regenerated " in regen_stream.text
 
-    # 10. The assistant message has been replaced in place — new text
+    # 9. The assistant message has been replaced in place — new text
     # present, old text gone (regenerate replaces, doesn't append).
     panel_after_regen = client.get(f"/chats/{chat_id}")
     assert "Regenerated reply" in panel_after_regen.text
     assert "First reply" not in panel_after_regen.text
 
-    # 11. Rename. PATCH returns the updated sidebar row in display
-    # mode (no editing class, new name shown).
+    # 10. Rename. PATCH returns the updated sidebar row in display
+    # mode (no editing class, new name shown, placeholder gone).
     rename = client.patch(
-        f"/chats/{chat_id}", data={"name": "Renamed"}
+        f"/chats/{chat_id}", data={"name": "Renamed Journey"}
     )
     assert rename.status_code == 200
-    assert "Renamed" in rename.text
-    assert "My journey" not in rename.text
+    assert ">Renamed Journey<" in rename.text
+    assert ">New chat<" not in rename.text
     assert "chat-item--editing" not in rename.text
 
-    # 12. Delete from the sidebar while not currently viewing this
+    # 11. Delete from the sidebar while not currently viewing this
     # chat (Referer = /). No HX-Location header in the response so
     # the user's current view stays intact.
     deleted = client.delete(
@@ -187,7 +189,7 @@ def test_full_user_journey(integration_client: TestClient) -> None:
     assert deleted.status_code == 200
     assert "HX-Location" not in deleted.headers
 
-    # 13. Sidebar is empty again.
+    # 12. Sidebar is empty again.
     chats_final = client.get("/chats")
     assert f'data-chat-id="{chat_id}"' not in chats_final.text
 
@@ -195,7 +197,7 @@ def test_full_user_journey(integration_client: TestClient) -> None:
 def test_delete_while_viewing_emits_hx_location(
     integration_client: TestClient,
 ) -> None:
-    """Mirror of the journey's step 12 but with a Referer that points
+    """Mirror of the journey's step 11 but with a Referer that points
     at the chat being deleted — the response carries HX-Location: /
     so HTMX navigates the user away from the 404'd URL.
 
@@ -206,7 +208,7 @@ def test_delete_while_viewing_emits_hx_location(
     client = integration_client
 
     created = client.post(
-        "/chats", data={"name": "DeleteMe", "model": "llama3"}
+        "/chats", data={"model": "llama3", "content": "first msg"}
     )
     chat_id = int(
         re.search(r'data-chat-id="(\d+)"', created.text).group(1)
