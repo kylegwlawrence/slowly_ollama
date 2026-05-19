@@ -10,7 +10,7 @@ Built with FastAPI + HTMX + SQLite. Conversation history persists across restart
 
 - **Python 3.13** — the virtualenv is pinned to 3.13.13
 - **Ollama** running locally (default: `http://localhost:11434`)
-- At least one model pulled in Ollama (e.g. `ollama pull llama3.2`)
+- At least one model pulled in Ollama (e.g. `ollama pull llama3.1:8b`)
 
 ---
 
@@ -26,6 +26,7 @@ source .venv/bin/activate
 ### 2. Install dependencies
 
 ```bash
+pip install --upgrade pip
 pip install -r requirements.txt
 ```
 

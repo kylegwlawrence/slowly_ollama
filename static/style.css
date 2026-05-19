@@ -51,6 +51,27 @@
   --font-size-base: 15px;
 }
 
+/* ===== Dark mode tokens =================================================== */
+
+/* Applied when <html data-theme="dark"> is set by the theme toggle JS.
+   Overrides every light-mode token defined above; all other rules stay the
+   same because they reference these tokens via var(). */
+[data-theme="dark"] {
+  --bg: #1a1a1a;
+  --surface: #202020;
+  --surface-hover: #2a2a2a;
+  --border: #333333;
+  --text-primary: #e0e0e0;
+  --text-secondary: #9e9e9e;
+  /* Sage green reads well on dark; accent-tonal becomes a very dark sage
+     panel, accent-tonal-text flips to the green itself so it's readable. */
+  --accent-tonal: #1a2e22;
+  --accent-tonal-text: #9ccaa6;
+  --danger: #f28b82;
+  --shadow-sm: 0 1px 0 rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5);
+}
+
 /* ===== Base ============================================================== */
 
 body {
@@ -669,6 +690,31 @@ body {
   margin-top: auto;
   padding-top: var(--space-md);
   border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.theme-toggle {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-secondary);
+  padding: var(--space-xs);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease, color 0.15s ease;
+  /* Pico adds margin-bottom to all form controls; zero it so the button
+     sits flush with the settings link in the flex row. */
+  margin: 0;
+  width: auto;
+}
+
+.theme-toggle:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
 }
 
 .sidebar__settings {

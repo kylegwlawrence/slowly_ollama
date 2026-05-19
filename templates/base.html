@@ -8,6 +8,26 @@
   {# Vendored locally — see static/ for the actual files. Pico classless
      gives semantic-HTML defaults; style.css layers the Google Chat
      aesthetic on top; material-symbols.css wires the icon font. #}
+  {# Synchronous (no defer) — must run before any rendering so the theme
+     attribute is set before Pico and style.css paint the page. Prevents
+     the white flash on load in dark mode. Falls back to the OS preference
+     on first visit; thereafter respects localStorage. #}
+  <script>
+    (function () {
+      var stored = localStorage.getItem('theme');
+      var theme = stored || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      document.documentElement.setAttribute('data-theme', theme);
+    })();
+
+    function toggleTheme() {
+      var html = document.documentElement;
+      var next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      html.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+      var icon = document.querySelector('.theme-toggle__icon');
+      if (icon) icon.textContent = next === 'dark' ? 'light_mode' : 'dark_mode';
+    }
+  </script>
   <link rel="stylesheet" href="/static/pico.classless.min.css">
   <link rel="stylesheet" href="/static/material-symbols.css">
   <link rel="stylesheet" href="/static/style.css">
@@ -18,6 +38,15 @@
   <script src="/static/htmx.min.js" defer></script>
   <script src="/static/htmx-ext-sse.js" defer></script>
   <script>
+    /* Sync the toggle icon to the current theme after the DOM is ready.
+       The IIFE above already set data-theme before paint; this just wires
+       the icon text so it matches. */
+    document.addEventListener('DOMContentLoaded', function() {
+      var theme = document.documentElement.getAttribute('data-theme');
+      var icon = document.querySelector('.theme-toggle__icon');
+      if (icon) icon.textContent = theme === 'dark' ? 'light_mode' : 'dark_mode';
+    });
+
     /* Update aria-current="page" on sidebar chat rows whenever the user
        navigates between chats, new chat, or settings via HTMX. Without
        this, the server only sets aria-current on full-page loads — HTMX
