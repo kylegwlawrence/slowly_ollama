@@ -171,6 +171,7 @@ This is the last phase listed in PLAN.md.
 | 8 | Frontend polish | `docs/retros/phase8-frontend-polish.md` |
 | 9 | Frontend bug fixes | `docs/retros/phase9-frontend-fixes.md` |
 | 10 | Full test suite | this file |
+| 11 | UI improvements (off-PLAN.md extension) | `docs/retros/phase11-ui-improvements.md` |
 
 App is a usable local-only Ollama chat. Possible future phases (none
 in PLAN.md):
