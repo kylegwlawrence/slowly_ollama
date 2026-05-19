@@ -32,7 +32,11 @@
      next to the add-server button (.health-icon__ok). */
   --success: #137333;
 
-  --space-xs: 4px;
+  /* Tightest spacing — used for kebab paddings, link/gap pairs, and
+     the chat-item row gutter. Drop from 4px → 2px makes the sidebar
+     and icon-button hitareas read denser without changing the
+     larger panel rhythm. */
+  --space-xs: 2px;
   --space-sm: 8px;
   /* Bumped from 12/16/24 to 14/20/28 so panels breathe more — the
      biggest contributor to the "less clunky" feel. */
@@ -42,7 +46,10 @@
 
   --radius-sm: 1px;
   --radius-md: 3px;
-  --radius-lg: 5px;
+  /* Slightly chunkier than --radius-md; used for the chat-bubble
+     corners and the input-pill so those big surfaces have a softer
+     silhouette without going pill-shaped. */
+  --radius-lg: 6px;
   --radius-pill: 9999px;
 
   /* Near-flat — relies on borders for separation rather than depth. */
@@ -237,7 +244,7 @@ body {
   gap: var(--space-xs);
   padding: 4px var(--space-sm);
   border-radius: var(--radius-md);
-  margin-bottom: 2px;
+  margin-bottom: var(--space-xs);
   transition: background 0.15s ease;
 }
 
@@ -431,7 +438,7 @@ body {
 .message {
   max-width: 75%;
   padding: var(--space-sm) var(--space-md);
-  border-radius: 6px;
+  border-radius: var(--radius-lg);
   word-wrap: break-word;
   position: relative;
 }
@@ -696,7 +703,7 @@ body {
   gap: var(--space-sm);
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   padding: var(--space-sm) var(--space-sm) var(--space-sm) var(--space-lg);
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
@@ -817,6 +824,25 @@ body {
   overflow-y: auto;
 }
 
+/* Settings page header — title + subtitle pair. The bottom border
+   creates a clear visual seam between the page heading and the
+   first content section, which matters more as additional sections
+   (system prompts, generation params) are added below. */
+.settings__header {
+  padding-bottom: var(--space-md);
+  border-bottom: 1px solid var(--border);
+}
+
+/* One settings subsection (RAG servers today; more later). Gap-based
+   layout for the section's children — title, list, form — so they
+   don't each need their own margin-bottom and the spacing stays
+   uniform when content moves around. */
+.settings__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
 .settings__title {
   font-size: 24px;
   font-weight: 500;
@@ -831,14 +857,19 @@ body {
 .settings__section-title {
   font-size: 16px;
   font-weight: 500;
-  margin: 0 0 var(--space-md);
+  /* Spacing below the title is now `.settings__section`'s gap, not
+     a per-title margin. Keeping margin: 0 here avoids stacking the
+     two and double-spacing the title from the list. */
+  margin: 0;
 }
 
 /* The list of currently-configured servers. A vertical stack of
-   `.rag-server` rows; gap-driven spacing keeps margins out of it. */
+   `.rag-server` rows; gap-driven spacing keeps margins out of it.
+   Outer spacing between the list and the form below is owned by
+   `.settings__section`'s flex gap. */
 .rag-servers {
   list-style: none;
-  margin: 0 0 var(--space-md);
+  margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
