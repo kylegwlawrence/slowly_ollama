@@ -1950,6 +1950,380 @@ def test_stream_caps_at_five_iterations(
     assert "Tool-call limit reached" in final_text
 
 
+@pytest.mark.asyncio
+async def test_stream_persists_partial_assistant_on_aclose(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The realistic disconnect path: Starlette calls `aclose()` on
+    the async generator when the HTTP client disconnects, which
+    raises `GeneratorExit` (NOT `CancelledError`) inside the
+    generator. The `try/finally` in `_stream_assistant_reply` must
+    fire on this exit so the partial chunks already streamed land in
+    the DB as the assistant row — otherwise reload shows an orphan
+    tool-card.
+
+    This is exercised by driving the async generator directly,
+    bypassing TestClient — TestClient buffers the entire response
+    and can't simulate a true mid-stream disconnect."""
+    import asyncio as _asyncio
+
+    from app import ollama as _ollama, queries
+    from app.connection import open_connection
+    from app.db import initialize_database
+    from app.routes import _stream_assistant_reply
+
+    db_path = tmp_path / "chats.db"
+    initialize_database(db_path)
+
+    # Fake stream_chat that yields two chunks then waits forever —
+    # gives us a stable point to call aclose() on the consumer.
+    async def fake_stream_chat(client_, model_, messages_):
+        yield _ollama.ChatChunk(content="partial ", done=False)
+        yield _ollama.ChatChunk(content="answer", done=False)
+        # Suspend so the consumer can aclose() us cleanly. Without
+        # this third await, the generator would return naturally and
+        # stream_completed would be set.
+        await _asyncio.sleep(60)
+
+    async def fake_maybe_tool_call(client_, model_, messages_, tools=None):
+        return ([], "")
+
+    monkeypatch.setattr("app.routes.ollama.stream_chat", fake_stream_chat)
+    monkeypatch.setattr(
+        "app.routes.ollama.maybe_tool_call", fake_maybe_tool_call
+    )
+
+    with open_connection(db_path) as db:
+        chat = queries.create_conversation(db, "aclose test", "llama3")
+        queries.append_message(db, chat.id, "user", "hi")
+
+        gen = _stream_assistant_reply(
+            client=None,
+            db=db,
+            conversation_id=chat.id,
+            model=chat.model,
+            history=queries.list_messages(db, chat.id),
+            on_complete="append",
+        )
+        # Consume the two partial tokens.
+        assert "partial " in await gen.__anext__()
+        assert "answer" in await gen.__anext__()
+        # Simulate client disconnect: aclose() raises GeneratorExit
+        # inside the generator at its current yield point.
+        await gen.aclose()
+
+        # Assistant row was persisted by the try/finally, even though
+        # we got a GeneratorExit rather than CancelledError.
+        rows = queries.list_messages(db, chat.id)
+
+    assistant_rows = [r for r in rows if r.role == "assistant"]
+    assert len(assistant_rows) == 1
+    assert assistant_rows[0].content == "partial answer"
+
+
+@pytest.mark.asyncio
+async def test_stream_persists_placeholder_when_aclosed_during_tool_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The user's actual reported scenario: the tool card has appeared
+    (so a tool_call row is in the DB) but the user reloads BEFORE the
+    streaming phase starts — i.e., cancellation lands inside
+    `await run_tool(...)`. Without the top-level try/finally, only the
+    inner streaming-phase try/finally would run and that branch is
+    never reached, so no assistant row gets written. With the outer
+    finally, the placeholder lands and the chat panel renders cleanly
+    on reload."""
+    import asyncio as _asyncio
+
+    from app import queries
+    from app.connection import open_connection
+    from app.db import initialize_database
+    from app.routes import _stream_assistant_reply
+
+    db_path = tmp_path / "chats.db"
+    initialize_database(db_path)
+
+    async def slow_run_tool(name, args):
+        # Suspend forever — gives the test a stable point to call
+        # aclose() while the tool is "running".
+        await _asyncio.sleep(60)
+        return "never returned"
+
+    async def fake_maybe_tool_call(client_, model_, messages_, tools=None):
+        return (
+            [
+                {
+                    "name": "current_time",
+                    "arguments": {"timezone": "UTC"},
+                }
+            ],
+            "",
+        )
+
+    monkeypatch.setattr("app.routes.run_tool", slow_run_tool)
+    monkeypatch.setattr(
+        "app.routes.ollama.maybe_tool_call", fake_maybe_tool_call
+    )
+
+    with open_connection(db_path) as db:
+        chat = queries.create_conversation(db, "tool-cancel test", "llama3")
+        queries.append_message(db, chat.id, "user", "what time?")
+
+        gen = _stream_assistant_reply(
+            client=None,
+            db=db,
+            conversation_id=chat.id,
+            model=chat.model,
+            history=queries.list_messages(db, chat.id),
+            on_complete="append",
+        )
+        # Consume the first event: the tool-call card OOB. After this
+        # yield, control is back inside the generator awaiting on
+        # slow_run_tool — exactly where the user's reload lands.
+        first_payload = await gen.__anext__()
+        assert "tool-card" in first_payload
+
+        # Simulate client disconnect via aclose() — GeneratorExit
+        # propagates into the generator at run_tool's await.
+        await gen.aclose()
+
+        rows = queries.list_messages(db, chat.id)
+
+    roles = [r.role for r in rows]
+    # user + tool_call (persisted before run_tool ran) + assistant placeholder.
+    # No tool_result because run_tool never returned.
+    assert "tool_call" in roles
+    assert "tool_result" not in roles
+    assistant_rows = [r for r in rows if r.role == "assistant"]
+    assert len(assistant_rows) == 1
+    assert assistant_rows[0].content == "(response interrupted)"
+
+
+def test_stream_persists_partial_assistant_on_cancellation(
+    make_client: ClientFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the SSE generator is cancelled mid-stream (e.g., user
+    reloads the page), the partial content already streamed must be
+    persisted as the assistant message — otherwise the chat panel
+    shows an orphan tool-card with nothing after it on reload."""
+    import asyncio as _asyncio
+
+    from app import ollama as _ollama
+
+    async def fake_stream_chat(client_, model_, messages_):
+        # Yield two chunks, then simulate client disconnect by
+        # raising CancelledError mid-stream.
+        yield _ollama.ChatChunk(content="partial ", done=False)
+        yield _ollama.ChatChunk(content="answer", done=False)
+        raise _asyncio.CancelledError
+
+    monkeypatch.setattr("app.routes.ollama.stream_chat", fake_stream_chat)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # Probe returns no tool calls — release straight into streaming.
+        return httpx.Response(
+            200, json={"message": {"content": "", "tool_calls": []}}
+        )
+
+    with make_client(handler) as client:
+        chat_id = _create_chat_and_get_id(client, "cancel test")
+        client.post(
+            f"/chats/{chat_id}/messages", data={"content": "ping"}
+        )
+        try:
+            client.get(f"/chats/{chat_id}/stream")
+        except _asyncio.CancelledError:
+            # The re-raise from the routes.py handler propagates up
+            # through Starlette and out of TestClient.
+            pass
+
+    import os
+    import sqlite3 as _sqlite3
+    db_path = os.environ["DB_PATH"]
+    with _sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT content FROM messages"
+            " WHERE conversation_id = ? AND role = 'assistant'"
+            " ORDER BY id DESC LIMIT 1",
+            (chat_id,),
+        ).fetchone()
+    assert row is not None, "no assistant row persisted on cancellation"
+    assert row[0] == "partial answer"
+
+
+def test_stream_persists_placeholder_when_cancelled_with_zero_chunks(
+    make_client: ClientFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancellation BEFORE any token streamed (e.g., reload while
+    Ollama is still warming up) still writes an assistant row — the
+    `(response interrupted)` placeholder — so the chat panel has a
+    bubble to show after reload."""
+    import asyncio as _asyncio
+
+    async def fake_stream_chat(client_, model_, messages_):
+        # No yields — cancellation before the first chunk arrives.
+        raise _asyncio.CancelledError
+        yield  # unreachable, makes this an async generator
+
+    monkeypatch.setattr("app.routes.ollama.stream_chat", fake_stream_chat)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"message": {"content": "", "tool_calls": []}}
+        )
+
+    with make_client(handler) as client:
+        chat_id = _create_chat_and_get_id(client, "early cancel")
+        client.post(
+            f"/chats/{chat_id}/messages", data={"content": "ping"}
+        )
+        try:
+            client.get(f"/chats/{chat_id}/stream")
+        except _asyncio.CancelledError:
+            pass
+
+    import os
+    import sqlite3 as _sqlite3
+    db_path = os.environ["DB_PATH"]
+    with _sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT content FROM messages"
+            " WHERE conversation_id = ? AND role = 'assistant'"
+            " ORDER BY id DESC LIMIT 1",
+            (chat_id,),
+        ).fetchone()
+    assert row is not None, "no assistant row persisted on early cancel"
+    assert row[0] == "(response interrupted)"
+
+
+def test_regenerate_stream_cancellation_preserves_original_when_no_chunks(
+    make_client: ClientFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On the regenerate path, a cancellation before any token
+    streamed must NOT clobber the original assistant message with the
+    placeholder — that would silently destroy the user's previous
+    response on an accidental reload. Verified by counting assistant
+    rows: still exactly one, and its content is the original."""
+    import asyncio as _asyncio
+
+    async def fake_stream_chat(client_, model_, messages_):
+        raise _asyncio.CancelledError
+        yield
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"message": {"content": "", "tool_calls": []}}
+        )
+
+    # Set up a chat with an existing assistant reply first (so
+    # regenerate has something to replace).
+    with make_client(handler) as client:
+        # First turn: real (non-cancelled) stream produces "original".
+        async def real_stream_chat(client_, model_, messages_):
+            from app import ollama as _ollama
+            yield _ollama.ChatChunk(content="original", done=False)
+            yield _ollama.ChatChunk(content="", done=True)
+
+        monkeypatch.setattr(
+            "app.routes.ollama.stream_chat", real_stream_chat
+        )
+        chat_id = _create_chat_and_get_id(client, "regen cancel test")
+        client.post(
+            f"/chats/{chat_id}/messages", data={"content": "ping"}
+        )
+        client.get(f"/chats/{chat_id}/stream")
+
+        # Now regen, but stream_chat raises CancelledError immediately.
+        monkeypatch.setattr(
+            "app.routes.ollama.stream_chat", fake_stream_chat
+        )
+        client.post(f"/chats/{chat_id}/regenerate")
+        try:
+            client.get(f"/chats/{chat_id}/regenerate-stream")
+        except _asyncio.CancelledError:
+            pass
+
+    import os
+    import sqlite3 as _sqlite3
+    db_path = os.environ["DB_PATH"]
+    with _sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT content FROM messages"
+            " WHERE conversation_id = ? AND role = 'assistant'"
+            " ORDER BY id ASC",
+            (chat_id,),
+        ).fetchall()
+    # Exactly one assistant row, still carrying the original content.
+    assert len(rows) == 1
+    assert rows[0][0] == "original"
+
+
+def test_regenerate_stream_cancellation_writes_partial_when_tokens_arrived(
+    make_client: ClientFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regen + cancellation AFTER some tokens streamed: overwrite the
+    original assistant message with the partial. The user opted into
+    regenerate, and the partial is more informative than the stale
+    original at that point."""
+    import asyncio as _asyncio
+
+    from app import ollama as _ollama
+
+    async def real_stream_chat(client_, model_, messages_):
+        yield _ollama.ChatChunk(content="original", done=False)
+        yield _ollama.ChatChunk(content="", done=True)
+
+    async def partial_then_cancel(client_, model_, messages_):
+        yield _ollama.ChatChunk(content="new partial", done=False)
+        raise _asyncio.CancelledError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"message": {"content": "", "tool_calls": []}}
+        )
+
+    with make_client(handler) as client:
+        monkeypatch.setattr(
+            "app.routes.ollama.stream_chat", real_stream_chat
+        )
+        chat_id = _create_chat_and_get_id(client, "regen partial test")
+        client.post(
+            f"/chats/{chat_id}/messages", data={"content": "ping"}
+        )
+        client.get(f"/chats/{chat_id}/stream")
+
+        # Regen: stream yields one chunk then cancels.
+        monkeypatch.setattr(
+            "app.routes.ollama.stream_chat", partial_then_cancel
+        )
+        client.post(f"/chats/{chat_id}/regenerate")
+        try:
+            client.get(f"/chats/{chat_id}/regenerate-stream")
+        except _asyncio.CancelledError:
+            pass
+
+    import os
+    import sqlite3 as _sqlite3
+    db_path = os.environ["DB_PATH"]
+    with _sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT content FROM messages"
+            " WHERE conversation_id = ? AND role = 'assistant'"
+            " ORDER BY id ASC",
+            (chat_id,),
+        ).fetchall()
+    # Still exactly one assistant row (replace, not append), but
+    # content is now the partial — the original was overwritten.
+    assert len(rows) == 1
+    assert rows[0][0] == "new partial"
+
+
 def test_build_done_card_oobs_empty_in_flight_only_emits_summary() -> None:
     """Happy path: every tool_call was paired with a tool_result before
     the loop released into streaming. The done payload's card
