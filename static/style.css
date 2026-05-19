@@ -599,6 +599,66 @@ body {
   50% { opacity: 1; }
 }
 
+/* ===== Tool-usage card (phase 12e) =======================================
+   Aggregated <details> card that sits above an assistant bubble whenever
+   the model used one or more tools for that turn. Collapsed by default;
+   chevron rotates when open. Reuses the same surface/border tokens as
+   message bubbles so it reads as part of the conversation, not a chrome
+   element.
+
+   Live ticking rows have data-elapsed-start without data-elapsed-final;
+   the inline tick driver in _chat_panel.html updates their elapsed
+   text every second until the server OOB-replaces them with a frozen
+   variant. Visual contract: a row's mm:ss text uses `tabular-nums` so
+   the digits don't shift width as they tick.                            */
+
+.tool-card {
+  align-self: flex-start;
+  max-width: 75%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: 0.9em;
+}
+
+.tool-card__summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  cursor: pointer;
+  list-style: none;
+}
+.tool-card__summary::-webkit-details-marker { display: none; }
+
+.tool-card__chevron {
+  margin-left: auto;
+  transition: transform 0.15s;
+}
+.tool-card[open] .tool-card__chevron {
+  transform: rotate(180deg);
+}
+
+.tool-card__list {
+  list-style: none;
+  margin: 0;
+  /* Left padding indents rows under the build icon in the summary. */
+  padding: 0 var(--space-md) var(--space-sm) calc(var(--space-md) + 1.5rem);
+}
+
+.tool-row {
+  display: flex;
+  gap: var(--space-sm);
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.85em;
+  color: var(--text-secondary);
+  padding: 0.15rem 0;
+}
+.tool-row__label { flex: 1; }
+.tool-row__elapsed {
+  font-variant-numeric: tabular-nums;
+}
+
 /* ===== Regenerate button =================================================
    The visibility logic (`display: none` by default, override on
    `:last-child.message--assistant:not(.message--streaming)`) MUST remain

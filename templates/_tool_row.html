@@ -1,0 +1,28 @@
+{# One row in a tool-usage card's expanded list.
+
+   Three mutually-exclusive states encoded in the `row` (a ToolRowView
+   from app/render.py):
+
+   - **live ticking** (`elapsed_start_ms` set, `elapsed_final_ms` is None):
+     the inline tick driver in _chat_panel.html updates the elapsed span
+     every second. Initial text is "0:00".
+   - **frozen** (`elapsed_final_ms` set, `elapsed_start_ms` is None):
+     final m:ss; JS skips this row. Used both for the OOB swap that
+     replaces a live row when its tool-result arrives, and for every
+     historic row.
+   - **historic-unpaired** (both None): the loop bailed before this
+     call resolved; shows "?" for elapsed.
+
+   `swap_oob` is set ONLY when this template is the body of an SSE OOB
+   fragment. Forms:
+     - "beforeend:#…-list" → append into the card's list (subsequent
+       live tool-call events).
+     - "true" / "outerHTML" → replace the row with this one (freeze on
+       tool-result, or bail-branch freeze on done). #}
+<li id="{{ row.id }}" class="tool-row"
+    {%- if row.elapsed_start_ms is not none %} data-elapsed-start="{{ row.elapsed_start_ms }}"{% endif %}
+    {%- if row.elapsed_final_ms is not none %} data-elapsed-final="{{ row.elapsed_final_ms }}"{% endif %}
+    {%- if swap_oob %} hx-swap-oob="{{ swap_oob }}"{% endif %}>
+  <span class="tool-row__label">{{ row.label }}</span>
+  <span class="tool-row__elapsed">{{ row.elapsed_display }}</span>
+</li>

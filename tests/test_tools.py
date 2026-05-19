@@ -367,3 +367,49 @@ def test_refresh_query_rag_source_description_injects_names(
     ]
     assert "arxiv" in desc
     assert "wikipedia" in desc
+
+
+# ---------------------------------------------------------------------------
+# format_tool_invocation (phase 12e — tool-card row labels)
+# ---------------------------------------------------------------------------
+
+
+def test_format_tool_invocation_query_rag_uses_search_shape() -> None:
+    """query_rag is the dominant search-shaped tool, so it gets a
+    purpose-built label that reads naturally next to a stopwatch."""
+    from app.tools import format_tool_invocation
+
+    label = format_tool_invocation(
+        "query_rag",
+        {"source": "arxiv", "query": "enhanced gas transfer"},
+    )
+    assert label == 'searching arxiv: "enhanced gas transfer"'
+
+
+def test_format_tool_invocation_query_rag_missing_args_uses_placeholders() -> None:
+    """Defensive: if the model emits a partial query_rag call, the row
+    still renders rather than KeyError-ing the whole stream."""
+    from app.tools import format_tool_invocation
+
+    label = format_tool_invocation("query_rag", {})
+    # Source falls back to "?"; empty query renders as empty quotes.
+    assert label == 'searching ?: ""'
+
+
+def test_format_tool_invocation_generic_fallback_shows_args() -> None:
+    """Non-query_rag tools (current_time + any future ones) use the
+    generic `calling name(args)` shape."""
+    from app.tools import format_tool_invocation
+
+    label = format_tool_invocation("current_time", {"timezone": "UTC"})
+    assert label.startswith("calling current_time(")
+    assert "timezone=" in label
+    # repr-style quoting keeps strings visually delimited from keys.
+    assert "'UTC'" in label
+
+
+def test_format_tool_invocation_generic_no_args() -> None:
+    """A no-arg tool produces `calling name()` — no trailing comma."""
+    from app.tools import format_tool_invocation
+
+    assert format_tool_invocation("ping", {}) == "calling ping()"

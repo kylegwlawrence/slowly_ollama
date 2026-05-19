@@ -246,8 +246,15 @@ has been violated and we learned the cost, the cost is named.
   was dropped in 12a; `typing.Literal["user","assistant","tool_call","tool_result"]`
   in `app/queries.py` is the validator. Add new roles there first.
 - **Tool calls and results persist as their own rows** in the
-  `messages` table. The chat panel renders them as collapsed
-  `<details>` cards between user/assistant bubbles. Reload-safe.
+  `messages` table. At render time `app.render.group_messages_for_render`
+  folds each contiguous run of `tool_call`/`tool_result` rows into one
+  `ToolBatchBlock`, which the chat panel renders as a single
+  aggregated `<details>` card above the assistant message that used
+  the tools — collapsed by default, expand for the per-row
+  `searching <source>: "<query>"` list and live mm:ss timer.
+  Reload-safe: live and historic paths share `_tool_card_shell.html`
+  and the same `summary_text(count, done)` helper, so verb/plural/
+  ellipsis stay coordinated across both.
 - **`is_read_only` flag on every tool.** Phase 12 tools are all
   read-only (auto-execute). The flag is forward-looking — when
   write/exec tools land, the streaming loop will surface a

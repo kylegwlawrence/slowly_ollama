@@ -11,11 +11,28 @@
   {# `hx-on::after-swap` keeps the bottom of the conversation in view
      whenever HTMX swaps content anywhere inside `#messages` — events
      bubble, so token swaps into the streaming placeholder also
-     trigger this. `this` is `#messages` itself. #}
+     trigger this. `this` is `#messages` itself.
+
+     Iteration source is `blocks` (from app.render.group_messages_for_render).
+     Consecutive tool_call / tool_result rows fold into one
+     ToolBatchBlock so they render as a single aggregated card
+     above the assistant message that used them. Standalone
+     user/assistant messages render via _message.html as before. #}
   <div id="messages" class="messages"
        hx-on::after-swap="this.scrollTop = this.scrollHeight">
-    {% for message in messages %}
-      {% include "_message.html" %}
+    {% for block in blocks %}
+      {% if block.kind == "tool_batch" %}
+        {% set card_id = block.card_id %}
+        {% set list_id = block.list_id %}
+        {% set summary_id = block.summary_id %}
+        {% set summary_text = block.summary %}
+        {% set rows = block.rows %}
+        {% set swap_oob = none %}
+        {% include "_tool_card_shell.html" %}
+      {% else %}
+        {% set message = block.message %}
+        {% include "_message.html" %}
+      {% endif %}
     {% endfor %}
     {# `pending_stream_url` is set ONLY when the panel renders as the
        response to POST /chats — the user has just sent the first
@@ -63,5 +80,40 @@
   (function () {
     const m = document.getElementById("messages");
     if (m) m.scrollTop = m.scrollHeight;
+  })();
+</script>
+
+{# Phase 12e tool-card tick driver. Runs ONE setInterval that updates
+   every live-ticking row's elapsed text every second. A row is
+   "live ticking" when it has data-elapsed-start but no
+   data-elapsed-final — the moment the server OOB-replaces a row with
+   a frozen variant (data-elapsed-final set), the selector stops
+   matching it and the timer freezes.
+
+   The __toolTimerStarted guard is critical: this script runs every
+   time the chat panel is swapped in (each chat-switch click), so
+   without the guard we'd accumulate one setInterval per click.
+
+   Inline rather than a separate static/.js per CONVENTIONS.md:104-108
+   ("don't graduate to a separate .js file until there's a second
+   use case"). #}
+<script>
+  (function () {
+    if (window.__toolTimerStarted) return;
+    window.__toolTimerStarted = true;
+    function fmt(ms) {
+      const s = Math.floor(ms / 1000);
+      return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+    }
+    setInterval(() => {
+      const now = Date.now();
+      document.querySelectorAll(
+        '.tool-row[data-elapsed-start]:not([data-elapsed-final])'
+      ).forEach(row => {
+        const elapsed = now - Number(row.dataset.elapsedStart);
+        const el = row.querySelector('.tool-row__elapsed');
+        if (el) el.textContent = fmt(elapsed);
+      });
+    }, 1000);
   })();
 </script>
