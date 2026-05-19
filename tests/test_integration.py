@@ -49,16 +49,28 @@ def integration_client(
     monkeypatch.setenv("DB_PATH", str(tmp_path / "chats.db"))
     monkeypatch.setenv("OLLAMA_HOST", "http://test")
 
-    chat_call_count = [0]
+    # Phase 12d: a single assistant turn now triggers TWO /api/chat
+    # POSTs — first a non-streaming probe for tool intent, then the
+    # streaming reply. We only vary the streaming reply across the
+    # journey's "first" vs. "regenerate" turn; every probe gets the
+    # no-tool-calls JSON object.
+    import json as _json
+    stream_call_count = [0]
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/tags":
             return httpx.Response(
                 200, json={"models": [{"name": "llama3"}]}
             )
-        # /api/chat
-        chat_call_count[0] += 1
-        if chat_call_count[0] == 1:
+        # /api/chat — branch on whether it's the probe or the stream.
+        body = _json.loads(request.content or b"{}")
+        if not body.get("stream"):
+            return httpx.Response(
+                200,
+                json={"message": {"content": "", "tool_calls": []}},
+            )
+        stream_call_count[0] += 1
+        if stream_call_count[0] == 1:
             return httpx.Response(
                 200, content=_ndjson_chat(["First ", "reply"])
             )

@@ -29,6 +29,50 @@ def _ollama_unreachable(request: httpx.Request) -> httpx.Response:
     raise httpx.ConnectError("ollama mock: no handler set for this test")
 
 
+# Phase 12d: the streaming codepath now makes TWO different Ollama
+# requests per assistant turn — first a non-streaming `maybe_tool_call`
+# probe to detect tool intent, then (when no tool is requested) a
+# streaming `stream_chat`. Tests that only mock the streaming response
+# would 500 on the probe; this helper builds a handler that routes the
+# probe to a "no tool calls" JSON reply and the stream to whatever the
+# test was already returning.
+def _stream_handler(stream_body: bytes) -> Callable[
+    [httpx.Request], httpx.Response
+]:
+    """Build a handler that branches on `stream` in the request body.
+
+    Args:
+        stream_body: The NDJSON bytes to return for the streaming call.
+
+    Returns:
+        An httpx MockTransport handler that returns an empty-tool_calls
+        JSON object when ``stream=false`` and ``stream_body`` when
+        ``stream=true``. Any other path (e.g. /api/tags) gets a 404 so
+        misrouted traffic is obvious in the failure output.
+    """
+    import json as _json
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path != "/api/chat":
+            # Surfaces as a clear assertion failure rather than a
+            # mysterious 404 inside a generator.
+            return httpx.Response(
+                404, content=f"unexpected request to {request.url.path}".encode()
+            )
+        body = _json.loads(request.content or b"{}")
+        if body.get("stream"):
+            return httpx.Response(200, content=stream_body)
+        # Non-streaming probe: no tool calls, empty content. This is
+        # the "model decided no tool needed" branch maybe_tool_call
+        # returns to its caller as (tool_calls=[], content="").
+        return httpx.Response(
+            200,
+            json={"message": {"content": "", "tool_calls": []}},
+        )
+
+    return handler
+
+
 ClientFactory = Callable[
     [Callable[[httpx.Request], httpx.Response]], TestClient
 ]
@@ -826,10 +870,10 @@ def test_stream_endpoint_emits_token_and_done_events(
         b'{"message":{"content":"world"},"done":false}\n'
         b'{"message":{"content":""},"done":true}\n'
     )
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/api/chat"
-        return httpx.Response(200, content=ndjson)
+    # Phase 12d: the stream codepath calls Ollama twice — once
+    # non-streaming (tool-call probe) and once streaming (final reply).
+    # _stream_handler routes the probe to a no-tool-calls JSON object.
+    handler = _stream_handler(ndjson)
 
     with make_client(handler) as client:
         created = client.post(
@@ -903,9 +947,7 @@ def test_stream_escapes_html_in_token_content(
         b'{"message":{"content":"<b>boom</b>"},"done":false}\n'
         b'{"message":{"content":""},"done":true}\n'
     )
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=ndjson)
+    handler = _stream_handler(ndjson)
 
     with make_client(handler) as client:
         created = client.post(
@@ -948,9 +990,10 @@ def test_stream_endpoint_emits_protocol_error_for_malformed_ollama(
         b'{"message":{"content":"OK"},"done":false}\n'
         b'this is not valid json\n'
     )
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=body)
+    # 12d: the probe (stream=false) succeeds with no tool_calls so the
+    # loop falls through to streaming; the garbage NDJSON then trips
+    # OllamaProtocolError as before.
+    handler = _stream_handler(body)
 
     with make_client(handler) as client:
         chat_id = _create_chat_and_get_id(client, "X")
@@ -984,9 +1027,7 @@ def test_assistant_message_bubble_has_regenerate_button(
         b'{"message":{"content":"Hi"},"done":false}\n'
         b'{"message":{"content":""},"done":true}\n'
     )
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=ndjson)
+    handler = _stream_handler(ndjson)
 
     with make_client(handler) as client:
         chat_id = _create_chat_and_get_id(client, "X")
@@ -1055,9 +1096,7 @@ def test_regenerate_returns_placeholder_for_replacement(
         b'{"message":{"content":"First answer"},"done":false}\n'
         b'{"message":{"content":""},"done":true}\n'
     )
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=ndjson)
+    handler = _stream_handler(ndjson)
 
     with make_client(handler) as client:
         created = client.post(
@@ -1144,12 +1183,23 @@ def test_regenerate_stream_replaces_last_assistant_in_place(
         b'{"message":{"content":""},"done":true}\n'
     )
 
-    call_count = [0]
+    # 12d: each assistant turn now triggers two requests — the
+    # tool-call probe (stream=false) and the streaming reply. We only
+    # vary the streaming body between the original and the regenerate
+    # turn; the probe always returns no tool_calls.
+    stream_count = [0]
+    import json as _json
 
     def handler(request: httpx.Request) -> httpx.Response:
-        call_count[0] += 1
+        body = _json.loads(request.content or b"{}")
+        if not body.get("stream"):
+            return httpx.Response(
+                200,
+                json={"message": {"content": "", "tool_calls": []}},
+            )
+        stream_count[0] += 1
         return httpx.Response(
-            200, content=first if call_count[0] == 1 else second
+            200, content=first if stream_count[0] == 1 else second
         )
 
     with make_client(handler) as client:
@@ -1207,8 +1257,9 @@ def test_stream_emits_title_event_after_assistant_reply(
 
     monkeypatch.setattr(routes.ollama, "generate_title", fake_generate_title)
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=_stream_ndjson_once())
+    # 12d: route the tool-call probe (stream=false) to no-tool-calls,
+    # the streaming reply to the NDJSON body.
+    handler = _stream_handler(_stream_ndjson_once())
 
     with make_client(handler) as client:
         chat_id = _create_chat_and_get_id(client)
@@ -1240,8 +1291,9 @@ def test_stream_passes_conversation_model_to_title_generator(
 
     monkeypatch.setattr(routes.ollama, "generate_title", fake_generate_title)
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=_stream_ndjson_once())
+    # 12d: route the tool-call probe (stream=false) to no-tool-calls,
+    # the streaming reply to the NDJSON body.
+    handler = _stream_handler(_stream_ndjson_once())
 
     with make_client(handler) as client:
         # The helper POSTs `model=llama3`, so that's what we expect
@@ -1266,8 +1318,9 @@ def test_stream_skips_title_when_chat_is_locked(
 
     monkeypatch.setattr(routes.ollama, "generate_title", fake_generate_title)
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=_stream_ndjson_once())
+    # 12d: route the tool-call probe (stream=false) to no-tool-calls,
+    # the streaming reply to the NDJSON body.
+    handler = _stream_handler(_stream_ndjson_once())
 
     with make_client(handler) as client:
         chat_id = _create_chat_and_get_id(client)
@@ -1300,8 +1353,9 @@ def test_stream_stops_title_after_third_assistant_reply(
 
     monkeypatch.setattr(routes.ollama, "generate_title", fake_generate_title)
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=_stream_ndjson_once())
+    # 12d: route the tool-call probe (stream=false) to no-tool-calls,
+    # the streaming reply to the NDJSON body.
+    handler = _stream_handler(_stream_ndjson_once())
 
     with make_client(handler) as client:
         chat_id = _create_chat_and_get_id(client)
@@ -1348,8 +1402,9 @@ def test_regenerate_stream_does_not_emit_title(
 
     monkeypatch.setattr(routes.ollama, "generate_title", fake_generate_title)
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=_stream_ndjson_once())
+    # 12d: route the tool-call probe (stream=false) to no-tool-calls,
+    # the streaming reply to the NDJSON body.
+    handler = _stream_handler(_stream_ndjson_once())
 
     with make_client(handler) as client:
         chat_id = _create_chat_and_get_id(client)
@@ -1524,3 +1579,333 @@ def test_sidebar_includes_settings_link(
     assert 'class="sidebar__footer"' in response.text
     assert 'class="sidebar__settings"' in response.text
     assert 'hx-get="/settings"' in response.text
+
+
+# ---------------------------------------------------------------------------
+# Phase 12d: server-side tool-calling loop
+# ---------------------------------------------------------------------------
+
+
+def test_stream_runs_tool_then_streams_final(
+    make_client: ClientFactory,
+) -> None:
+    """End-to-end: Ollama's first probe returns a tool_call, second probe
+    returns no tool_calls, then the streaming reply completes. Verify
+    the tool ran, the rows persisted, and the SSE events fire in
+    order: tool-call → tool-result → token → done."""
+    import json as _json
+
+    # The probe-vs-stream handler needs custom logic here because the
+    # FIRST probe must return a tool call (triggering one tool round),
+    # the SECOND probe must return no tool calls (releasing the loop
+    # into streaming).
+    probe_count = [0]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = _json.loads(request.content or b"{}")
+        if body.get("stream"):
+            return httpx.Response(
+                200,
+                content=(
+                    b'{"message":{"content":"All "},"done":false}\n'
+                    b'{"message":{"content":"done"},"done":false}\n'
+                    b'{"message":{"content":""},"done":true}\n'
+                ),
+            )
+        probe_count[0] += 1
+        if probe_count[0] == 1:
+            # First probe: model wants to call current_time.
+            return httpx.Response(
+                200,
+                json={
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "name": "current_time",
+                                    "arguments": {"timezone": "UTC"},
+                                }
+                            }
+                        ],
+                    }
+                },
+            )
+        # Second probe (after the tool round): no more tools.
+        return httpx.Response(
+            200,
+            json={"message": {"content": "", "tool_calls": []}},
+        )
+
+    with make_client(handler) as client:
+        chat_id = _create_chat_and_get_id(client, "tool test")
+        client.post(
+            f"/chats/{chat_id}/messages", data={"content": "what time is it?"}
+        )
+        response = client.get(f"/chats/{chat_id}/stream")
+
+    assert response.status_code == 200
+    text = response.text
+    # Ordering: tool events fire before tokens, which fire before done.
+    pos_call = text.find("event: tool-call")
+    pos_result = text.find("event: tool-result")
+    pos_token = text.find("event: token")
+    pos_done = text.find("event: done")
+    assert pos_call != -1, f"missing tool-call event in:\n{text}"
+    assert pos_result != -1, f"missing tool-result event in:\n{text}"
+    assert pos_token != -1, f"missing token event in:\n{text}"
+    assert pos_done != -1, f"missing done event in:\n{text}"
+    assert pos_call < pos_result < pos_token < pos_done
+
+    # 12d placeholder payload: a div carrying the tool name on a
+    # data-attribute. 12e will replace this with the real card.
+    assert 'data-tool-call="current_time"' in text
+    assert 'data-tool-result="current_time"' in text
+
+    # Verify rows persisted by reading them back through the public
+    # route — the chat panel renders all message rows.
+    with make_client(handler) as client_for_read:
+        panel = client_for_read.get(f"/chats/{chat_id}")
+    # Both tool roles should appear in the rendered messages list.
+    # _chat_panel.html prints data-role for every message; the
+    # placeholder template doesn't exist for tool_call/tool_result
+    # yet (12e deliverable), but the message dataclasses are visible
+    # via the DB directly. Verify via the raw DB instead so we don't
+    # depend on the 12e template existing.
+    import os
+    import sqlite3 as _sqlite3
+    db_path = os.environ["DB_PATH"]
+    with _sqlite3.connect(db_path) as conn:
+        roles = [
+            r[0] for r in conn.execute(
+                "SELECT role FROM messages WHERE conversation_id = ?"
+                " ORDER BY id ASC",
+                (chat_id,),
+            ).fetchall()
+        ]
+    # Expect: user (the /messages POST), tool_call, tool_result,
+    # assistant (the streamed final). _create_chat_and_get_id ALSO
+    # inserts a user row (the first message), so the full order is:
+    # user, user, tool_call, tool_result, assistant.
+    assert "tool_call" in roles
+    assert "tool_result" in roles
+    assert roles[-1] == "assistant"
+
+
+def test_stream_caps_at_five_iterations(
+    make_client: ClientFactory,
+) -> None:
+    """If Ollama keeps requesting tool_calls, the loop terminates after 5
+    rounds and persists a "limit reached" assistant message."""
+    import json as _json
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = _json.loads(request.content or b"{}")
+        if body.get("stream"):
+            # Should never be reached — the cap fires before streaming.
+            raise AssertionError("stream_chat reached despite cap")
+        # Every probe says: call current_time again.
+        return httpx.Response(
+            200,
+            json={
+                "message": {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "current_time",
+                                "arguments": {"timezone": "UTC"},
+                            }
+                        }
+                    ],
+                }
+            },
+        )
+
+    with make_client(handler) as client:
+        chat_id = _create_chat_and_get_id(client, "cap test")
+        client.post(
+            f"/chats/{chat_id}/messages", data={"content": "ping"}
+        )
+        response = client.get(f"/chats/{chat_id}/stream")
+
+    assert response.status_code == 200
+    text = response.text
+    # The loop hit its ceiling and emitted done with an apology.
+    assert "event: done" in text
+    assert "Tool-call limit reached" in text
+
+    # DB has exactly 5 tool_call rows (and 5 tool_result rows).
+    import os
+    import sqlite3 as _sqlite3
+    db_path = os.environ["DB_PATH"]
+    with _sqlite3.connect(db_path) as conn:
+        tool_call_count = conn.execute(
+            "SELECT COUNT(*) FROM messages"
+            " WHERE conversation_id = ? AND role = 'tool_call'",
+            (chat_id,),
+        ).fetchone()[0]
+        tool_result_count = conn.execute(
+            "SELECT COUNT(*) FROM messages"
+            " WHERE conversation_id = ? AND role = 'tool_result'",
+            (chat_id,),
+        ).fetchone()[0]
+        final_text = conn.execute(
+            "SELECT content FROM messages"
+            " WHERE conversation_id = ? AND role = 'assistant'"
+            " ORDER BY id DESC LIMIT 1",
+            (chat_id,),
+        ).fetchone()[0]
+    assert tool_call_count == 5
+    assert tool_result_count == 5
+    assert "Tool-call limit reached" in final_text
+
+
+def test_stream_passes_tools_payload_to_ollama(
+    make_client: ClientFactory,
+) -> None:
+    """The probe call advertises the registered tools so Ollama can
+    decide whether to invoke one. Phase 12d always sends `tools=` —
+    capability filtering lands in 12f.
+
+    Stands in for the "skips tools for non-tool model" test in the
+    plan: until 12f's model_supports_tools helper exists, the loop
+    unconditionally advertises tools and a non-tool model would 400.
+    Documented in the implementation summary.
+    """
+    import json as _json
+
+    captured_tools: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = _json.loads(request.content or b"{}")
+        if not body.get("stream"):
+            # Probe — capture the tools key for inspection.
+            captured_tools.append(body.get("tools"))
+            return httpx.Response(
+                200,
+                json={"message": {"content": "", "tool_calls": []}},
+            )
+        # Stream: simple one-token reply.
+        return httpx.Response(
+            200,
+            content=(
+                b'{"message":{"content":"ok"},"done":false}\n'
+                b'{"message":{"content":""},"done":true}\n'
+            ),
+        )
+
+    with make_client(handler) as client:
+        chat_id = _create_chat_and_get_id(client, "tools probe")
+        client.post(
+            f"/chats/{chat_id}/messages", data={"content": "hello"}
+        )
+        client.get(f"/chats/{chat_id}/stream")
+
+    # At least one probe ran and the tools list was populated. We
+    # don't assert exact contents — the registry changes as tools are
+    # added — but the basic shape (a non-empty list of function specs)
+    # is verifiable.
+    assert captured_tools, "no probe captured"
+    advertised = captured_tools[0]
+    assert isinstance(advertised, list)
+    assert advertised, "tools list was empty"
+    names = {t["function"]["name"] for t in advertised}
+    # current_time is registered by app.tools.builtins (the import 12d
+    # added to routes); query_rag is registered by app.tools.rag (12c).
+    assert "current_time" in names
+    assert "query_rag" in names
+
+
+def test_build_history_payload_handles_tool_roles() -> None:
+    """`_build_history_payload` maps each role to Ollama's wire format:
+    user/assistant pass through, tool_call becomes assistant+tool_calls,
+    tool_result becomes role=tool."""
+    import json as _json
+    from datetime import datetime, timezone
+
+    from app.queries import Message
+    from app.routes import _build_history_payload
+
+    now = datetime.now(timezone.utc)
+    history = [
+        Message(
+            id=1, conversation_id=1, role="user",
+            content="hi", created_at=now,
+        ),
+        Message(
+            id=2, conversation_id=1, role="tool_call",
+            content=_json.dumps(
+                {"name": "current_time", "arguments": {"timezone": "UTC"}}
+            ),
+            created_at=now,
+        ),
+        Message(
+            id=3, conversation_id=1, role="tool_result",
+            content="2024-01-01T00:00:00+00:00", created_at=now,
+        ),
+        Message(
+            id=4, conversation_id=1, role="assistant",
+            content="the time is...", created_at=now,
+        ),
+    ]
+    out = _build_history_payload(history)
+    # 4 rows in → 4 messages out (no skips on well-formed input).
+    assert len(out) == 4
+    # user: passes through.
+    assert out[0] == {"role": "user", "content": "hi"}
+    # tool_call: assistant + tool_calls list with the function dict.
+    assert out[1]["role"] == "assistant"
+    assert out[1]["content"] == ""
+    assert out[1]["tool_calls"] == [
+        {
+            "function": {
+                "name": "current_time",
+                "arguments": {"timezone": "UTC"},
+            }
+        }
+    ]
+    # tool_result: role becomes "tool"; content stays as the raw string.
+    assert out[2] == {
+        "role": "tool",
+        "content": "2024-01-01T00:00:00+00:00",
+    }
+    # assistant: passes through.
+    assert out[3] == {"role": "assistant", "content": "the time is..."}
+
+
+def test_build_history_payload_skips_malformed_tool_call_rows() -> None:
+    """A tool_call row with invalid JSON in `content` is silently
+    skipped — better than crashing every subsequent chat turn for
+    that conversation."""
+    from datetime import datetime, timezone
+
+    from app.queries import Message
+    from app.routes import _build_history_payload
+
+    now = datetime.now(timezone.utc)
+    history = [
+        Message(
+            id=1, conversation_id=1, role="user",
+            content="hi", created_at=now,
+        ),
+        # Garbage JSON in a tool_call row.
+        Message(
+            id=2, conversation_id=1, role="tool_call",
+            content="not json", created_at=now,
+        ),
+        # Missing required `name` key.
+        Message(
+            id=3, conversation_id=1, role="tool_call",
+            content='{"arguments": {}}', created_at=now,
+        ),
+        Message(
+            id=4, conversation_id=1, role="assistant",
+            content="ok", created_at=now,
+        ),
+    ]
+    out = _build_history_payload(history)
+    # The two malformed tool_call rows are dropped; user + assistant remain.
+    assert len(out) == 2
+    assert out[0]["role"] == "user"
+    assert out[1]["role"] == "assistant"

@@ -203,6 +203,99 @@ async def stream_chat(
         raise OllamaUnavailable(f"Ollama stream failed: {e}") from e
 
 
+async def maybe_tool_call(
+    client: httpx.AsyncClient,
+    model: str,
+    messages: list[dict],
+    tools: list[dict] | None,
+) -> tuple[list[dict], str]:
+    """Single non-streaming /api/chat to detect tool calls.
+
+    Used by phase 12d's tool-calling loop: before opening a streaming
+    response, ask Ollama (in one shot) whether the model wants to call
+    a tool. If yes, the loop handles the tool then re-asks; if no, the
+    loop falls through to ``stream_chat`` for the visible response.
+
+    Yes, this costs an extra round-trip per "final answer" turn — Ollama
+    is invoked once non-streaming to detect tool intent, then again
+    streaming for the actual reply. Acceptable for a local app; revisit
+    if the latency becomes annoying.
+
+    Args:
+        client: An ``httpx.AsyncClient`` pointed at the Ollama host.
+        model: Identifier of an installed Ollama model.
+        messages: Conversation history in Ollama's wire format (already
+            includes any tool_call / tool_result rows mapped by
+            ``_build_history_payload``).
+        tools: List of tool specs to advertise (Ollama's ``tools=`` body
+            shape). Pass ``None`` to omit the key entirely — required for
+            models that don't advertise tool capability (passing
+            ``tools=[]`` for those models still trips a 400 from Ollama).
+
+    Returns:
+        A 2-tuple ``(tool_calls, content)``:
+        - ``tool_calls``: list of ``{"name": str, "arguments": dict}``
+          dicts, unwrapped from Ollama's
+          ``{"function": {"name", "arguments"}}`` wire shape. Empty list
+          when the model didn't request a tool.
+        - ``content``: assistant text emitted alongside the tool call
+          (usually empty when ``tool_calls`` is non-empty; some models
+          add a brief explanatory sentence). Discarded by the loop in
+          12d — the visible response comes from a subsequent streaming
+          call.
+
+    Raises:
+        OllamaUnavailable: Ollama is unreachable, the request timed out,
+            or the server returned a non-2xx status.
+        OllamaProtocolError: Ollama responded but the body wasn't valid
+            JSON or didn't have the expected shape.
+    """
+    payload: dict = {
+        "model": model,
+        "messages": messages,
+        # Non-streaming — the whole assistant reply (or its tool_calls)
+        # comes back in one JSON object rather than NDJSON.
+        "stream": False,
+    }
+    # Only include `tools` when there's something to advertise. Some
+    # models 400 when given an empty list; passing None lets the caller
+    # gate cleanly without us second-guessing.
+    if tools:
+        payload["tools"] = tools
+
+    try:
+        response = await client.post("/api/chat", json=payload)
+        response.raise_for_status()
+    except (httpx.HTTPError, httpx.InvalidURL) as e:
+        raise OllamaUnavailable(f"Ollama request failed: {e}") from e
+
+    try:
+        body = response.json()
+        # `message` may be absent when the server returns an error-shaped
+        # body that still squeaked through raise_for_status. Defaulting
+        # to {} keeps the .get chains below honest.
+        message = body.get("message", {})
+        raw_calls = message.get("tool_calls") or []
+        content = message.get("content") or ""
+        # Ollama wraps each tool call as
+        #   {"function": {"name": "...", "arguments": {...}}}
+        # but the rest of the loop (run_tool, history persistence) wants
+        # the flatter {"name", "arguments"} shape. Unwrap here so the
+        # wire format only lives at this boundary.
+        unwrapped = [
+            {
+                "name": tc["function"]["name"],
+                "arguments": tc["function"].get("arguments", {}),
+            }
+            for tc in raw_calls
+        ]
+        return unwrapped, content
+    except (KeyError, TypeError, ValueError) as e:
+        raise OllamaProtocolError(
+            f"Ollama returned an unexpected /api/chat shape: {e}"
+        ) from e
+
+
 async def generate_title(
     client: httpx.AsyncClient,
     model: str,

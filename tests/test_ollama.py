@@ -19,6 +19,7 @@ from app.ollama import (
     create_client,
     generate_title,
     list_models,
+    maybe_tool_call,
     stream_chat,
 )
 
@@ -427,3 +428,115 @@ async def test_generate_title_char_cap_is_final_safety_net() -> None:
         title = await generate_title(client, "llama3", [])
 
     assert len(title) == 80
+
+
+# ---------------------------------------------------------------------------
+# maybe_tool_call (Phase 12d)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_maybe_tool_call_unwraps_ollama_tool_call_shape() -> None:
+    """Ollama wraps each tool call as `{"function": {"name", "arguments"}}`;
+    maybe_tool_call flattens that to `{"name", "arguments"}` so the
+    rest of the codebase doesn't need to know the wire shape."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # Sanity: it's a non-streaming POST with a tools key.
+        body = json.loads(request.content)
+        assert request.url.path == "/api/chat"
+        assert body.get("stream") is False
+        assert "tools" in body
+        return httpx.Response(
+            200,
+            json={
+                "message": {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "current_time",
+                                "arguments": {"timezone": "UTC"},
+                            }
+                        }
+                    ],
+                }
+            },
+        )
+
+    async with _client_with(handler) as client:
+        tool_calls, content = await maybe_tool_call(
+            client, "llama3", messages=[], tools=[{"any": "spec"}]
+        )
+
+    assert content == ""
+    assert tool_calls == [
+        {"name": "current_time", "arguments": {"timezone": "UTC"}}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_maybe_tool_call_returns_empty_list_when_no_tools() -> None:
+    """When the model returns plain text (no tool_calls key, or empty),
+    the result is `([], content)` — caller takes that as "switch to
+    streaming for the visible response"."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"message": {"content": "just text"}},
+        )
+
+    async with _client_with(handler) as client:
+        tool_calls, content = await maybe_tool_call(
+            client, "llama3", messages=[], tools=None
+        )
+
+    assert tool_calls == []
+    assert content == "just text"
+
+
+@pytest.mark.asyncio
+async def test_maybe_tool_call_omits_tools_key_when_none() -> None:
+    """Passing `tools=None` keeps the key out of the outgoing payload —
+    some models 400 on `tools=[]` so the loop opts out cleanly via
+    None when there's nothing to advertise."""
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={"message": {"content": "ok"}},
+        )
+
+    async with _client_with(handler) as client:
+        await maybe_tool_call(
+            client, "llama3", messages=[], tools=None
+        )
+
+    assert "tools" not in captured["body"]
+
+
+@pytest.mark.asyncio
+async def test_maybe_tool_call_raises_unavailable_on_transport_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("nope")
+
+    async with _client_with(handler) as client:
+        with pytest.raises(OllamaUnavailable):
+            await maybe_tool_call(
+                client, "llama3", messages=[], tools=None
+            )
+
+
+@pytest.mark.asyncio
+async def test_maybe_tool_call_raises_protocol_error_on_bad_json() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"<html>not json</html>")
+
+    async with _client_with(handler) as client:
+        with pytest.raises(OllamaProtocolError):
+            await maybe_tool_call(
+                client, "llama3", messages=[], tools=None
+            )
