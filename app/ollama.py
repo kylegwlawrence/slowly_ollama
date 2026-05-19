@@ -228,10 +228,11 @@ async def generate_title(
             sending; callers don't need to.
 
     Returns:
-        The model-generated title, stripped of surrounding quotes and
-        truncated to one line and 80 characters. Empty strings are
-        possible if the model misbehaves; the caller is expected to
-        treat empty as "skip the rename".
+        The model-generated title, stripped of surrounding quotes,
+        capped at 6 words, and capped at 80 characters as a final
+        defense against runaway words. Empty strings are possible
+        if the model misbehaves; the caller is expected to treat
+        empty as "skip the rename".
 
     Raises:
         OllamaUnavailable: Ollama is unreachable, the request timed
@@ -249,7 +250,7 @@ async def generate_title(
     title_request = {
         "role": "user",
         "content": (
-            "Title this conversation in 3 to 6 words."
+            "Title this conversation in 6 words or fewer."
             " Reply with only the title."
         ),
     }
@@ -322,4 +323,15 @@ async def generate_title(
             text = text[len(prefix):].lstrip(' "“”‘’\'')
             break
 
+    # Enforce the 6-word cap. The prompt asks for "6 words or fewer"
+    # but smaller models routinely overshoot. `split()` with no args
+    # splits on any whitespace run and drops empties, so it handles
+    # tabs and double-spaces correctly without inventing empty words.
+    words = text.split()
+    if len(words) > 6:
+        text = " ".join(words[:6])
+
+    # 80-char cap is a final safety net against pathological word
+    # lengths (e.g. 6 × 30-char compound words). With normal English
+    # the 6-word cap dominates and this is a no-op.
     return text[:80]

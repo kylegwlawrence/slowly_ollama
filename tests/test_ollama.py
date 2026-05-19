@@ -383,12 +383,45 @@ async def test_generate_title_strips_quotes_and_preambles() -> None:
 
 
 @pytest.mark.asyncio
-async def test_generate_title_caps_at_80_chars() -> None:
-    """A runaway title is truncated so the sidebar row stays sane."""
-    long = "A " * 200  # 400 chars
+async def test_generate_title_caps_at_six_words() -> None:
+    """Titles get capped at 6 words — smaller models routinely
+    overshoot the prompt's word-count instruction."""
+    overshoot = "one two three four five six seven eight nine ten"
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"message": {"content": long}})
+        return httpx.Response(
+            200, json={"message": {"content": overshoot}}
+        )
+
+    async with _client_with(handler) as client:
+        title = await generate_title(client, "llama3", [])
+
+    assert title == "one two three four five six"
+    assert len(title.split()) == 6
+
+
+@pytest.mark.asyncio
+async def test_generate_title_short_titles_pass_through() -> None:
+    """Titles already at or under the 6-word cap are returned unchanged."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"message": {"content": "Three Word Title"}}
+        )
+
+    async with _client_with(handler) as client:
+        assert await generate_title(client, "llama3", []) == "Three Word Title"
+
+
+@pytest.mark.asyncio
+async def test_generate_title_char_cap_is_final_safety_net() -> None:
+    """When the 6 words are themselves absurdly long, the 80-char cap
+    truncates the result so the sidebar row can't explode."""
+    huge_word = "X" * 100
+    payload = " ".join([huge_word] * 6)  # 605 chars, 6 words
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"message": {"content": payload}})
 
     async with _client_with(handler) as client:
         title = await generate_title(client, "llama3", [])
