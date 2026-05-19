@@ -1,0 +1,39 @@
+{# Aggregated tool-usage card. Sits above an assistant message bubble.
+
+   Two render contexts share this template:
+
+   1. **Live first tool-call SSE event** (`_stream_assistant_reply` in
+      app/routes.py). `swap_oob` is
+      "beforebegin:#assistant-stream-{conversation_id}" so HTMX inserts
+      the card as the placeholder's preceding sibling. `rows` carries
+      exactly one (live-ticking) ToolRowView; `summary_text` reads
+      "using 1 tool…".
+
+   2. **Historic replay** (inside `_chat_panel.html` for each
+      `ToolBatchBlock` from `app/render.py`). `swap_oob` unset; every
+      row is either frozen or historic-unpaired; `summary_text` is
+      past tense via `summary_text(count, done=True)`.
+
+   The single-source-of-truth design (one helper renders the summary
+   text in both contexts) keeps verb / plural / ellipsis aligned. The
+   row template handles its own state branching from the ToolRowView. #}
+<details id="{{ card_id }}" class="tool-card"
+         {%- if swap_oob %} hx-swap-oob="{{ swap_oob }}"{% endif %}>
+  <summary class="tool-card__summary">
+    <span class="material-symbols-outlined">build</span>
+    <span id="{{ summary_id }}">{{ summary_text }}</span>
+    <span class="tool-card__chevron material-symbols-outlined">expand_more</span>
+  </summary>
+  <ul id="{{ list_id }}" class="tool-card__list">
+    {# `{% with %}` shadows the shell's `swap_oob` for the duration of
+       the include — rows embedded inside the shell never need their own
+       OOB target (the parent <details> is the OOB swap unit). Without
+       this, Jinja's default include-with-context behavior would leak
+       the card's `beforebegin:…` swap onto every row too. #}
+    {% for row in rows %}
+      {% with swap_oob = none %}
+        {% include "_tool_row.html" %}
+      {% endwith %}
+    {% endfor %}
+  </ul>
+</details>

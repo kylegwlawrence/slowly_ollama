@@ -42,6 +42,7 @@ import html
 import json
 import re
 import sqlite3
+import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Annotated
@@ -51,7 +52,7 @@ from fastapi import APIRouter, Form, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
-from app import ollama, queries
+from app import ollama, queries, render
 from app import rag_servers as _rag_servers_module
 from app.dependencies import DB, OllamaClient
 from app.ollama import OllamaProtocolError, OllamaUnavailable
@@ -74,7 +75,7 @@ from app.tools import builtins as _builtins  # noqa: F401
 # regardless so `TOOLS["query_rag"]` exists by the time anything
 # downstream (settings handlers, the streaming loop in 12d) reads it.
 from app.tools import rag as _rag_tool  # noqa: F401
-from app.tools import run_tool, tool_specs_for_ollama
+from app.tools import format_tool_invocation, run_tool, tool_specs_for_ollama
 from app.tools.rag import refresh_query_rag_source_description
 
 # Templates live at the project root. Resolving relative to this file's
@@ -442,6 +443,7 @@ def create_chat_endpoint(
     )
     queries.append_message(db, chat.id, "user", content)
     messages = queries.list_messages(db, chat.id)
+    blocks = render.group_messages_for_render(messages)
 
     # Panel includes the just-saved user bubble AND an inline assistant
     # placeholder that opens the SSE stream on insert. Inlining the
@@ -450,7 +452,7 @@ def create_chat_endpoint(
     # the live DOM until the main swap finishes.
     panel_html = templates.get_template("_chat_panel.html").render(
         conversation=chat,
-        messages=messages,
+        blocks=blocks,
         pending_stream_url=f"/chats/{chat.id}/stream",
         active_chat_id=chat.id,
     )
@@ -494,12 +496,13 @@ def get_chat_panel_endpoint(
     except LookupError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
     messages = queries.list_messages(db, conversation_id)
+    blocks = render.group_messages_for_render(messages)
 
     if request.headers.get("HX-Request"):
         return templates.TemplateResponse(
             request=request,
             name="_chat_panel.html",
-            context={"conversation": conversation, "messages": messages},
+            context={"conversation": conversation, "blocks": blocks},
         )
     return templates.TemplateResponse(
         request=request,
@@ -507,7 +510,7 @@ def get_chat_panel_endpoint(
         context={
             "chats": queries.list_conversations(db),
             "conversation": conversation,
-            "messages": messages,
+            "blocks": blocks,
             # The active row highlight lives in the sidebar; pass the
             # id so `_chat_item.html` can set `aria-current="page"`.
             "active_chat_id": conversation.id,
@@ -812,6 +815,66 @@ def _build_history_payload(
     return out
 
 
+def _build_done_card_oobs(
+    call_count: int,
+    in_flight: dict[str, dict],
+    summary_id: str,
+) -> str:
+    """Build the per-turn OOB fragments that ride along with `done`.
+
+    Two things happen when the assistant turn finishes:
+
+    1. The card summary span swaps from present-tense / ellipsis
+       ("using N tool(s)…") to past-tense ("used N tool(s)").
+    2. Any rows still missing a paired tool_result get OOB-replaced
+       with a frozen variant carrying `data-elapsed-final`. The JS
+       tick driver only ticks rows that have `data-elapsed-start`
+       AND no `data-elapsed-final`; once SSE closes (on `done`) we
+       never get another chance to freeze, so leftover live rows
+       would tick forever. The happy path has nothing in
+       `in_flight` here; the bail branch hits the iteration cap
+       with one unpaired call left.
+
+    Args:
+        call_count: Total tool calls emitted this turn. Zero means
+            no card exists; the function returns the empty string.
+        in_flight: row_id → {start_ms, label, …} for unpaired calls.
+        summary_id: DOM id of the card's summary span.
+
+    Returns:
+        Concatenated HTML for zero-or-more `hx-swap-oob` fragments,
+        ready to splice into a `done` SSE payload alongside the
+        final message bubble.
+    """
+    if call_count == 0:
+        return ""
+
+    summary_html = (
+        f'<span id="{summary_id}" hx-swap-oob="outerHTML">'
+        f"{html.escape(render.summary_text(call_count, done=True))}"
+        f"</span>"
+    )
+
+    if not in_flight:
+        return summary_html
+
+    now_ms = int(time.time() * 1000)
+    frozen_rows_html = ""
+    for row_id, info in in_flight.items():
+        duration_ms = max(0, now_ms - info["start_ms"])
+        frozen_row = render.ToolRowView(
+            id=row_id,
+            label=info["label"],
+            elapsed_start_ms=None,
+            elapsed_final_ms=duration_ms,
+            elapsed_display=render.format_elapsed_mm_ss(duration_ms),
+        )
+        frozen_rows_html += templates.get_template(
+            "_tool_row.html"
+        ).render(row=frozen_row, swap_oob="outerHTML")
+    return summary_html + frozen_rows_html
+
+
 async def _stream_assistant_reply(
     client,
     db,
@@ -873,6 +936,23 @@ async def _stream_assistant_reply(
     # docstring.
     tools_payload = tool_specs_for_ollama()
 
+    # Phase 12e: state for the aggregated tool-usage card that sits
+    # above the assistant bubble.
+    #   turn_id        — monotonic ns, unique per assistant turn
+    #   card_id/list_id/summary_id — derived DOM ids, used by OOB targets
+    #   call_index     — total calls seen this turn (across all iters);
+    #                    bumps with every tool-call we emit
+    #   in_flight      — row_id → {start_ms, name, arguments} for rows
+    #                    that have been emitted but not yet paired with
+    #                    a result. Used by the bail/done branches to
+    #                    freeze any still-ticking rows.
+    turn_id = str(time.monotonic_ns())
+    card_id = render.card_id_for(turn_id)
+    list_id = f"{card_id}-list"
+    summary_id = f"{card_id}-summary"
+    call_index = 0
+    in_flight: dict[str, dict] = {}
+
     # `for` loop with an `else`: the `else` branch fires only if the
     # loop runs to completion without hitting `break`, i.e. we hit the
     # cap and the model is still requesting tools. Inside the loop we
@@ -903,10 +983,6 @@ async def _stream_assistant_reply(
             # Model is done with tools; fall through to streaming.
             break
 
-        # Persist + emit + run each tool call. The events here use
-        # placeholder HTML — the real card templates land in 12e. The
-        # placeholders still fire the right SSE event names so 12e's
-        # `sse-swap` extension is exercised end-to-end during dev.
         for call in tool_calls:
             name = call["name"]
             arguments = call.get("arguments") or {}
@@ -921,14 +997,68 @@ async def _stream_assistant_reply(
                     {"name": name, "arguments": arguments}
                 ),
             )
-            # 12d placeholder: empty data div with the tool name on a
-            # data-attribute. 12e replaces this with the real
-            # <details> card via the OOB-swap target
-            # `beforebegin:#assistant-stream-{id}`.
-            yield _sse(
-                f'<div data-tool-call="{html.escape(name)}"></div>',
-                event="tool-call",
+
+            # Server-stamp the start time so the JS tick driver counts
+            # from the same instant the call was persisted (rather than
+            # whenever the SSE event happens to arrive on the client).
+            start_ms = int(time.time() * 1000)
+            row_id = f"{card_id}-row-{call_index}"
+            label = format_tool_invocation(name, arguments)
+            live_row = render.ToolRowView(
+                id=row_id,
+                label=label,
+                elapsed_start_ms=start_ms,
+                elapsed_final_ms=None,
+                elapsed_display="0:00",
             )
+
+            if call_index == 0:
+                # First call: emit the entire card (one OOB swap
+                # inserting it ahead of the streaming placeholder).
+                payload = templates.get_template(
+                    "_tool_card_shell.html"
+                ).render(
+                    card_id=card_id,
+                    list_id=list_id,
+                    summary_id=summary_id,
+                    summary_text=render.summary_text(1, done=False),
+                    rows=[live_row],
+                    swap_oob=(
+                        f"beforebegin:#assistant-stream-"
+                        f"{conversation_id}"
+                    ),
+                )
+            else:
+                # Subsequent: append the new row inside the existing
+                # card's list AND re-render the summary span to bump
+                # count + plural ("using 2 tools…" etc). Both fragments
+                # carry hx-swap-oob so they're processed as independent
+                # OOB swaps inside the same SSE event payload.
+                row_html = templates.get_template(
+                    "_tool_row.html"
+                ).render(
+                    row=live_row,
+                    swap_oob=f"beforeend:#{list_id}",
+                )
+                summary_html = (
+                    f'<span id="{summary_id}" hx-swap-oob="outerHTML">'
+                    f"{html.escape(render.summary_text(call_index + 1, done=False))}"
+                    f"</span>"
+                )
+                payload = row_html + summary_html
+
+            yield _sse(payload, event="tool-call")
+
+            # Track the in-flight call so the bail/done branches can
+            # freeze it if the model abandons the turn before a
+            # tool_result lands.
+            in_flight[row_id] = {
+                "start_ms": start_ms,
+                "name": name,
+                "arguments": arguments,
+                "label": label,
+            }
+            call_index += 1
 
             result = await run_tool(name, arguments)
 
@@ -938,10 +1068,26 @@ async def _stream_assistant_reply(
                 "tool_result",
                 content=result,
             )
-            yield _sse(
-                f'<div data-tool-result="{html.escape(name)}"></div>',
-                event="tool-result",
+
+            # Freeze the row: OOB-replace it with a frozen variant
+            # carrying data-elapsed-final, which makes the JS tick
+            # driver skip it on the next interval.
+            end_ms = int(time.time() * 1000)
+            duration_ms = max(0, end_ms - start_ms)
+            frozen_row = render.ToolRowView(
+                id=row_id,
+                label=label,
+                elapsed_start_ms=None,
+                elapsed_final_ms=duration_ms,
+                elapsed_display=render.format_elapsed_mm_ss(duration_ms),
             )
+            row_html = templates.get_template("_tool_row.html").render(
+                row=frozen_row,
+                swap_oob="outerHTML",
+            )
+            yield _sse(row_html, event="tool-result")
+
+            del in_flight[row_id]
 
         # Re-read history so the next iteration's payload includes the
         # rows we just persisted. Cheap (one SELECT) and keeps the
@@ -951,21 +1097,25 @@ async def _stream_assistant_reply(
     else:
         # Loop ran to completion without breaking: the model kept
         # requesting tools past the cap. Persist an apology assistant
-        # message so the chat panel has something to show after reload,
-        # and emit `done` so the streaming placeholder gets swapped
-        # away. Skipping titling here on purpose — a runaway loop isn't
-        # representative content for the auto-titler.
+        # message, freeze any still-in-flight rows (so the JS driver
+        # stops incrementing them after SSE close), update the card
+        # summary to past tense, and emit `done`. Skipping titling
+        # here on purpose — a runaway loop isn't representative
+        # content for the auto-titler.
         message = queries.append_message(
             db,
             conversation_id,
             "assistant",
             "(Tool-call limit reached; no final answer produced.)",
         )
+        bail_payload = _build_done_card_oobs(
+            call_index, in_flight, summary_id
+        )
         final_html = templates.get_template("_message.html").render(
             message=message,
             swap_target=f"#assistant-stream-{conversation_id}",
         )
-        yield _sse(final_html, event="done")
+        yield _sse(bail_payload + final_html, event="done")
         return
 
     # Final round: stream the model's text response. Identical to the
@@ -1036,11 +1186,22 @@ async def _stream_assistant_reply(
     # placeholder element with this real row (rather than nesting it
     # inside, which would leave the placeholder and its `streaming`
     # class around forever).
+    #
+    # If the turn used any tools, bundle the card's past-tense summary
+    # swap (and a safety freeze on any in-flight rows — should be
+    # empty on the happy path, but defensive against a future
+    # codepath that yields done without pairing every call) into the
+    # same payload. All elements are top-level so HTMX processes each
+    # OOB independently before the placeholder removal closes the
+    # SSE connection.
+    done_card_oobs = _build_done_card_oobs(
+        call_index, in_flight, summary_id
+    )
     final_html = templates.get_template("_message.html").render(
         message=message,
         swap_target=f"#assistant-stream-{conversation_id}",
     )
-    yield _sse(final_html, event="done")
+    yield _sse(done_card_oobs + final_html, event="done")
 
 
 async def _maybe_generate_title(

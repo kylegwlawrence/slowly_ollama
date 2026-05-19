@@ -234,3 +234,30 @@ async def run_tool(name: str, args: dict) -> str:
     except Exception as e:
         # Tool itself raised; surface to the model but don't crash.
         return f"Tool '{name}' failed: {e}"
+
+
+def format_tool_invocation(name: str, arguments: dict) -> str:
+    """Render a tool call as a human-readable one-liner for the UI card.
+
+    The aggregated tool-card (phase 12e) shows one row per call.
+    `query_rag` is the dominant search-shaped tool, so it gets a
+    purpose-built label; every other tool falls back to a generic
+    `calling name(args)` shape. Future tools that want nicer labels
+    add a branch here rather than threading a display field through
+    ToolSpec.
+
+    Args:
+        name: The tool's registered name.
+        arguments: The arguments dict from the model's tool_call.
+
+    Returns:
+        A single line of plain text. Caller is responsible for HTML
+        escaping (Jinja autoescape handles this when the string is
+        interpolated into a template).
+    """
+    if name == "query_rag":
+        source = arguments.get("source", "?")
+        query = arguments.get("query", "")
+        return f'searching {source}: "{query}"'
+    args_str = ", ".join(f"{k}={v!r}" for k, v in arguments.items())
+    return f"calling {name}({args_str})"

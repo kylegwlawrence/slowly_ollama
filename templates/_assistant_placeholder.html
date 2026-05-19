@@ -1,5 +1,6 @@
 {# Empty assistant bubble. Opens an SSE connection on insert and
-   handles four named events (sse-swap="token,done,error,title"):
+   handles six named events
+   (sse-swap="token,done,error,title,tool-call,tool-result"):
 
    - `token`: each chunk's HTML-escaped text gets appended inside this
      div (`hx-swap="beforeend"`), so the response materializes as it
@@ -7,12 +8,20 @@
    - `done`: the server sends the final persisted message bubble with
      `hx-swap-oob` set. HTMX takes that out-of-band and uses it to
      replace this whole placeholder — the streaming class goes away
-     and the row gets a stable `id="message-{N}"`.
+     and the row gets a stable `id="message-{N}"`. The same payload
+     carries OOB updates for the per-turn tool-usage card (summary
+     swap to past tense + freeze of any unpaired rows).
    - `error`: a small error fragment, appended like a token so it
      surfaces where the user was expecting the assistant reply.
    - `title` (phase 11d): the renamed sidebar `<li>` with
      `hx-swap-oob="true"` on its root. HTMX takes it OOB and replaces
      the matching `#chat-{id}` row in the sidebar — the placeholder
      itself is untouched. Fires BEFORE done so the connection is
-     still alive when it arrives. #}
-<div id="assistant-stream-{{ conversation_id }}" class="message message--assistant message--streaming" data-role="assistant" hx-ext="sse" sse-connect="{{ stream_url }}" sse-swap="token,done,error,title" hx-swap="beforeend"></div>
+     still alive when it arrives.
+   - `tool-call` / `tool-result` (phase 12e): OOB fragments that
+     build up the aggregated tool-usage card above this placeholder.
+     The first tool-call inserts the card via
+     `beforebegin:#assistant-stream-{id}`; subsequent tool-calls
+     append rows + bump the summary count; each tool-result
+     OOB-replaces its row with a frozen variant. #}
+<div id="assistant-stream-{{ conversation_id }}" class="message message--assistant message--streaming" data-role="assistant" hx-ext="sse" sse-connect="{{ stream_url }}" sse-swap="token,done,error,title,tool-call,tool-result" hx-swap="beforeend"></div>

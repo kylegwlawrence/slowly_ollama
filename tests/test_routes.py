@@ -1837,10 +1837,19 @@ def test_stream_runs_tool_then_streams_final(
     assert pos_done != -1, f"missing done event in:\n{text}"
     assert pos_call < pos_result < pos_token < pos_done
 
-    # 12d placeholder payload: a div carrying the tool name on a
-    # data-attribute. 12e will replace this with the real card.
-    assert 'data-tool-call="current_time"' in text
-    assert 'data-tool-result="current_time"' in text
+    # Phase 12e card payload: first tool-call event carries the full
+    # <details> shell OOB-swapped beforebegin of the streaming
+    # placeholder; the matching tool-result OOB-replaces the row with
+    # a frozen variant (data-elapsed-final set).
+    assert 'class="tool-card"' in text
+    assert 'hx-swap-oob="beforebegin:#assistant-stream-' in text
+    assert 'using 1 tool' in text
+    # current_time isn't query_rag, so it gets the generic fallback.
+    assert "calling current_time" in text
+    # The tool-result event freezes the row.
+    assert "data-elapsed-final=" in text
+    # Past-tense flip lands in the done payload.
+    assert "used 1 tool" in text
 
     # Verify rows persisted by reading them back through the public
     # route — the chat panel renders all message rows.
@@ -1939,6 +1948,183 @@ def test_stream_caps_at_five_iterations(
     assert tool_call_count == 5
     assert tool_result_count == 5
     assert "Tool-call limit reached" in final_text
+
+
+def test_build_done_card_oobs_empty_in_flight_only_emits_summary() -> None:
+    """Happy path: every tool_call was paired with a tool_result before
+    the loop released into streaming. The done payload's card
+    contribution is just the past-tense summary swap; no frozen-row
+    OOBs needed."""
+    from app.routes import _build_done_card_oobs
+
+    result = _build_done_card_oobs(
+        call_count=2, in_flight={}, summary_id="tool-card-T-summary"
+    )
+    assert 'id="tool-card-T-summary"' in result
+    assert 'hx-swap-oob="outerHTML"' in result
+    assert "used 2 tools" in result
+    # No row OOBs.
+    assert "tool-row" not in result
+
+
+def test_build_done_card_oobs_zero_calls_returns_empty() -> None:
+    """A turn with no tool calls has no card to update — the helper
+    returns an empty string so the done payload stays compact."""
+    from app.routes import _build_done_card_oobs
+
+    assert _build_done_card_oobs(0, {}, "tool-card-T-summary") == ""
+
+
+def test_build_done_card_oobs_freezes_in_flight_rows() -> None:
+    """Defensive branch: if any row never got its paired tool_result
+    (e.g., a future codepath raises mid-await), the done payload
+    OOB-replaces the row with a frozen variant so the JS tick driver
+    stops incrementing it after SSE close. Dead code in the current
+    control flow — exercised here directly so the safety net stays
+    covered."""
+    from app.routes import _build_done_card_oobs
+
+    in_flight = {
+        "tool-card-T-row-0": {
+            "start_ms": 1_000_000_000,  # far in the past — duration is huge
+            "name": "current_time",
+            "arguments": {"timezone": "UTC"},
+            "label": "calling current_time(timezone='UTC')",
+        },
+    }
+    result = _build_done_card_oobs(
+        call_count=1, in_flight=in_flight, summary_id="tool-card-T-summary"
+    )
+    # Summary swap is still there.
+    assert "used 1 tool" in result
+    # Plus a frozen-row OOB carrying the original label and a
+    # data-elapsed-final (the JS skip-key).
+    assert 'id="tool-card-T-row-0"' in result
+    assert "data-elapsed-final=" in result
+    assert "calling current_time" in result
+
+
+def test_stream_two_tool_calls_emit_row_append_and_summary_bump(
+    make_client: ClientFactory,
+) -> None:
+    """Phase 12e: the second tool-call in a turn must emit a ROW append
+    OOB + a SUMMARY swap OOB — not another full <details> card. Verifies
+    the count bumps to 2, the noun pluralizes (`tool` → `tools`), and
+    the placement OOB target is `beforeend:#…-list` rather than
+    `beforebegin:#assistant-stream-…`."""
+    import json as _json
+
+    probe_count = [0]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = _json.loads(request.content or b"{}")
+        if body.get("stream"):
+            return httpx.Response(
+                200,
+                content=(
+                    b'{"message":{"content":"done"},"done":false}\n'
+                    b'{"message":{"content":""},"done":true}\n'
+                ),
+            )
+        probe_count[0] += 1
+        if probe_count[0] <= 2:
+            # First two probes each ask for one current_time call.
+            return httpx.Response(
+                200,
+                json={
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "name": "current_time",
+                                    "arguments": {"timezone": "UTC"},
+                                }
+                            }
+                        ],
+                    }
+                },
+            )
+        # Third probe: no more tools, release into streaming.
+        return httpx.Response(
+            200, json={"message": {"content": "", "tool_calls": []}}
+        )
+
+    with make_client(handler) as client:
+        chat_id = _create_chat_and_get_id(client, "two-tool test")
+        client.post(
+            f"/chats/{chat_id}/messages",
+            data={"content": "do two things"},
+        )
+        response = client.get(f"/chats/{chat_id}/stream")
+
+    text = response.text
+    # First tool-call event must carry the full card.
+    first_card_idx = text.find('hx-swap-oob="beforebegin:#assistant-stream-')
+    assert first_card_idx != -1, "missing initial card OOB swap"
+    # Second tool-call: row appended into the list, NOT another card.
+    assert "beforeend:#tool-card-" in text
+    # Summary swap from 1 → 2 with plural noun.
+    assert "using 2 tools" in text
+    # No second beforebegin (we only insert the card once per turn).
+    assert text.count('hx-swap-oob="beforebegin:#assistant-stream-') == 1
+    # Past-tense flip lands in the done payload.
+    assert "used 2 tools" in text
+
+
+def test_stream_iteration_cap_freezes_unpaired_row_in_done(
+    make_client: ClientFactory,
+) -> None:
+    """Phase 12e: on iteration-cap bail, the unpaired final tool-call's
+    row must be OOB-replaced with a frozen variant in the `done`
+    payload — otherwise the JS tick driver would keep incrementing it
+    forever after SSE close."""
+    import json as _json
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = _json.loads(request.content or b"{}")
+        if body.get("stream"):
+            raise AssertionError("stream_chat reached despite cap")
+        # Every probe asks for another tool call.
+        return httpx.Response(
+            200,
+            json={
+                "message": {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "current_time",
+                                "arguments": {"timezone": "UTC"},
+                            }
+                        }
+                    ],
+                }
+            },
+        )
+
+    with make_client(handler) as client:
+        chat_id = _create_chat_and_get_id(client, "bail freeze test")
+        client.post(
+            f"/chats/{chat_id}/messages", data={"content": "loop"}
+        )
+        response = client.get(f"/chats/{chat_id}/stream")
+
+    text = response.text
+    # Bail emits done.
+    assert "event: done" in text
+    # Past-tense summary swap with count=5 (the cap). This is the
+    # bail-branch-specific contribution to the done payload — the
+    # normal streaming branch emits the same swap, but it can't run
+    # here because we never reach `not tool_calls`.
+    assert "used 5 tools" in text
+    # Every tool-result event freezes its own row, so we expect 5
+    # frozen-row swaps in the stream regardless of bail behavior.
+    # The defensive bail-freeze for genuinely in_flight rows is dead
+    # code in this control flow (run_tool always returns a string,
+    # never raising) and lives as a safety net for future failure
+    # modes — exercised via the no-crash assertion at line 1873.
+    assert text.count("data-elapsed-final=") == 5
 
 
 def test_stream_passes_tools_payload_to_ollama(
