@@ -26,11 +26,14 @@
   {# htmx.min.js must load before htmx-ext-sse.js — the extension
      registers itself against the global `htmx` set up by core. app.js
      comes last so its delegated listeners see a fully-initialised HTMX
-     and the parsed DOM. All three use `defer`, which preserves source
-     order without blocking the parser. #}
+     and the parsed DOM. The two HTMX bundles use classic `defer`;
+     app.js loads as `type="module"` (defer is implicit for modules)
+     so its top-level `function` declarations stay scoped to the module
+     instead of polluting `window`. All three still execute in document
+     order, after DOM parse, before DOMContentLoaded. #}
   <script src="/static/htmx.min.js" defer></script>
   <script src="/static/htmx-ext-sse.js" defer></script>
-  <script src="/static/app.js" defer></script>
+  <script src="/static/app.js" type="module"></script>
 
   {# These two rules MUST stay inline — tests substring-match them in
      every rendered page (see test_base_disables_message_button_while_streaming

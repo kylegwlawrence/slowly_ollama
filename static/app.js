@@ -11,11 +11,17 @@
  * paint — running it from a deferred external script would re-introduce
  * the white flash on dark-mode load.
  *
- * Loaded with `defer` after htmx.min.js and htmx-ext-sse.js (see
- * base.html), so HTMX is available globally and DOM parsing has
- * completed by the time anything below runs. All listeners are
- * delegated on `document.body` or `document` so HTMX-swapped content
- * picks them up without a re-bind.
+ * Loaded as `type="module"` in base.html, so:
+ *   - Defer is implicit (executes after DOM parse, before DOMContentLoaded).
+ *   - Top-level `function` and `const` declarations stay scoped to the
+ *     module — none of them land on `window`.
+ *   - Strict mode is on by default.
+ * The two HTMX bundles still load as classic `defer` scripts; their
+ * globals (`htmx`, etc.) remain accessible to us because classic globals
+ * are visible to modules, modules just don't add to them.
+ *
+ * All listeners are delegated on `document.body` or `document` so
+ * HTMX-swapped content picks them up without a re-bind.
  */
 
 // ---------------------------------------------------------------------
