@@ -26,43 +26,60 @@
       {% endfor %}
     </ul>
 
-    {# `hx-on::after-request` does double duty: on success it resets the
-       form and hides the error region; on any non-2xx it copies the
-       response body into the error region and unhides it. HTMX still
+    {# `hx-on::after-request` does triple duty: on success it resets
+       the form, hides the error region, and sets the icon to a green
+       check; on any non-2xx it pipes the plain-text response body
+       into the error region and sets the icon to a red ✗. HTMX still
        skips the target swap on non-2xx (good — the list stays intact)
-       so the error region is the only thing the user sees change.
+       so the error region + icon are the only things the user sees
+       change.
 
-       The 4xx body is plain text (e.g. "Server name 'arxiv' already in
-       use.") so assigning to `textContent` is the right escape boundary
-       — never use innerHTML here. #}
+       `hx-on::before-request` clears the icon so a stale ✓/✗ from
+       the previous submit doesn't linger while the new probe runs.
+
+       The 4xx/5xx body is plain text (e.g. "Server name 'arxiv'
+       already in use.") so assigning to `textContent` is the right
+       escape boundary — never use innerHTML here. The icon DOES use
+       innerHTML, but only with a static string literal we control. #}
     <form class="rag-server-form"
           hx-post="/settings/servers"
           hx-target="#rag-servers-list"
           hx-swap="beforeend"
+          hx-on::before-request="
+            document.getElementById('health-check-icon').innerHTML = '';"
           hx-on::after-request="
             const err = document.getElementById('rag-server-form-error');
+            const icon = document.getElementById('health-check-icon');
             if (event.detail.successful) {
               this.reset();
               err.hidden = true;
               err.textContent = '';
+              icon.innerHTML = '<span class=&quot;material-symbols-outlined health-icon__ok&quot; aria-label=&quot;Healthy&quot;>check_circle</span>';
             } else {
               err.textContent = event.detail.xhr.responseText || 'Failed to add server.';
               err.hidden = false;
+              icon.innerHTML = '<span class=&quot;material-symbols-outlined health-icon__fail&quot; aria-label=&quot;Failed&quot;>cancel</span>';
             }">
       <label>
         Name
-        <input type="text" name="name" required placeholder="arxiv">
+        <input type="text" name="name" required placeholder="arxiv_rag">
       </label>
       <label>
         URL
         <input type="url" name="url" required
-               placeholder="http://10.0.0.5:8002/arxiv">
+               placeholder="http://pop-os:8002/arxiv_rag">
       </label>
       <button type="submit">Add server</button>
-      {# Spans all three columns of the form grid (see `.form-error` in
-         style.css). `hidden` + `role="alert"` is the screen-reader-
-         friendly idiom — when the JS toggles `hidden` off and writes
-         text, the AT announces it once. #}
+      {# Health-check result indicator. Populated by the form's
+         `hx-on::after-request` JS — empty until the first submit,
+         then a Material Symbols glyph (check_circle / cancel).
+         `aria-live="polite"` so screen readers announce the result
+         when the glyph swaps in. #}
+      <span id="health-check-icon" class="health-icon" aria-live="polite"></span>
+      {# Spans all four columns of the form grid (see `.form-error`
+         in style.css). `hidden` + `role="alert"` is the screen-
+         reader-friendly idiom — when the JS toggles `hidden` off and
+         writes text, the AT announces it once. #}
       <div id="rag-server-form-error" class="form-error" role="alert" hidden></div>
     </form>
   </section>
