@@ -649,3 +649,153 @@ body {
 }
 
 .input-pill button[type="submit"]:hover { background: var(--accent-hover); }
+
+/* ===== Sidebar footer (settings link) ==================================
+   `margin-top: auto` pushes the footer to the bottom of the sidebar's
+   flex column — same pinning trick the deferred 11c plan called for.
+   Border-top separates it visually from the chats list when the list
+   has scrolled all the way down. */
+
+.sidebar__footer {
+  margin-top: auto;
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--border);
+}
+
+.sidebar__settings {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  color: var(--text-secondary);
+  text-decoration: none;
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-md);
+  font-size: 13px;
+}
+
+.sidebar__settings:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+/* ===== Settings page ===================================================
+   Centered, max-width column inside #main. Each top-level subsection
+   (RAG servers in 12c; more to come) is a `.settings__section`. */
+
+.settings {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: var(--space-xl);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xl);
+}
+
+.settings__title {
+  font-size: 24px;
+  font-weight: 500;
+  margin: 0;
+}
+
+.settings__subtitle {
+  color: var(--text-secondary);
+  margin: var(--space-xs) 0 0;
+}
+
+.settings__section-title {
+  font-size: 16px;
+  font-weight: 500;
+  margin: 0 0 var(--space-md);
+}
+
+/* The list of currently-configured servers. A vertical stack of
+   `.rag-server` rows; gap-driven spacing keeps margins out of it. */
+.rag-servers {
+  list-style: none;
+  margin: 0 0 var(--space-md);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.rag-server {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.rag-server__name { font-weight: 500; }
+
+.rag-server__url {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+  color: var(--text-secondary);
+  /* Long URLs wrap rather than overflow horizontally; `anywhere` is
+     fine here because we're rendering verbatim URLs that the user
+     typed, not paragraph text. */
+  overflow-wrap: anywhere;
+}
+
+.rag-server__delete {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-secondary);
+  padding: var(--space-xs);
+  border-radius: var(--radius-sm);
+  width: auto;
+}
+
+.rag-server__delete:hover { background: var(--surface-hover); color: var(--danger); }
+
+/* The "add new server" form. Three-column grid: name input, url input,
+   submit button. Stacks nicely on narrow viewports because the inputs
+   wrap their labels. */
+.rag-server-form {
+  display: grid;
+  grid-template-columns: 1fr 2fr auto;
+  gap: var(--space-sm);
+  align-items: end;
+  padding: var(--space-md);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.rag-server-form label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.rag-server-form input {
+  font-size: 14px;
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text-primary);
+  /* Override Pico's tall default form-control height + bottom margin
+     so the inputs match the compact settings-page baseline. */
+  height: auto;
+  margin: 0;
+}
+
+.rag-server-form button {
+  background: var(--accent);
+  color: var(--accent-on);
+  border: none;
+  padding: var(--space-xs) var(--space-md);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-weight: 500;
+}

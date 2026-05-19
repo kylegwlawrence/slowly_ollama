@@ -40,6 +40,7 @@ Mid-stream failures emit an SSE ``event: error`` (headers already sent).
 
 import html
 import re
+import sqlite3
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Annotated
@@ -50,8 +51,19 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
 from app import ollama, queries
+from app import rag_servers as _rag_servers_module
 from app.dependencies import DB, OllamaClient
 from app.ollama import OllamaProtocolError, OllamaUnavailable
+
+# Phase 12c: importing app.tools.rag has the side effect of registering
+# the `query_rag` tool via its @tool decorator. Aliased to `_rag_tool`
+# and silenced with noqa so the import isn't flagged as unused —
+# `refresh_query_rag_source_description` is the only name we call
+# directly from this module, but the side-effecting import must land
+# regardless so `TOOLS["query_rag"]` exists by the time anything
+# downstream (settings handlers, the streaming loop in 12d) reads it.
+from app.tools import rag as _rag_tool  # noqa: F401
+from app.tools.rag import refresh_query_rag_source_description
 
 # Templates live at the project root. Resolving relative to this file's
 # location keeps the directory lookup correct regardless of where
@@ -142,6 +154,99 @@ def new_chat_endpoint(request: Request) -> Response:
         name="_composer.html",
         context={},
     )
+
+
+# ---------------------------------------------------------------------------
+# Settings (RAG servers — phase 12c)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/settings", response_class=HTMLResponse)
+def settings_endpoint(request: Request, db: DB) -> Response:
+    """Standalone settings page — RAG servers in phase 12c.
+
+    Direct browser hits return the full index shell with the settings
+    fragment preloaded in the main slot (so reload / bookmarks land on
+    the same view). HTMX requests get just the fragment, sized for a
+    cheap swap into ``#main``. Mirrors the branching pattern in
+    ``get_chat_panel_endpoint``.
+    """
+    servers = _rag_servers_module.list_servers(db)
+    if request.headers.get("HX-Request"):
+        return templates.TemplateResponse(
+            request=request,
+            name="_settings.html",
+            context={"servers": servers},
+        )
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html",
+        context={
+            "chats": queries.list_conversations(db),
+            "conversation": None,
+            "messages": [],
+            "active_chat_id": None,
+            "settings_view": True,
+            # Passed under `rag_servers` so the index template's
+            # `{% set servers = rag_servers %}` adapter resolves it for
+            # the included _settings.html fragment.
+            "rag_servers": servers,
+        },
+    )
+
+
+@router.post("/settings/servers", response_class=HTMLResponse)
+def add_server_endpoint(
+    request: Request,
+    db: DB,
+    name: Annotated[str, Form()],
+    url: Annotated[str, Form()],
+) -> Response:
+    """Add a RAG server; return the new row for ``hx-swap="beforeend"``.
+
+    A UNIQUE-constraint collision on the server name comes back from
+    SQLite as ``IntegrityError`` — we map it to a 409 with a short
+    plain-text body. HTMX's default behaviour is to NOT swap a non-2xx
+    response, so the existing list stays intact and the form keeps the
+    user's typed values (its `after-request` reset is guarded on
+    ``event.detail.successful``).
+
+    On success we call ``refresh_query_rag_source_description`` so the
+    next chat turn's tool spec reflects the newly-added source name.
+    """
+    try:
+        server = _rag_servers_module.create_server(
+            db, name=name.strip(), url=url.strip()
+        )
+    except sqlite3.IntegrityError:
+        return HTMLResponse(
+            f"Server name '{html.escape(name)}' already in use.",
+            status_code=status.HTTP_409_CONFLICT,
+        )
+    refresh_query_rag_source_description()
+    return templates.TemplateResponse(
+        request=request,
+        name="_rag_server_row.html",
+        context={"server": server},
+    )
+
+
+@router.delete(
+    "/settings/servers/{server_id}",
+    response_class=HTMLResponse,
+    status_code=status.HTTP_200_OK,
+)
+def delete_server_endpoint(server_id: int, db: DB) -> Response:
+    """Delete a RAG server; return empty 200 for ``hx-swap="delete"``.
+
+    Mirrors ``delete_chat_endpoint``'s shape: idempotent at the query
+    layer (missing ids are silently accepted), empty body so HTMX just
+    removes the row. The list-description refresh keeps the tool's
+    schema in sync with the (now-shrunk) set of source names.
+    """
+    _rag_servers_module.delete_server(db, server_id)
+    refresh_query_rag_source_description()
+    return Response(content="", status_code=status.HTTP_200_OK)
 
 
 # ---------------------------------------------------------------------------
