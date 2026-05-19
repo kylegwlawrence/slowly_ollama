@@ -39,11 +39,8 @@ Mid-stream failures emit an SSE ``event: error`` (headers already sent).
 """
 
 import html
-import json
 import re
 import sqlite3
-import time
-from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Annotated
 
@@ -58,24 +55,17 @@ from app.dependencies import DB, OllamaClient
 from app.ollama import OllamaProtocolError, OllamaUnavailable
 from app.rag_health import probe_rag_health
 
-# Phase 12d: importing app.tools.builtins has the side effect of
-# registering the `current_time` tool via its @tool decorator. Without
-# this import the production app would only ever see `query_rag`
-# (registered transitively via the `rag` import below) — tests in
-# tests/test_tools.py import builtins themselves, which masked the gap
-# until the 12d agent flagged it. noqa because the import is purely a
-# side effect; we never reference the module by name here.
+# Side-effecting imports: app.tools.builtins registers `current_time`
+# and app.tools.rag registers `query_rag` via their @tool decorators.
+# Without these imports, the production app would never call those
+# modules (the registry would be empty). They live in routes.py rather
+# than generation.py because main.py only imports routes; moving them
+# to generation.py would still work today (routes imports generation)
+# but couples the registration to an internal seam. The noqa silences
+# the unused-import warning since the imports are purely for side
+# effect.
 from app.tools import builtins as _builtins  # noqa: F401
-
-# Phase 12c: importing app.tools.rag has the side effect of registering
-# the `query_rag` tool via its @tool decorator. Aliased to `_rag_tool`
-# and silenced with noqa so the import isn't flagged as unused —
-# `refresh_query_rag_source_description` is the only name we call
-# directly from this module, but the side-effecting import must land
-# regardless so `TOOLS["query_rag"]` exists by the time anything
-# downstream (settings handlers, the streaming loop in 12d) reads it.
 from app.tools import rag as _rag_tool  # noqa: F401
-from app.tools import format_tool_invocation, run_tool, tool_specs_for_ollama
 from app.tools.rag import refresh_query_rag_source_description
 
 # Templates live at the project root. Resolving relative to this file's
@@ -309,32 +299,6 @@ def _placeholder_name(content: str) -> str:
         if stripped:
             return stripped[:40]
     return "New chat"
-
-
-def _sse(payload: str, event: str | None = None) -> str:
-    """Format an HTML payload as a single SSE message.
-
-    Each line of ``payload`` becomes its own ``data:`` line — that's
-    the SSE spec's rule for multi-line content (e.g. an HTML fragment
-    that contains embedded newlines). The browser reassembles them
-    with ``\\n`` separators before delivering to the listener.
-
-    Args:
-        payload: HTML string (or empty) to put in the data field.
-        event: Optional named event. Default events fire the generic
-            handler; named events (``token``, ``done``, ``error``)
-            let HTMX's ``sse-swap`` dispatch them to specific targets.
-
-    Returns:
-        A complete SSE message ending in the event terminator
-        ``\\n\\n``.
-    """
-    prefix = f"event: {event}\n" if event else ""
-    # Split-and-rejoin handles newlines inside the HTML fragment.
-    # Empty payload still needs a `data:` line to be a valid event.
-    lines = payload.split("\n") if payload else [""]
-    data_lines = "".join(f"data: {line}\n" for line in lines)
-    return f"{prefix}{data_lines}\n"
 
 
 # ---------------------------------------------------------------------------
