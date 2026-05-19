@@ -55,6 +55,7 @@ from app import ollama, queries
 from app import rag_servers as _rag_servers_module
 from app.dependencies import DB, OllamaClient
 from app.ollama import OllamaProtocolError, OllamaUnavailable
+from app.rag_health import probe_rag_health
 
 # Phase 12d: importing app.tools.builtins has the side effect of
 # registering the `current_time` tool via its @tool decorator. Without
@@ -207,13 +208,19 @@ def settings_endpoint(request: Request, db: DB) -> Response:
 
 
 @router.post("/settings/servers", response_class=HTMLResponse)
-def add_server_endpoint(
+async def add_server_endpoint(
     request: Request,
     db: DB,
     name: Annotated[str, Form()],
     url: Annotated[str, Form()],
 ) -> Response:
     """Add a RAG server; return the new row for ``hx-swap="beforeend"``.
+
+    Probes the remote ``/health`` endpoint BEFORE inserting so a row
+    only lands in SQLite if the database the user named is actually
+    healthy. A failed probe returns a 502 with the reason as a plain-
+    text body, which the form's ``after-request`` JS pipes into the
+    inline error region.
 
     A UNIQUE-constraint collision on the server name comes back from
     SQLite as ``IntegrityError`` — we map it to a 409 with a short
@@ -225,13 +232,23 @@ def add_server_endpoint(
     On success we call ``refresh_query_rag_source_description`` so the
     next chat turn's tool spec reflects the newly-added source name.
     """
+    name_clean = name.strip()
+    url_clean = url.strip()
+
+    healthy, reason = await probe_rag_health(name_clean, url_clean)
+    if not healthy:
+        return HTMLResponse(
+            reason,
+            status_code=status.HTTP_502_BAD_GATEWAY,
+        )
+
     try:
         server = _rag_servers_module.create_server(
-            db, name=name.strip(), url=url.strip()
+            db, name=name_clean, url=url_clean
         )
     except sqlite3.IntegrityError:
         return HTMLResponse(
-            f"Server name '{html.escape(name)}' already in use.",
+            f"Server name '{html.escape(name_clean)}' already in use.",
             status_code=status.HTTP_409_CONFLICT,
         )
     refresh_query_rag_source_description()

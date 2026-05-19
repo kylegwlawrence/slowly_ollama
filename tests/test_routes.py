@@ -82,9 +82,22 @@ ClientFactory = Callable[
 def make_client(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> Iterator[ClientFactory]:
-    """Yield a factory that builds TestClients with a fresh DB + mock Ollama."""
+    """Yield a factory that builds TestClients with a fresh DB + mock Ollama.
+
+    Also installs a default "healthy" stub for ``app.routes.probe_rag_health``
+    so existing /settings/servers POST tests don't accidentally hit the real
+    network. Tests that need to assert the health-check failure paths
+    re-patch the same attribute in their own body.
+    """
     monkeypatch.setenv("DB_PATH", str(tmp_path / "chats.db"))
     monkeypatch.setenv("OLLAMA_HOST", "http://test")
+
+    async def _default_healthy_probe(name: str, base_url: str) -> tuple[bool, str]:
+        return (True, "")
+
+    monkeypatch.setattr(
+        "app.routes.probe_rag_health", _default_healthy_probe
+    )
 
     from main import app
 
@@ -1517,6 +1530,130 @@ def test_settings_add_server_duplicate_name_returns_409(
     assert "already in use" in response.text
 
 
+def test_settings_add_server_health_fail_returns_502(
+    make_client: ClientFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing health probe blocks the insert and returns 502 + reason.
+
+    The body is the plain-text reason produced by ``probe_rag_health``;
+    the form's ``hx-on::after-request`` pipes it into the inline error
+    region verbatim. No row is created on failure.
+    """
+    async def _unhealthy(name: str, base_url: str) -> tuple[bool, str]:
+        return (False, "'arxiv_rag' is not healthy (status: 'degraded').")
+
+    monkeypatch.setattr("app.routes.probe_rag_health", _unhealthy)
+
+    with make_client(_ollama_unreachable) as client:
+        response = client.post(
+            "/settings/servers",
+            data={"name": "arxiv_rag", "url": "http://host1:8002/arxiv_rag"},
+        )
+        # No row inserted — the rendered list has no `rag-server-<id>`
+        # entries. Use the row-id marker rather than a name substring
+        # because "arxiv_rag" now appears in the form's placeholder too.
+        listing = client.get("/settings")
+
+    assert response.status_code == 502
+    assert response.text == "'arxiv_rag' is not healthy (status: 'degraded')."
+    # The list element exists but contains no <li> rows. Each row is
+    # `<li id="rag-server-N" class="rag-server">`; the form's error
+    # div uses id="rag-server-form-error" so we can't substring-match
+    # the id prefix alone.
+    assert 'class="rag-server"' not in listing.text
+
+
+def test_settings_add_server_health_unreachable_returns_502(
+    make_client: ClientFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Network-level probe failures bubble up as 502 with the unreachable msg."""
+    async def _unreachable(name: str, base_url: str) -> tuple[bool, str]:
+        return (
+            False,
+            "Health check failed: server unreachable at http://host1:8002/health.",
+        )
+
+    monkeypatch.setattr("app.routes.probe_rag_health", _unreachable)
+
+    with make_client(_ollama_unreachable) as client:
+        response = client.post(
+            "/settings/servers",
+            data={"name": "arxiv_rag", "url": "http://host1:8002/arxiv_rag"},
+        )
+
+    assert response.status_code == 502
+    assert "unreachable" in response.text
+
+
+def test_settings_add_server_health_unknown_name_returns_502(
+    make_client: ClientFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A name not present in /health's databases map is rejected.
+
+    The stub mirrors the real probe's wording: not-found errors list
+    the live _rag databases (filtered from the /health response), so
+    the message stays accurate as new sources are added.
+    """
+    async def _unknown(name: str, base_url: str) -> tuple[bool, str]:
+        return (
+            False,
+            f"'{name}' not found in /health response."
+            " Available RAG databases: arxiv_rag, factbook_rag.",
+        )
+
+    monkeypatch.setattr("app.routes.probe_rag_health", _unknown)
+
+    with make_client(_ollama_unreachable) as client:
+        response = client.post(
+            "/settings/servers",
+            data={"name": "bogus_rag", "url": "http://host1:8002/bogus_rag"},
+        )
+
+    assert response.status_code == 502
+    assert "'bogus_rag' not found" in response.text
+    # The reason lists the live _rag databases so the user can self-correct.
+    assert "Available RAG databases" in response.text
+
+
+def test_settings_add_server_health_probe_invoked_with_typed_values(
+    make_client: ClientFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The route passes the stripped name + URL to the probe.
+
+    Whitespace must be trimmed BEFORE the probe — otherwise a user
+    typing a trailing space would see ``'arxiv_rag '`` (with the
+    space) reported as not found. Mirrors how the success path
+    later inserts the trimmed values.
+    """
+    seen: dict[str, str] = {}
+
+    async def _capture(name: str, base_url: str) -> tuple[bool, str]:
+        seen["name"] = name
+        seen["url"] = base_url
+        return (True, "")
+
+    monkeypatch.setattr("app.routes.probe_rag_health", _capture)
+
+    with make_client(_ollama_unreachable) as client:
+        response = client.post(
+            "/settings/servers",
+            data={
+                "name": "  arxiv_rag  ",
+                "url": "  http://host1:8002/arxiv_rag  ",
+            },
+        )
+
+    assert response.status_code == 200
+    assert seen == {
+        "name": "arxiv_rag",
+        "url": "http://host1:8002/arxiv_rag",
+    }
+
+
 def test_settings_renders_form_error_region(
     make_client: ClientFactory,
 ) -> None:
@@ -1537,6 +1674,26 @@ def test_settings_renders_form_error_region(
     assert 'role="alert"' in response.text
     # `hidden` is a boolean attribute — present means hidden.
     assert "hidden></div>" in response.text or 'hidden=""' in response.text
+
+
+def test_settings_renders_health_check_icon_slot(
+    make_client: ClientFactory,
+) -> None:
+    """The settings page renders an empty #health-check-icon slot.
+
+    Contract: the form's ``hx-on::after-request`` writes the ✓/✗ glyph
+    into ``#health-check-icon``, so that element must exist on initial
+    render. It starts empty — the JS fills it on submit.
+    """
+    with make_client(_ollama_unreachable) as client:
+        response = client.get("/settings", headers={"HX-Request": "true"})
+
+    assert response.status_code == 200
+    assert 'id="health-check-icon"' in response.text
+    assert 'class="health-icon"' in response.text
+    # `aria-live="polite"` lets AT announce the result when the glyph
+    # swaps in without interrupting the user mid-keystroke.
+    assert 'aria-live="polite"' in response.text
 
 
 def test_settings_delete_server_empty_200(

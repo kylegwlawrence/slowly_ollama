@@ -27,6 +27,10 @@
   --accent-tonal-text: #3d6549;
   --accent-on: #1f3a26;
   --danger: #d93025;
+  /* Mirrors --danger: the deep WCAG-AA green Google uses for "ok"
+     dots in their Material samples. Used by the health-check icon
+     next to the add-server button (.health-icon__ok). */
+  --success: #137333;
 
   --space-xs: 4px;
   --space-sm: 8px;
@@ -68,6 +72,9 @@
   --accent-tonal: #1a2e22;
   --accent-tonal-text: #9ccaa6;
   --danger: #f28b82;
+  /* Lighter sage-leaning green so the check_circle glyph reads
+     against the dark surface without going neon. */
+  --success: #81c995;
   --shadow-sm: 0 1px 0 rgba(0, 0, 0, 0.3);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5);
 }
@@ -814,7 +821,11 @@ body {
    wrap their labels. */
 .rag-server-form {
   display: grid;
-  grid-template-columns: 1fr 2fr auto;
+  /* Four tracks: name input, URL input, Add-server button, then a
+     compact track for the health-check result icon. The icon track
+     is `auto` so it collapses to the glyph's natural width when
+     empty and never pushes the button further from the URL field. */
+  grid-template-columns: 1fr 2fr auto auto;
   gap: var(--space-sm);
   align-items: end;
   padding: var(--space-md);
@@ -858,6 +869,25 @@ body {
      aligns with the bottom of the inputs in the grid row. */
   margin: 0;
 }
+
+/* Health-check result indicator. Sits in the 4th grid column to the
+   right of the "Add server" button. The container is empty by
+   default; the form's `hx-on::after-request` JS injects either a
+   check_circle (success, green) or cancel (failure, red) Material
+   Symbols glyph after each submit. `min-width` reserves space so
+   the button doesn't shift horizontally when the glyph appears. */
+.health-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  min-width: 22px;
+  /* Match the button's bottom edge — both sit in the same row. */
+  align-self: end;
+  padding-bottom: 2px;
+}
+.health-icon__ok   { color: var(--success); }
+.health-icon__fail { color: var(--danger); }
 
 /* Inline form error for the add-server form. Filled by the form's
    `hx-on::after-request` from the 4xx response body (the route returns a
