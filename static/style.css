@@ -858,3 +858,22 @@ body {
      aligns with the bottom of the inputs in the grid row. */
   margin: 0;
 }
+
+/* Inline form error for the add-server form. Filled by the form's
+   `hx-on::after-request` from the 4xx response body (the route returns a
+   plain-text 409 like "Server name 'arxiv' already in use."). Hidden via
+   the `hidden` attribute until the JS unhides it.
+
+   `grid-column: 1 / -1` spans all three columns of `.rag-server-form` so
+   the error sits as its own row below the inputs + button. The tint uses
+   `color-mix` against `var(--danger)`, so dark mode (where `--danger`
+   flips to a lighter salmon) gets a correspondingly softer background
+   without a second token. */
+.form-error {
+  grid-column: 1 / -1;
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+}
