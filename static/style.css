@@ -40,9 +40,9 @@
   --space-lg: 20px;
   --space-xl: 28px;
 
-  --radius-sm: 2px;
-  --radius-md: 5px;
-  --radius-lg: 8px;
+  --radius-sm: 1px;
+  --radius-md: 3px;
+  --radius-lg: 5px;
   --radius-pill: 9999px;
 
   /* Near-flat — relies on borders for separation rather than depth. */
@@ -126,7 +126,7 @@ body {
 }
 
 .sidebar__logo {
-  font-size: 20px;
+  font-size: 24px;
   font-weight: 700;
   color: var(--accent-tonal-text);
   letter-spacing: -0.5px;
@@ -436,7 +436,7 @@ body {
 .message {
   max-width: 75%;
   padding: var(--space-md) var(--space-lg);
-  border-radius: 10px;
+  border-radius: 6px;
   word-wrap: break-word;
   position: relative;
 }
@@ -548,6 +548,7 @@ body {
   background: var(--accent-tonal);
   border: 1px solid var(--border);
   color: var(--text-primary);
+  padding: var(--space-sm) var(--space-md);
 }
 
 .message--assistant {
@@ -641,7 +642,7 @@ body {
   gap: var(--space-sm);
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 8px;
   padding: var(--space-sm) var(--space-sm) var(--space-sm) var(--space-lg);
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
@@ -665,7 +666,7 @@ body {
   color: var(--text-primary);
   background: transparent;
   field-sizing: content;
-  min-height: 24px;
+  min-height: 36px;
   max-height: 200px;
   padding: var(--space-xs) 0;
 }
