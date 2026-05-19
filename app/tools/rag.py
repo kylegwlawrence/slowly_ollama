@@ -154,10 +154,13 @@ async def query_rag(source: str, query: str) -> str:
             )
     except httpx.HTTPError:
         # Network-level failure (DNS, connect, timeout, read error).
-        # The model gets a plain explanatory string — it can apologise
-        # to the user or try another source without the chat stream
-        # getting nuked by a raise.
-        return f"RAG source '{source}' unreachable."
+        # Include the configured source list so the model can self-correct
+        # on its next tool call rather than guessing a source name.
+        names = ", ".join(by_name.keys()) or "(none configured)"
+        return (
+            f"RAG source '{source}' unreachable."
+            f" Configured sources: {names}"
+        )
 
     # Status code branches: 503 is the documented "indexes not built"
     # signal; >=500 is server-side trouble; >=400 covers any client-side
