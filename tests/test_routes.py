@@ -113,21 +113,28 @@ def make_client(
         app.dependency_overrides[get_ollama_client] = lambda: mock_client
         return TestClient(app)
 
-    # Snapshot live_generations so per-test residue doesn't bleed
-    # across tests. Phase 12g changed the registry to retain done
-    # states (so slow reloads can replay), which means a finished
-    # gen from a previous test would otherwise sit in the dict and
-    # confuse a same-id conversation in the next test.
-    from app import generation as _generation
-    saved_generations = dict(_generation.live_generations)
-    _generation.live_generations.clear()
-
     yield _make
-
-    _generation.live_generations.clear()
-    _generation.live_generations.update(saved_generations)
     app.dependency_overrides.clear()
     app.dependency_overrides.update(saved_overrides)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_live_generations() -> Iterator[None]:
+    """Snapshot + clear `generation.live_generations` around every test.
+
+    Phase 12g retains done states in the registry so slow-reload
+    replays still work, which means a finished gen from a previous
+    test would otherwise sit in the dict and confuse a same-id
+    conversation in the next test. Autouse so cancellation tests
+    that bypass `make_client` (driving start_generation directly)
+    also benefit — no per-test manual `.pop()` needed.
+    """
+    from app import generation as _generation
+    saved = dict(_generation.live_generations)
+    _generation.live_generations.clear()
+    yield
+    _generation.live_generations.clear()
+    _generation.live_generations.update(saved)
 
 
 # ---------------------------------------------------------------------------
@@ -2072,7 +2079,6 @@ async def test_stream_persists_partial_assistant_on_aclose(
     # Registry retained the (now-done) state so a slow-reload
     # consume_generation would still see the events. Clean up so
     # the next test starts fresh.
-    generation.live_generations.pop(chat.id, None)
 
 
 @pytest.mark.asyncio
@@ -2153,7 +2159,6 @@ async def test_stream_persists_placeholder_when_aclosed_during_tool_execution(
     assistant_rows = [r for r in rows if r.role == "assistant"]
     assert len(assistant_rows) == 1
     assert assistant_rows[0].content == "(response interrupted)"
-    generation.live_generations.pop(chat.id, None)
 
 
 def test_stream_persists_partial_assistant_on_cancellation(
@@ -2320,7 +2325,6 @@ async def test_regenerate_cancellation_preserves_original_when_no_chunks(
         ]
     assert len(rows) == 1
     assert rows[0].content == "original"
-    generation.live_generations.pop(chat.id, None)
 
 
 @pytest.mark.asyncio
@@ -2390,7 +2394,6 @@ async def test_regenerate_cancellation_writes_partial_when_tokens_arrived(
     # the content is now the partial — original was overwritten.
     assert len(rows) == 1
     assert rows[0].content == "new partial"
-    generation.live_generations.pop(chat.id, None)
 
 
 def test_build_done_card_oobs_empty_in_flight_only_emits_summary() -> None:
