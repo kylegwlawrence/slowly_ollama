@@ -148,14 +148,6 @@ body {
   gap: var(--space-lg);
 }
 
-.composer__greeting {
-  font-size: 28px;
-  font-weight: 500;
-  color: var(--text-primary);
-  text-align: center;
-  margin: 0;
-}
-
 .composer__form {
   display: flex;
   flex-direction: column;
