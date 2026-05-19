@@ -32,10 +32,10 @@ contract.
 
 ## RAG API contract (locked)
 
-Inferred verbatim from the reference repo `kylegwlawrence/rags`
-at `api/_chunks.py`, `api/models.py`, `api/routers/{arxiv,
-factbook,openalex,gutenberg}.py`, and `CLAUDE.md` (commit-as-of:
-main branch when read during planning).
+Inferred verbatim from a separate reference RAG-server repo at
+`api/_chunks.py`, `api/models.py`, `api/routers/{arxiv,factbook,
+openalex,gutenberg}.py`, and its `CLAUDE.md` (commit-as-of: main
+branch when read during planning).
 
 ### Request
 
