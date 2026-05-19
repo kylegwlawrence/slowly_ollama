@@ -5,7 +5,7 @@
    /settings direct hit shows a stable "Settings" title. #}
 {% block title %}
   {% if settings_view|default(false) %}Settings — {% endif %}
-  {% if conversation %}{{ conversation.name }} — {% endif %}ollama_slowly
+  {% if conversation %}{{ conversation.name }} — {% endif %}olliellama
 {% endblock %}
 
 {% block content %}
@@ -17,7 +17,7 @@
        and pushes the URL back to `/` so reload restores the empty
        state. #}
     <div class="sidebar__header">
-      <h1>ollama_slowly</h1>
+      <h1 class="sidebar__logo">olliellama</h1>
       <a class="sidebar__new-chat"
          href="/"
          hx-get="/new"

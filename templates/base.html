@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}ollama_slowly{% endblock %}</title>
+  <title>{% block title %}olliellama{% endblock %}</title>
 
   {# Vendored locally — see static/ for the actual files. Pico classless
      gives semantic-HTML defaults; style.css layers the Google Chat
@@ -17,6 +17,27 @@
      while still preserving order. #}
   <script src="/static/htmx.min.js" defer></script>
   <script src="/static/htmx-ext-sse.js" defer></script>
+  <script>
+    /* Update aria-current="page" on sidebar chat rows whenever the user
+       navigates between chats, new chat, or settings via HTMX. Without
+       this, the server only sets aria-current on full-page loads — HTMX
+       swaps only replace #main, leaving the sidebar stale. */
+    document.addEventListener('click', function(e) {
+      var chatLink = e.target.closest('#chats-list .chat-item a');
+      if (chatLink) {
+        document.querySelectorAll('#chats-list .chat-item').forEach(function(li) {
+          li.removeAttribute('aria-current');
+        });
+        chatLink.closest('.chat-item').setAttribute('aria-current', 'page');
+        return;
+      }
+      if (e.target.closest('.sidebar__new-chat, .sidebar__settings')) {
+        document.querySelectorAll('#chats-list .chat-item').forEach(function(li) {
+          li.removeAttribute('aria-current');
+        });
+      }
+    });
+  </script>
 
   {# These two rules MUST stay inline — tests substring-match them in
      every rendered page (see test_base_disables_message_button_while_streaming
