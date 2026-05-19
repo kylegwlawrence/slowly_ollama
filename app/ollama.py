@@ -95,16 +95,29 @@ def create_client() -> httpx.AsyncClient:
     returned client is not entered as a context manager — the caller is
     responsible for closing it (typically Phase 6's FastAPI lifespan).
 
+    Timeout policy: httpx's default is 5 seconds across all phases,
+    which is far too tight for a local chat model's first-token
+    latency on cold load (a 7B model can take 10-30 seconds to warm
+    up the first time it's used in a session). We loosen READ to 120
+    seconds — long enough for any reasonable cold-start — while
+    keeping CONNECT at 5 seconds (a localhost connect that takes
+    longer than that means Ollama is wedged, not slow). Per-call
+    overrides still win, e.g. ``generate_title`` passes ``timeout=10``
+    to bound how long the SSE connection stays open after the
+    user-visible reply.
+
     Returns:
-        A freshly built ``httpx.AsyncClient`` with ``base_url`` set so
-        the rest of the module can use relative paths like
-        ``/api/tags``.
+        A freshly built ``httpx.AsyncClient`` with ``base_url`` and a
+        chat-friendly default timeout configured.
 
     Raises:
         KeyError: If ``OLLAMA_HOST`` is not set in ``.env`` or the
             environment.
     """
-    return httpx.AsyncClient(base_url=ollama_host())
+    return httpx.AsyncClient(
+        base_url=ollama_host(),
+        timeout=httpx.Timeout(120.0, connect=5.0),
+    )
 
 
 async def list_models(client: httpx.AsyncClient) -> list[str]:
