@@ -312,6 +312,13 @@ async def list_models_endpoint(
 ) -> Response:
     """Return ``<option>`` tags for the model dropdown.
 
+    Phase 12f filters this list to models whose ``/api/show`` capability
+    list advertises ``"tools"`` — picking a non-tool-capable model from
+    the dropdown 400s on the first message because every chat turn ships
+    with ``tools=[...]`` in the request. ``list_tool_capable_models``
+    caches per process so the per-model ``/api/show`` round trips only
+    pay the cost on the first render in a 60-second window.
+
     On Ollama failure this returns 200 with a single disabled
     ``<option>`` carrying an explanatory message. The reason for not
     returning 5xx: HTMX won't swap the dropdown's contents on a
@@ -322,7 +329,7 @@ async def list_models_endpoint(
     user a clear message to act on.
     """
     try:
-        models = await ollama.list_models(client)
+        models = await ollama.list_tool_capable_models(client)
     except OllamaUnavailable:
         return templates.TemplateResponse(
             request=request,

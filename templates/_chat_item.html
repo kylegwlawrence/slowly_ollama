@@ -19,8 +19,10 @@
 
    The delete button still uses `hx-confirm` for the browser-native
    "are you sure?" prompt and `hx-swap="delete"` to remove the <li>
-   on success. The inline JS on after-request redirects to `/` if the
-   user happened to be viewing the deleted chat. #}
+   on success. If the user happened to be viewing the deleted chat,
+   the server attaches `HX-Location: /` to the 200 response (see
+   `delete_chat_endpoint` in app/routes.py) and HTMX navigates the
+   panel back to the empty state. #}
 {# `active_chat_id` is only set when this row is rendered as part of the
    sidebar list for a known active chat (the index/panel endpoints pass
    it through). Standalone renders — `list_chats_endpoint`,

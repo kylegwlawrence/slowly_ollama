@@ -137,19 +137,66 @@ def _isolate_live_generations() -> Iterator[None]:
     _generation.live_generations.update(saved)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_tool_capability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[None]:
+    """Reset the capability cache and default ``model_supports_tools`` to True.
+
+    Phase 12f gates ``tools=`` on Ollama's reported capability for the
+    chat's model. Route tests that exercise the streaming or
+    tool-calling paths assume the chat's model IS tool-capable;
+    without this default-True stub every handler in this file would
+    have to mock ``/api/show`` in addition to its ``/api/tags`` and
+    ``/api/chat`` responses. Two carve-outs:
+
+    - Tests that assert the DROPDOWN filter go through
+      ``list_tool_capable_models`` directly (it's what ``/models``
+      now calls), which bypasses this stub. Those tests mock
+      ``/api/show`` in their own handlers and exercise the real
+      filter.
+    - Tests that want to verify the generation-side fallback
+      (``tools_payload = None`` when the model isn't capable)
+      re-patch ``model_supports_tools`` themselves with their own
+      monkeypatch.
+    """
+    from app import ollama as _ollama
+    _ollama.reset_capability_cache()
+
+    async def _capable(_client: object, _name: str) -> bool:
+        return True
+
+    monkeypatch.setattr(_ollama, "model_supports_tools", _capable)
+    yield
+    _ollama.reset_capability_cache()
+
+
 # ---------------------------------------------------------------------------
 # /models
 # ---------------------------------------------------------------------------
 
 
 def test_models_returns_option_tags(make_client: ClientFactory) -> None:
-    """GET /models renders Ollama's models as <option> tags."""
+    """GET /models renders Ollama's tool-capable models as <option> tags.
+
+    Phase 12f added the /api/show capability filter, so the route now
+    fans out one POST per /api/tags entry. Both models in this test
+    advertise 'tools' so the rendered fragment matches the pre-12f
+    behaviour — order preserved from /api/tags.
+    """
+    import json as _json
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/api/tags"
+        if request.url.path == "/api/tags":
+            return httpx.Response(
+                200,
+                json={"models": [{"name": "llama3"}, {"name": "qwen2.5"}]},
+            )
+        assert request.url.path == "/api/show", request.url.path
+        body = _json.loads(request.content)
+        assert body["model"] in {"llama3", "qwen2.5"}
         return httpx.Response(
-            200,
-            json={"models": [{"name": "llama3"}, {"name": "qwen2.5"}]},
+            200, json={"capabilities": ["completion", "tools"]}
         )
 
     with make_client(handler) as client:
@@ -160,6 +207,54 @@ def test_models_returns_option_tags(make_client: ClientFactory) -> None:
     assert 'value="qwen2.5"' in response.text
     # Order matters — option tags should appear in Ollama's order.
     assert response.text.index("llama3") < response.text.index("qwen2.5")
+
+
+def test_models_excludes_non_tool_capable_models(
+    make_client: ClientFactory,
+) -> None:
+    """Models whose /api/show capabilities lack 'tools' don't appear.
+
+    The dropdown is the user's only path to picking a chat model; if
+    we listed non-tool-capable ones (embedding/reranker/older chat
+    models), submitting would 400 against Ollama because every chat
+    request ships with tools=[...]. 12f filters the list upstream so
+    that footgun goes away.
+    """
+    import json as _json
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(
+                200,
+                json={"models": [
+                    {"name": "llama3.1:8b"},
+                    {"name": "nomic-embed-text:latest"},
+                    {"name": "qwen2.5:7b"},
+                ]},
+            )
+        assert request.url.path == "/api/show", request.url.path
+        body = _json.loads(request.content)
+        # The third model gets ["embedding", "tools"] — Ollama actually
+        # reports this for the user's `qwen3-reranker` install, and
+        # the filter must NOT trust the `tools` flag on a model that's
+        # missing `completion`.
+        if body["model"] == "llama3.1:8b":
+            caps = ["completion", "tools"]
+        elif body["model"] == "qwen2.5:7b":
+            caps = ["completion", "tools"]
+        else:  # nomic-embed-text:latest — emulate a real embedder
+            caps = ["embedding"]
+        return httpx.Response(200, json={"capabilities": caps})
+
+    with make_client(handler) as client:
+        response = client.get("/models")
+
+    assert response.status_code == 200
+    assert 'value="llama3.1:8b"' in response.text
+    assert 'value="qwen2.5:7b"' in response.text
+    # The embedding model and its placeholder name MUST NOT appear in
+    # any rendered <option> — neither as a value nor as visible text.
+    assert "nomic-embed-text" not in response.text
 
 
 def test_models_returns_disabled_option_when_ollama_unreachable(
@@ -504,20 +599,25 @@ def test_chat_panel_auto_scrolls_to_bottom(
 ) -> None:
     """Long conversations open at the latest message, not the top.
 
-    Two mechanisms must be in the rendered panel:
-    - `hx-on::after-swap` on `#messages` so streaming tokens and
-      newly-sent messages keep the bottom in view.
-    - An inline script that scrolls on initial render (chat-panel
-      load) since no swap event fires at that point.
+    Two contracts must hold together:
+    - The chat panel mounts `#messages` (the scroll target).
+    - app.js delegates an htmx:afterSwap listener that scrolls the
+      bottom into view on every swap into `#main` (chat-panel mount,
+      no swap fires inside #messages) or `#messages` (streaming tokens,
+      newly-sent messages).
     """
     with make_client(_ollama_unreachable) as client:
         chat_id = _create_chat_and_get_id(client, "X")
         response = client.get(f"/chats/{chat_id}")
+        js = client.get("/static/app.js").text
 
-    # After-swap handler on the messages container.
-    assert "scrollTop = this.scrollHeight" in response.text
-    # Initial-render scroll script.
-    assert "scrollTop = m.scrollHeight" in response.text
+    # Markup contract: the scroll target exists.
+    assert 'id="messages"' in response.text
+    # Behaviour contract: app.js holds the scroll logic and is wired
+    # to the right swap targets.
+    assert "scrollMessagesToBottom" in js
+    assert "m.scrollTop = m.scrollHeight" in js
+    assert "htmx:afterSwap" in js
 
 
 def test_chat_panel_form_only_resets_on_successful_response(
@@ -528,15 +628,21 @@ def test_chat_panel_form_only_resets_on_successful_response(
     Without the `event.detail.successful` guard, a failed POST (e.g.
     the conversation was deleted in another tab → 404) would wipe the
     user's typed message and leave them with no indication of what
-    happened.
+    happened. The reset lives in app.js's `.message-form` branch of
+    the htmx:afterRequest handler.
     """
     with make_client(_ollama_unreachable) as client:
         chat_id = _create_chat_and_get_id(client, "X")
         response = client.get(f"/chats/{chat_id}")
+        js = client.get("/static/app.js").text
 
-    # The conditional must be visible in the rendered template.
-    assert "event.detail.successful" in response.text
-    assert "this.reset()" in response.text
+    # The form app.js targets is in the rendered panel.
+    assert 'class="message-form"' in response.text
+    # And app.js still gates the reset on success — `if (!e.detail.successful) return;`
+    # before the form.reset() call.
+    assert ".message-form" in js
+    assert "e.detail.successful" in js
+    assert "form.reset()" in js
 
 
 def test_chat_url_htmx_request_returns_fragment_only(
@@ -641,6 +747,7 @@ def test_index_page_references_vendored_assets(
     assert "/static/pico.classless.min.css" in response.text
     assert "/static/htmx.min.js" in response.text
     assert "/static/htmx-ext-sse.js" in response.text
+    assert "/static/app.js" in response.text
 
 
 def test_chat_item_has_delete_button(

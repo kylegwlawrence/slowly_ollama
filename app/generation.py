@@ -437,7 +437,19 @@ async def _run_generation(
     from app.routes import templates  # avoid circular import
 
     working_history = list(history)
-    tools_payload = tool_specs_for_ollama()
+    # Phase 12f: gate `tools=` on Ollama-reported capability for this
+    # specific model. The dropdown filter is the primary defense, but
+    # a conversation row pins its model at creation time — if that
+    # model later loses tool support, we'd 400 every follow-up message
+    # without this check. `model_supports_tools` returns False on
+    # cache/network failure, which collapses to `tools_payload = None`
+    # (omits the key entirely; see `maybe_tool_call`).
+    all_specs = tool_specs_for_ollama()
+    tools_payload = (
+        all_specs
+        if all_specs and await ollama.model_supports_tools(client, model)
+        else None
+    )
 
     turn_id = str(time.monotonic_ns())
     card_id = render.card_id_for(turn_id)

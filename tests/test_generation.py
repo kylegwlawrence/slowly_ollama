@@ -23,6 +23,20 @@ def _clear_live_generations():
     generation.live_generations.update(saved)
 
 
+@pytest.fixture(autouse=True)
+def _reset_capability_cache():
+    """Drop phase 12f's process-global tool-capability cache.
+
+    Same kind of module-level state as ``live_generations`` above —
+    if another file's test populates it first, our ``_run_generation``
+    calls would consult stale names instead of going through the
+    monkeypatched ``model_supports_tools`` stub.
+    """
+    ollama.reset_capability_cache()
+    yield
+    ollama.reset_capability_cache()
+
+
 def _setup_chat(db_path: Path, name: str = "test") -> int:
     """Create a chat + one user message in a fresh DB. Returns the conv id."""
     initialize_database(db_path)
@@ -338,3 +352,78 @@ def test_build_history_payload_lives_in_generation() -> None:
     assert out[1]["tool_calls"][0]["function"]["name"] == "current_time"
     # tool_result → role=tool
     assert out[2] == {"role": "tool", "content": "2026-05-19T12:00:00Z"}
+
+
+# ---------------------------------------------------------------------------
+# tools= gating (phase 12f)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_generation_omits_tools_when_model_not_tool_capable(
+    tmp_path, monkeypatch
+):
+    """When the model isn't tool-capable, /api/chat carries no ``tools`` key.
+
+    Phase 12f's belt-and-suspenders for the 400-on-non-tool-capable
+    case. The dropdown filter prevents fresh chats from being created
+    with a non-tool-capable model, but a chat row pins its model at
+    creation time — a model that later loses tool support (re-pull,
+    Ollama upgrade) would 400 every follow-up without this guard.
+    """
+    db_path = tmp_path / "chats.db"
+    conv_id = _setup_chat(db_path)
+
+    captured_bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content or b"{}")
+        captured_bodies.append(body)
+        if body.get("stream"):
+            return httpx.Response(
+                200,
+                content=(
+                    b'{"message":{"content":"hi"},"done":false}\n'
+                    b'{"message":{"content":""},"done":true}\n'
+                ),
+            )
+        return httpx.Response(
+            200, json={"message": {"content": "", "tool_calls": []}}
+        )
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="http://test",
+    )
+
+    # Stub the capability check to "not tool-capable" so we exercise
+    # the `tools_payload = None` branch in _run_generation without
+    # having to wire a full /api/tags + /api/show fixture chain.
+    async def _not_capable(_client, _model):
+        return False
+
+    monkeypatch.setattr(ollama, "model_supports_tools", _not_capable)
+
+    with open_connection(db_path) as db:
+        state = generation.start_generation(
+            client=client,
+            db=db,
+            conversation_id=conv_id,
+            model="llama3",
+            history=queries.list_messages(db, conv_id),
+            on_complete="append",
+        )
+        await state.task
+
+    # At least one probe (non-stream) plus the streaming reply both
+    # hit /api/chat. None of those bodies should include ``tools`` —
+    # ``maybe_tool_call`` omits the key when its tools arg is None,
+    # and ``stream_chat`` never sends it.
+    assert captured_bodies, "expected at least one /api/chat call"
+    assert any(not b.get("stream") for b in captured_bodies), (
+        "expected a non-stream probe so we can verify it lacked tools"
+    )
+    for body in captured_bodies:
+        assert "tools" not in body, (
+            f"non-tool-capable model still received tools=: {body}"
+        )

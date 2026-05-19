@@ -1,12 +1,19 @@
-"""Phase 5: async HTTP client wrapping the local Ollama server.
+"""Phase 5 (extended in 12f): async HTTP client wrapping the local Ollama server.
 
-Two operations, both async:
+Operations, all async:
 
-- ``list_models`` — ``GET /api/tags``, returns model names for the sidebar
-  dropdown.
+- ``list_models`` — ``GET /api/tags``, returns every installed model name.
+- ``list_tool_capable_models`` (12f) — same, filtered by ``/api/show`` to
+  models whose capability list includes ``"tools"``. Cached per process.
+- ``model_supports_tools`` (12f) — membership check against the cache used
+  to gate the ``tools=`` payload at the generation layer.
 - ``stream_chat`` — ``POST /api/chat`` with ``stream=true``, yields
   ``ChatChunk`` objects as Ollama emits them (NDJSON, one JSON object per
   line).
+- ``maybe_tool_call`` — non-streaming ``POST /api/chat`` used to detect
+  whether the model wants to call a tool before opening the stream.
+- ``generate_title`` — single-shot ``POST /api/chat`` that asks the chat's
+  own model to summarise the conversation as a sidebar title.
 
 Two failure classes are surfaced so the UI can present different errors:
 
@@ -17,7 +24,9 @@ Two failure classes are surfaced so the UI can present different errors:
   returned something I don't understand."
 """
 
+import asyncio
 import json
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
@@ -139,6 +148,133 @@ async def list_models(client: httpx.AsyncClient) -> list[str]:
         raise OllamaProtocolError(
             f"Ollama returned an unexpected /api/tags shape: {e}"
         ) from e
+
+
+# ---------------------------------------------------------------------------
+# Tool-capability filtering (phase 12f)
+# ---------------------------------------------------------------------------
+
+# Ollama advertises model capabilities ("completion", "tools", "embedding",
+# "vision", ...) on /api/show. We can't pass `tools=[...]` to a model that
+# doesn't have "tools" in its capability list — Ollama 400s. Phase 12f uses
+# the helpers below to (a) filter the composer dropdown to tool-capable
+# models only and (b) gate the tools= payload at the generation layer as
+# defense in depth for chats whose model has since lost tool support.
+
+# 60s amortises the per-model /api/show round trips across composer
+# re-renders without making installed-model updates feel stale (a freshly
+# pulled model surfaces in the dropdown within a minute).
+_CAPABILITY_TTL_SECONDS = 60.0
+
+# Module-level cache. Single-process uvicorn means a single writer; the
+# refresh runs on the event loop without external synchronisation. Shape
+# when populated: {"expires_at": float (monotonic), "names": list[str]}.
+_capability_cache: dict | None = None
+
+
+async def list_tool_capable_models(client: httpx.AsyncClient) -> list[str]:
+    """Return installed models whose /api/show capabilities include 'tools'.
+
+    Fans /api/show out over the installed models with ``asyncio.gather``
+    so a cold call against ~10 models lands in roughly 150ms instead of
+    the ~500ms a sequential walk would cost. Results are cached for
+    ``_CAPABILITY_TTL_SECONDS``; the next dropdown render is free.
+
+    Args:
+        client: An ``httpx.AsyncClient`` pointed at the Ollama host
+            (typically from ``create_client``).
+
+    Returns:
+        Tool-capable model names in /api/tags order. Models whose
+        /api/show probe fails for any reason are silently dropped —
+        better to render a slightly short list than to fail the whole
+        dropdown because a single misbehaving model errors on /show.
+
+    Raises:
+        OllamaUnavailable: /api/tags itself was unreachable or returned
+            a non-2xx status. Same contract as ``list_models``.
+        OllamaProtocolError: /api/tags returned a body we couldn't parse.
+    """
+    global _capability_cache
+    now = time.monotonic()
+    if _capability_cache and _capability_cache["expires_at"] > now:
+        # Defensive copy so callers can't mutate the cached list.
+        return list(_capability_cache["names"])
+
+    all_models = await list_models(client)
+
+    async def _supports(name: str) -> str | None:
+        """Probe one model; return its name if tool-capable, else None."""
+        try:
+            resp = await client.post("/api/show", json={"model": name})
+            resp.raise_for_status()
+            caps = resp.json().get("capabilities") or []
+            # Require BOTH "completion" and "tools". Ollama occasionally
+            # reports `["embedding", "tools"]` for derived models (e.g.
+            # reranker spinoffs from chat bases) that can't actually be
+            # used as chat models — sending /api/chat to them produces a
+            # garbage response or a 400. Legitimate chat-with-tools
+            # models always advertise "completion"; embedders / rerankers
+            # do not. Requiring both is the cheapest reliable filter we
+            # have without maintaining a name-pattern denylist.
+            return name if "completion" in caps and "tools" in caps else None
+        except (
+            httpx.HTTPError,
+            httpx.InvalidURL,
+            ValueError,
+            KeyError,
+            TypeError,
+        ):
+            # Either /api/show errored (HTTPError covers transport +
+            # status + timeout) or the body wasn't shaped like we
+            # expected. Drop this model rather than poisoning the
+            # whole result; the rest of the dropdown stays usable.
+            return None
+
+    results = await asyncio.gather(*(_supports(n) for n in all_models))
+    names = [n for n in results if n is not None]
+    _capability_cache = {
+        "expires_at": now + _CAPABILITY_TTL_SECONDS,
+        "names": names,
+    }
+    return list(names)
+
+
+async def model_supports_tools(
+    client: httpx.AsyncClient, name: str
+) -> bool:
+    """Best-effort check used to gate the ``tools=`` payload on a chat call.
+
+    The dropdown filter is the primary defense, but a chat row in SQLite
+    pins whatever model the user picked when it was created — if that
+    model later loses tool support (Ollama upgrade, model re-pulled
+    without the capability), we still need to avoid 400ing the next
+    message. This helper warms ``list_tool_capable_models`` and checks
+    membership.
+
+    Args:
+        client: An ``httpx.AsyncClient`` pointed at the Ollama host.
+        name: The model identifier to check (e.g. ``"llama3.1:8b"``).
+
+    Returns:
+        True if the cache lists ``name`` as tool-capable. False if it
+        doesn't, OR if /api/tags failed (we'd rather skip ``tools=``
+        and degrade to plain chat than risk a 400).
+    """
+    try:
+        return name in await list_tool_capable_models(client)
+    except (OllamaUnavailable, OllamaProtocolError):
+        return False
+
+
+def reset_capability_cache() -> None:
+    """Drop the per-process capability cache.
+
+    Test helper — production never calls this; the TTL handles refresh.
+    Tests poke it between cases so module-level state doesn't leak.
+    """
+    global _capability_cache
+    _capability_cache = None
 
 
 async def stream_chat(

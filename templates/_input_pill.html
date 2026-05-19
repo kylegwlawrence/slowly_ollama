@@ -1,0 +1,15 @@
+{# Shared chat-input pill: bordered textarea + circular send button.
+
+   Used by both the in-chat composer (`_chat_panel.html`) and the
+   empty-state composer (`_composer.html`). Sharing this partial keeps
+   them in lockstep (same icon, same behaviour) and gives app.js a
+   single CSS selector — `.input-pill textarea` — to delegate the
+   autogrow + Enter-to-submit handlers against. See the "Input pill"
+   section in static/app.js for the actual logic; Chrome 123+ also
+   handles autogrow natively via `field-sizing: content` in style.css. #}
+<div class="input-pill">
+  <textarea name="content" required placeholder="Message Ollama…" rows="1"></textarea>
+  <button type="submit" aria-label="Send">
+    <span class="material-symbols-outlined">arrow_upward</span>
+  </button>
+</div>

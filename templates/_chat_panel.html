@@ -8,18 +8,18 @@
     <span class="chat-panel__model">{{ conversation.model }}</span>
   </header>
 
-  {# `hx-on::after-swap` keeps the bottom of the conversation in view
-     whenever HTMX swaps content anywhere inside `#messages` — events
-     bubble, so token swaps into the streaming placeholder also
-     trigger this. `this` is `#messages` itself.
+  {# app.js keeps the bottom of the conversation in view via a
+     delegated `htmx:afterSwap` listener: any swap whose target is
+     `#main` (chat-panel mount) or `#messages` (new message / token
+     append) scrolls #messages to its scrollHeight. Events bubble, so
+     token swaps into the streaming placeholder also trigger it.
 
      Iteration source is `blocks` (from app.render.group_messages_for_render).
      Consecutive tool_call / tool_result rows fold into one
      ToolBatchBlock so they render as a single aggregated card
      above the assistant message that used them. Standalone
      user/assistant messages render via _message.html as before. #}
-  <div id="messages" class="messages"
-       hx-on::after-swap="this.scrollTop = this.scrollHeight">
+  <div id="messages" class="messages">
     {% for block in blocks %}
       {% if block.kind == "tool_batch" %}
         {% set card_id = block.card_id %}
@@ -52,72 +52,17 @@
     {% endif %}
   </div>
 
-  {# Auto-grow textarea: Chrome 123+ handles this natively via
-     `field-sizing: content` in style.css. The hx-on:input handler is
-     the fallback for Safari / Firefox — recalculates height to fit
-     the content. After a successful submit the form's after-request
-     also clears the inline height so the (now empty) textarea
-     collapses back to one row. #}
+  {# Form reset on successful submit + initial-mount scroll + the
+     tool-card tick driver all live in app.js — see the `.message-form`
+     branch of the htmx:afterRequest handler and the scrollMessagesToBottom
+     / tickToolRows sections respectively. The pill markup itself
+     (textarea + send button + auto-grow / Enter-to-submit handlers)
+     is in _input_pill.html so the in-chat and empty-state composers
+     stay in sync. #}
   <form class="message-form"
         hx-post="/chats/{{ conversation.id }}/messages"
         hx-target="#messages"
-        hx-swap="beforeend"
-        hx-on::after-request="if (event.detail.successful) { this.reset(); const ta = this.querySelector('textarea'); if (ta) ta.style.height = ''; }">
-    <div class="input-pill">
-      <textarea name="content" required placeholder="Message Ollama…"
-                rows="1"
-                hx-on:input="this.style.height = 'auto'; this.style.height = this.scrollHeight + 'px'"
-                hx-on:keydown="if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); this.form.requestSubmit(); }"></textarea>
-      <button type="submit" aria-label="Send">
-        <span class="material-symbols-outlined">send</span>
-      </button>
-    </div>
+        hx-swap="beforeend">
+    {% include "_input_pill.html" %}
   </form>
 </section>
-
-{# After-swap handles streaming + new messages. This separate script
-   handles INITIAL render: when the user picks a chat (or reloads
-   /chats/{id}), the panel ships with messages already in it and no
-   swap event fires. Without this scroll, longer conversations would
-   open scrolled to the top. #}
-<script>
-  (function () {
-    const m = document.getElementById("messages");
-    if (m) m.scrollTop = m.scrollHeight;
-  })();
-</script>
-
-{# Phase 12e tool-card tick driver. Runs ONE setInterval that updates
-   every live-ticking row's elapsed text every second. A row is
-   "live ticking" when it has data-elapsed-start but no
-   data-elapsed-final — the moment the server OOB-replaces a row with
-   a frozen variant (data-elapsed-final set), the selector stops
-   matching it and the timer freezes.
-
-   The __toolTimerStarted guard is critical: this script runs every
-   time the chat panel is swapped in (each chat-switch click), so
-   without the guard we'd accumulate one setInterval per click.
-
-   Inline rather than a separate static/.js per CONVENTIONS.md:104-108
-   ("don't graduate to a separate .js file until there's a second
-   use case"). #}
-<script>
-  (function () {
-    if (window.__toolTimerStarted) return;
-    window.__toolTimerStarted = true;
-    function fmt(ms) {
-      const s = Math.floor(ms / 1000);
-      return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-    }
-    setInterval(() => {
-      const now = Date.now();
-      document.querySelectorAll(
-        '.tool-row[data-elapsed-start]:not([data-elapsed-final])'
-      ).forEach(row => {
-        const elapsed = now - Number(row.dataset.elapsedStart);
-        const el = row.querySelector('.tool-row__elapsed');
-        if (el) el.textContent = fmt(elapsed);
-      });
-    }, 1000);
-  })();
-</script>
