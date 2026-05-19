@@ -105,63 +105,6 @@ body {
   overflow: hidden;
 }
 
-/* ===== Title-warning banner (phase 11d) =================================
-
-   Sits at the bottom of the sidebar (empty by default; populated via
-   hx-swap-oob from the SSE stream when the title model is missing).
-   Empty:has hides the wrapper so it doesn't reserve vertical space
-   when no banner is showing. */
-
-#title-warning:empty {
-  display: none;
-}
-
-.title-warning {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-xs);
-  margin-top: var(--space-md);
-  padding: var(--space-sm) var(--space-md);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-
-.title-warning .material-symbols-outlined {
-  /* Pull the leading info icon to 18px so it sits closer to the text
-     baseline. */
-  font-size: 18px;
-  flex-shrink: 0;
-}
-
-.title-warning__text { flex: 1; line-height: 1.4; }
-
-.title-warning__text code {
-  /* Make the model name read like a copy-paste target — monospace,
-     subtle highlight. */
-  font-family: ui-monospace, SFMono-Regular, monospace;
-  font-size: 11px;
-  background: var(--bg);
-  padding: 1px 4px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border);
-}
-
-.title-warning__dismiss {
-  background: none;
-  border: none;
-  cursor: pointer;
-  color: var(--text-secondary);
-  padding: 2px;
-  border-radius: var(--radius-sm);
-  width: auto;
-  flex-shrink: 0;
-}
-
-.title-warning__dismiss:hover { background: var(--surface-hover); }
-
 /* ===== Sidebar header (logo + New chat link) ============================ */
 
 .sidebar__header {

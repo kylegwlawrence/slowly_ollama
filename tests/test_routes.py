@@ -1202,7 +1202,7 @@ def test_stream_emits_title_event_after_assistant_reply(
     event carrying the OOB-swap sidebar row with the new name."""
     import app.routes as routes
 
-    async def fake_generate_title(client, history):
+    async def fake_generate_title(client, model, history):
         return "Sandwiches in Space"
 
     monkeypatch.setattr(routes.ollama, "generate_title", fake_generate_title)
@@ -1225,6 +1225,33 @@ def test_stream_emits_title_event_after_assistant_reply(
     assert "Sandwiches in Space" in text
 
 
+def test_stream_passes_conversation_model_to_title_generator(
+    make_client: ClientFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The auto-titler reuses the chat's own model — no separate one
+    to install or load."""
+    import app.routes as routes
+
+    captured: dict = {}
+
+    async def fake_generate_title(client, model, history):
+        captured["model"] = model
+        return "Anything"
+
+    monkeypatch.setattr(routes.ollama, "generate_title", fake_generate_title)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=_stream_ndjson_once())
+
+    with make_client(handler) as client:
+        # The helper POSTs `model=llama3`, so that's what we expect
+        # forwarded into the title request.
+        chat_id = _create_chat_and_get_id(client)
+        client.get(f"/chats/{chat_id}/stream")
+
+    assert captured["model"] == "llama3"
+
+
 def test_stream_skips_title_when_chat_is_locked(
     make_client: ClientFactory, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1233,7 +1260,7 @@ def test_stream_skips_title_when_chat_is_locked(
 
     called = {"n": 0}
 
-    async def fake_generate_title(client, history):
+    async def fake_generate_title(client, model, history):
         called["n"] += 1
         return "Should Not Be Used"
 
@@ -1267,7 +1294,7 @@ def test_stream_stops_title_after_third_assistant_reply(
 
     calls = []
 
-    async def fake_generate_title(client, history):
+    async def fake_generate_title(client, model, history):
         calls.append(len(history))
         return f"Title {len(calls)}"
 
@@ -1305,36 +1332,6 @@ def test_stream_stops_title_after_third_assistant_reply(
     assert "event: title" not in last.text
 
 
-def test_stream_emits_title_warning_when_model_missing(
-    make_client: ClientFactory, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """If the title model isn't installed, the stream emits a one-time
-    `title-warning` event carrying the install-this-model banner."""
-    import app.routes as routes
-    from app.ollama import OllamaModelMissing
-
-    async def fake_generate_title(client, history):
-        raise OllamaModelMissing("tinyllama:1.1b-chat-v1-fp16")
-
-    monkeypatch.setattr(routes.ollama, "generate_title", fake_generate_title)
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=_stream_ndjson_once())
-
-    with make_client(handler) as client:
-        chat_id = _create_chat_and_get_id(client)
-        response = client.get(f"/chats/{chat_id}/stream")
-
-    text = response.text
-    assert "event: title-warning" in text
-    # The banner fragment carries hx-swap-oob so HTMX targets
-    # #title-warning in the sidebar instead of dumping into the
-    # assistant placeholder.
-    assert 'id="title-warning"' in text
-    assert 'hx-swap-oob="true"' in text
-    assert "tinyllama:1.1b-chat-v1-fp16" in text
-
-
 def test_regenerate_stream_does_not_emit_title(
     make_client: ClientFactory, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1345,7 +1342,7 @@ def test_regenerate_stream_does_not_emit_title(
 
     called = {"n": 0}
 
-    async def fake_generate_title(client, history):
+    async def fake_generate_title(client, model, history):
         called["n"] += 1
         return "Should not be set by regenerate"
 

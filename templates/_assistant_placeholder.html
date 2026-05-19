@@ -1,5 +1,5 @@
 {# Empty assistant bubble. Opens an SSE connection on insert and
-   handles five named events (sse-swap="token,done,error,title,title-warning"):
+   handles four named events (sse-swap="token,done,error,title"):
 
    - `token`: each chunk's HTML-escaped text gets appended inside this
      div (`hx-swap="beforeend"`), so the response materializes as it
@@ -13,9 +13,6 @@
    - `title` (phase 11d): the renamed sidebar `<li>` with
      `hx-swap-oob="true"` on its root. HTMX takes it OOB and replaces
      the matching `#chat-{id}` row in the sidebar — the placeholder
-     itself is untouched.
-   - `title-warning` (phase 11d): the install-this-model banner with
-     `hx-swap-oob="true"` targeting `#title-warning` in the sidebar
-     footer. Same OOB-only mechanism — does not write into the
-     placeholder. #}
-<div id="assistant-stream-{{ conversation_id }}" class="message message--assistant message--streaming" data-role="assistant" hx-ext="sse" sse-connect="{{ stream_url }}" sse-swap="token,done,error,title,title-warning" hx-swap="beforeend"></div>
+     itself is untouched. Fires BEFORE done so the connection is
+     still alive when it arrives. #}
+<div id="assistant-stream-{{ conversation_id }}" class="message message--assistant message--streaming" data-role="assistant" hx-ext="sse" sse-connect="{{ stream_url }}" sse-swap="token,done,error,title" hx-swap="beforeend"></div>

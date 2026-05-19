@@ -49,26 +49,6 @@ class OllamaProtocolError(Exception):
     """
 
 
-class OllamaModelMissing(Exception):
-    """Raised when Ollama answers but the requested model isn't installed.
-
-    Distinct from ``OllamaUnavailable`` (Ollama itself is down) and
-    ``OllamaProtocolError`` (Ollama is up but the response was malformed).
-    Phase 11d's auto-titler surfaces this specifically so the UI can
-    show a one-time "install this model to enable auto-titles" banner
-    rather than a generic error.
-
-    The model name is preserved as the first arg so the caller can
-    include it in the banner copy.
-    """
-
-
-# Phase 11d: hardcoded model for auto-generated chat titles. Small,
-# fast, low-memory — runs alongside the user's chat model without
-# noticeable contention. If it's not installed, `generate_title`
-# raises `OllamaModelMissing` and the caller surfaces a banner asking
-# the user to `ollama pull` it.
-TITLE_MODEL = "tinyllama:1.1b-chat-v1-fp16"
 
 
 @dataclass(frozen=True)
@@ -225,16 +205,23 @@ async def stream_chat(
 
 async def generate_title(
     client: httpx.AsyncClient,
+    model: str,
     history: list[dict[str, str]],
 ) -> str:
-    """Ask the title model to summarize the conversation as a 3-6 word title.
+    """Ask the chat's own model to summarize the conversation as a title.
 
-    Single-shot, non-streaming POST to ``/api/chat``. Appends a final
-    user prompt asking for the title, sends the whole conversation,
-    and returns the trimmed reply.
+    Single-shot, non-streaming POST to ``/api/chat``. Reuses whatever
+    model the conversation is already using — it's warm in memory
+    from the assistant reply we just streamed, so the title roundtrip
+    is fast and we avoid having to load and keep a second model
+    resident.
 
     Args:
         client: An ``httpx.AsyncClient`` pointed at the Ollama host.
+        model: The Ollama model identifier to use for the title.
+            Phase 11d passes the conversation's own model; the chat
+            just used it successfully, so it's guaranteed installed
+            and warm.
         history: The conversation so far — the same wire-format list
             that ``stream_chat`` accepts (``[{"role", "content"}, ...]``).
             The function appends a title-request user turn before
@@ -248,22 +235,17 @@ async def generate_title(
 
     Raises:
         OllamaUnavailable: Ollama is unreachable, the request timed
-            out, or the server returned a non-2xx non-404 status.
-        OllamaModelMissing: Ollama returned 404 — the configured
-            ``TITLE_MODEL`` isn't installed locally. Distinct from
-            ``OllamaUnavailable`` so the UI can show a specific
-            "install this model" banner.
+            out, or the server returned a non-2xx status.
         OllamaProtocolError: Ollama responded with JSON we couldn't
             parse into the expected ``{"message": {"content": ...}}``
             shape.
     """
     # Instruction is delivered as a final user turn so the model treats
-    # it as the current request, not a system directive (tinyllama
-    # ignores `system` messages in practice). Verb-first ("Title
-    # this...") beats "Summarize..." because tinyllama parses the
-    # latter literally and includes the phrase "in 3-6 words" in its
-    # answer; verb-first treats the count as a constraint, not text
-    # to echo.
+    # it as the current request, not a system directive (small chat
+    # models often ignore `system` messages in practice). Verb-first
+    # ("Title this...") tends to behave better than "Summarize..." —
+    # smaller models parse the latter literally and echo the
+    # constraint phrasing in their reply.
     title_request = {
         "role": "user",
         "content": (
@@ -272,31 +254,24 @@ async def generate_title(
         ),
     }
     payload = {
-        "model": TITLE_MODEL,
+        "model": model,
         "messages": [*history, title_request],
         "stream": False,
     }
 
     try:
-        # 10s cap on the title request. Tinyllama-class models reply
-        # in well under a second on warm load; the cap is room for a
-        # cold-load on first use. Bounded so the SSE connection (which
-        # stays open until this returns or raises) doesn't dangle if
-        # Ollama wedges or the title model is genuinely too slow to
-        # be worth waiting for. On expiry httpx raises ReadTimeout
-        # (a subclass of httpx.HTTPError), which the caller catches as
+        # 10s cap on the title request. The chat model is already warm
+        # (we just used it to stream the reply), so a few-token title
+        # response should come back in well under a second. The cap
+        # bounds how long the SSE connection stays open if Ollama
+        # wedges. On expiry httpx raises ReadTimeout (a subclass of
+        # httpx.HTTPError), which the caller catches as
         # OllamaUnavailable → silent skip in _maybe_generate_title.
         response = await client.post(
             "/api/chat", json=payload, timeout=10.0
         )
     except (httpx.HTTPError, httpx.InvalidURL) as e:
         raise OllamaUnavailable(f"Title request failed: {e}") from e
-
-    # Ollama returns 404 when asked to use a model it hasn't pulled.
-    # Catch it before raise_for_status so the caller can distinguish
-    # "model missing" from generic server failures.
-    if response.status_code == 404:
-        raise OllamaModelMissing(TITLE_MODEL)
 
     try:
         response.raise_for_status()

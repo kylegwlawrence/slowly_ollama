@@ -704,15 +704,15 @@ async def _maybe_generate_title(
     the UX tradeoff (placeholder lingers in its streaming state
     for the title-gen roundtrip).
 
-    Yields zero or one SSE event:
-    - ``title``: an OOB sidebar-row swap with the new name.
-    - ``title-warning``: a one-time banner asking the user to install
-      the title model (only when Ollama returns 404 for TITLE_MODEL).
+    Yields zero or one ``title`` SSE event: an OOB sidebar-row swap
+    with the new name. The chat's own model is reused for the title
+    request (already warm in Ollama from the assistant reply), so
+    there's no separate model to install or load.
 
     Silent skips (no event yielded):
     - The chat has been manually renamed (`name_locked`).
     - The count is outside 1..3 (cap on how many times we refresh).
-    - Generic Ollama failures (down, malformed reply). The user
+    - Any Ollama failure (down, malformed reply, timeout). The user
       didn't ask for a title; we don't owe them an error.
     - The model returns empty text after stripping.
     """
@@ -727,17 +727,10 @@ async def _maybe_generate_title(
     full_history = queries.list_messages(db, conversation_id)
     try:
         title = await ollama.generate_title(
-            client, _build_history_payload(full_history)
+            client,
+            conversation.model,
+            _build_history_payload(full_history),
         )
-    except ollama.OllamaModelMissing:
-        # Surface the install hint exactly once per session. The banner
-        # template handles the de-dupe via sessionStorage so subsequent
-        # turns in the same session don't re-show it.
-        yield _sse(
-            templates.get_template("_title_warning.html").render(),
-            event="title-warning",
-        )
-        return
     except (OllamaUnavailable, OllamaProtocolError):
         # Silent — the chat keeps its current name (placeholder or
         # last successful auto-title). User can rename manually.
