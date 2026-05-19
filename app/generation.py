@@ -400,10 +400,13 @@ async def _maybe_emit_title(
     if updated is None:
         return
 
+    # Bare `hx-swap-oob="true"` tells HTMX to match by id and swap in
+    # place — the existing `#chat-{id}` row gets replaced with this
+    # renamed version when the SSE `title` event lands.
     row_html = templates.get_template("_chat_item.html").render(
         chat=updated,
         active_chat_id=updated.id,
-        oob_swap=True,
+        oob_swap="true",
     )
     await _emit(state, "title", row_html)
 
