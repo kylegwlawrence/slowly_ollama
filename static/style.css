@@ -425,6 +425,12 @@ body {
 
 /* ===== Markdown output inside assistant bubbles ========================== */
 
+/* Pico sets `color: var(--pico-color)` directly on p, ol, ul, etc., which
+   beats inherited color. Override it explicitly on all descendants. */
+.message--assistant .message__content * {
+  color: var(--text-primary);
+}
+
 /* Strip paragraph margins that Pico/browser defaults would add inside a
    bubble — use the bubble's own padding for breathing room instead. */
 .message--assistant .message__content p {
@@ -519,6 +525,7 @@ body {
   align-self: flex-start;
   background: var(--bg);
   border: 1px solid var(--border);
+  color: var(--text-primary);
 }
 
 /* Bubble grouping: consecutive same-sender bubbles share their adjacent
