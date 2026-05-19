@@ -255,6 +255,34 @@ has been violated and we learned the cost, the cost is named.
   Reload-safe: live and historic paths share `_tool_card_shell.html`
   and the same `summary_text(count, done)` helper, so verb/plural/
   ellipsis stay coordinated across both.
+- **Generation runs in a background asyncio.Task** (phase 12g). The
+  LLM call lives in `app/generation.py`'s `_run_generation`, not in
+  the SSE response handler. POST `/chats`, POST `/messages`, POST
+  `/regenerate` all call `generation.start_generation(...)` which
+  registers a `GenerationState` in the module-level
+  `live_generations` dict and spawns the task. GET `/stream`
+  becomes a thin consumer that calls `consume_generation(state)`
+  (replay events + tail) when a state is present, else
+  `consume_finished(db, conv_id)` (single done event from the
+  persisted assistant row). A client disconnect cancels the
+  consumer; the producer task keeps running and persists the
+  final reply. A reloaded page (or a second tab) attaches as a
+  fresh consumer that replays the event log from index 0 then
+  tails new events.
+- **`live_generations` retains DONE states** until the next
+  generation for the same conv evicts them. This is what makes the
+  slow-reload-after-completion case render correctly — the
+  consumer can still replay the recently-finished event log
+  instead of falling through to the lossy `consume_finished`
+  path. Memory cost: one event log per conversation that has ever
+  generated, bounded by the tool-iteration cap and max-token
+  count per turn. Acceptable for the local single-user app.
+- **Process-local non-DB state lives in `app/generation.py`'s
+  `live_generations` dict.** First piece of cross-request
+  in-memory state in this codebase. If any other phase needs
+  similar state, it should follow this pattern (module-level
+  dict, no `app.state` coupling, autouse fixture in tests to
+  clear between cases).
 - **`is_read_only` flag on every tool.** Phase 12 tools are all
   read-only (auto-execute). The flag is forward-looking — when
   write/exec tools land, the streaming loop will surface a

@@ -113,7 +113,19 @@ def make_client(
         app.dependency_overrides[get_ollama_client] = lambda: mock_client
         return TestClient(app)
 
+    # Snapshot live_generations so per-test residue doesn't bleed
+    # across tests. Phase 12g changed the registry to retain done
+    # states (so slow reloads can replay), which means a finished
+    # gen from a previous test would otherwise sit in the dict and
+    # confuse a same-id conversation in the next test.
+    from app import generation as _generation
+    saved_generations = dict(_generation.live_generations)
+    _generation.live_generations.clear()
+
     yield _make
+
+    _generation.live_generations.clear()
+    _generation.live_generations.update(saved_generations)
     app.dependency_overrides.clear()
     app.dependency_overrides.update(saved_overrides)
 
@@ -277,12 +289,20 @@ def test_create_chat_returns_201_with_panel_and_oob_row(
 def _create_chat_and_get_id(
     client: TestClient, content: str = "first message"
 ) -> int:
-    """Create a chat via the route, return its id parsed from data-chat-id.
+    """Create a chat via POST /chats and return its id.
 
-    The composer always posts (model, content). Chats land in the DB
-    with the placeholder name "New chat" (phase 11d will auto-rename).
-    The data-chat-id attribute lives in the OOB sidebar row of the
-    response, so the existing marker-parsing still works.
+    Phase 12g: POST /chats spawns a generation task as a side
+    effect, so by the time this helper returns, the test's mocked
+    Ollama has been consumed by one generation cycle (one probe +
+    one stream). Tests that just want to observe the generation's
+    SSE output can then GET /stream and `consume_generation` will
+    replay the events.
+
+    For tests that need to control the mock's first probe directly
+    (typically tool tests that want the probe to return a tool_call
+    on call #1), use `_create_chat_db_only` instead — that bypasses
+    the generation spawn and lets the test's first probe arrive via
+    POST /messages.
     """
     response = client.post(
         "/chats", data={"model": "llama3", "content": content}
@@ -291,6 +311,29 @@ def _create_chat_and_get_id(
     start = response.text.index(marker) + len(marker)
     end = response.text.index('"', start)
     return int(response.text[start:end])
+
+
+def _create_chat_db_only(content: str = "first message") -> int:
+    """Create a chat row directly in the DB without spawning a generation.
+
+    Phase 12g: POST /chats spawns a generation as a side effect,
+    which consumes the test's mock probes. Tests that want the
+    mock to be consumed only by their explicit POST /messages call
+    (e.g., tool tests where the first probe should return a
+    tool_call) use this helper instead of `_create_chat_and_get_id`.
+    """
+    import os
+
+    from app import queries
+    from app.connection import open_connection
+
+    db_path = os.environ["DB_PATH"]
+    with open_connection(db_path) as conn:
+        chat = queries.create_conversation(
+            conn, name=content[:40] or "New chat", model="llama3"
+        )
+        queries.append_message(conn, chat.id, "user", content)
+    return chat.id
 
 
 def test_index_renders_layout_with_composer(
@@ -1131,7 +1174,7 @@ def test_regenerate_returns_placeholder_for_replacement(
     # The placeholder's sse-connect points at the regenerate stream,
     # not the normal one.
     assert (
-        f'sse-connect="/chats/{chat_id}/regenerate-stream"' in response.text
+        f'sse-connect="/chats/{chat_id}/stream"' in response.text
     )
 
 
@@ -1164,23 +1207,18 @@ def test_regenerate_404_for_unknown_conversation(
 def test_regenerate_stream_404_for_unknown_conversation(
     make_client: ClientFactory,
 ) -> None:
-    """GET /chats/999/regenerate-stream on a missing chat returns 404."""
+    """GET /chats/999/stream on a missing chat returns 404."""
     with make_client(_ollama_unreachable) as client:
-        response = client.get("/chats/999/regenerate-stream")
+        response = client.get("/chats/999/stream")
     assert response.status_code == 404
 
 
-def test_regenerate_stream_400_when_no_assistant_message(
-    make_client: ClientFactory,
-) -> None:
-    """GET /chats/{id}/regenerate-stream returns 400 if the conversation
-    has no assistant message to regenerate. Mirrors the same check on
-    the POST /regenerate route; without both checks, a hand-crafted
-    GET would bypass the validation."""
-    with make_client(_ollama_unreachable) as client:
-        chat_id = _create_chat_and_get_id(client, "X")
-        response = client.get(f"/chats/{chat_id}/regenerate-stream")
-    assert response.status_code == 400
+# Phase 12g: the previous regenerate-stream 400 defense was removed when
+# /chats/{id}/regenerate-stream was collapsed into /chats/{id}/stream.
+# The 400 still fires from POST /regenerate (see the dedicated test for
+# that route below); the GET side just dispatches on the registry and
+# has no notion of "regenerate vs new-message" intent. The collapsed
+# design + the POST-side check is sufficient.
 
 
 def test_regenerate_stream_replaces_last_assistant_in_place(
@@ -1230,7 +1268,7 @@ def test_regenerate_stream_replaces_last_assistant_in_place(
 
         # Now regenerate: the stream's done event should contain the
         # updated message bubble with the same id but new content.
-        response = client.get(f"/chats/{chat_id}/regenerate-stream")
+        response = client.get(f"/chats/{chat_id}/stream")
 
     assert response.status_code == 200
     assert "Regenerated" in response.text
@@ -1336,10 +1374,18 @@ def test_stream_skips_title_when_chat_is_locked(
     handler = _stream_handler(_stream_ndjson_once())
 
     with make_client(handler) as client:
-        chat_id = _create_chat_and_get_id(client)
-        # User renames immediately, locking the chat.
+        # Phase 12g: PATCH the lock BEFORE the generation starts so
+        # the name_locked check inside _maybe_emit_title sees the
+        # lock applied. With POST /chats spawning a generation as a
+        # side effect (and sync mocks completing it nearly instantly
+        # in tests), a PATCH after that point would race the title
+        # emit. Using `_create_chat_db_only` skips the gen and lets
+        # us drive timing explicitly via POST /messages.
+        chat_id = _create_chat_db_only("X")
         client.patch(f"/chats/{chat_id}", data={"name": "I Chose This"})
-
+        client.post(
+            f"/chats/{chat_id}/messages", data={"content": "second message"}
+        )
         response = client.get(f"/chats/{chat_id}/stream")
 
     text = response.text
@@ -1429,7 +1475,7 @@ def test_regenerate_stream_does_not_emit_title(
         # Now regenerate. The replace path must NOT call generate_title.
         client.post(f"/chats/{chat_id}/regenerate")
         regen_response = client.get(
-            f"/chats/{chat_id}/regenerate-stream"
+            f"/chats/{chat_id}/stream"
         )
 
     assert regen_response.status_code == 200
@@ -1818,7 +1864,7 @@ def test_stream_runs_tool_then_streams_final(
         )
 
     with make_client(handler) as client:
-        chat_id = _create_chat_and_get_id(client, "tool test")
+        chat_id = _create_chat_db_only("tool test")
         client.post(
             f"/chats/{chat_id}/messages", data={"content": "what time is it?"}
         )
@@ -1912,7 +1958,7 @@ def test_stream_caps_at_five_iterations(
         )
 
     with make_client(handler) as client:
-        chat_id = _create_chat_and_get_id(client, "cap test")
+        chat_id = _create_chat_db_only("cap test")
         client.post(
             f"/chats/{chat_id}/messages", data={"content": "ping"}
         )
@@ -1955,50 +2001,45 @@ async def test_stream_persists_partial_assistant_on_aclose(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The realistic disconnect path: Starlette calls `aclose()` on
-    the async generator when the HTTP client disconnects, which
-    raises `GeneratorExit` (NOT `CancelledError`) inside the
-    generator. The `try/finally` in `_stream_assistant_reply` must
-    fire on this exit so the partial chunks already streamed land in
-    the DB as the assistant row — otherwise reload shows an orphan
-    tool-card.
+    """The realistic disconnect path: phase 12g spawns the
+    generation as an asyncio.Task; a server shutdown (or test
+    cancellation) cancels the task, which raises CancelledError
+    inside `_run_generation`. The safety-net try/finally must
+    persist whatever tokens already streamed before the
+    CancelledError resumes propagating.
 
-    This is exercised by driving the async generator directly,
-    bypassing TestClient — TestClient buffers the entire response
-    and can't simulate a true mid-stream disconnect."""
+    Exercised by driving start_generation directly so we control
+    the cancellation timing. TestClient would buffer the full SSE
+    response and can't simulate disconnect-during-streaming."""
     import asyncio as _asyncio
 
-    from app import ollama as _ollama, queries
+    from app import generation, ollama as _ollama, queries
     from app.connection import open_connection
     from app.db import initialize_database
-    from app.routes import _stream_assistant_reply
 
     db_path = tmp_path / "chats.db"
     initialize_database(db_path)
 
     # Fake stream_chat that yields two chunks then waits forever —
-    # gives us a stable point to call aclose() on the consumer.
+    # gives us a stable point to cancel while the gen is suspended.
     async def fake_stream_chat(client_, model_, messages_):
         yield _ollama.ChatChunk(content="partial ", done=False)
         yield _ollama.ChatChunk(content="answer", done=False)
-        # Suspend so the consumer can aclose() us cleanly. Without
-        # this third await, the generator would return naturally and
-        # stream_completed would be set.
         await _asyncio.sleep(60)
 
     async def fake_maybe_tool_call(client_, model_, messages_, tools=None):
         return ([], "")
 
-    monkeypatch.setattr("app.routes.ollama.stream_chat", fake_stream_chat)
+    monkeypatch.setattr("app.generation.ollama.stream_chat", fake_stream_chat)
     monkeypatch.setattr(
-        "app.routes.ollama.maybe_tool_call", fake_maybe_tool_call
+        "app.generation.ollama.maybe_tool_call", fake_maybe_tool_call
     )
 
     with open_connection(db_path) as db:
         chat = queries.create_conversation(db, "aclose test", "llama3")
         queries.append_message(db, chat.id, "user", "hi")
 
-        gen = _stream_assistant_reply(
+        state = generation.start_generation(
             client=None,
             db=db,
             conversation_id=chat.id,
@@ -2006,20 +2047,32 @@ async def test_stream_persists_partial_assistant_on_aclose(
             history=queries.list_messages(db, chat.id),
             on_complete="append",
         )
-        # Consume the two partial tokens.
-        assert "partial " in await gen.__anext__()
-        assert "answer" in await gen.__anext__()
-        # Simulate client disconnect: aclose() raises GeneratorExit
-        # inside the generator at its current yield point.
-        await gen.aclose()
+        # Wait until both tokens have landed in state.events.
+        for _ in range(50):
+            await _asyncio.sleep(0)
+            tokens = [
+                ev for ev, _payload in state.events if ev == "token"
+            ]
+            if len(tokens) >= 2:
+                break
+        assert len([ev for ev, _ in state.events if ev == "token"]) == 2
 
-        # Assistant row was persisted by the try/finally, even though
-        # we got a GeneratorExit rather than CancelledError.
+        # Simulate disconnect by cancelling the producer task.
+        state.task.cancel()
+        try:
+            await state.task
+        except _asyncio.CancelledError:
+            pass
+
         rows = queries.list_messages(db, chat.id)
 
     assistant_rows = [r for r in rows if r.role == "assistant"]
     assert len(assistant_rows) == 1
     assert assistant_rows[0].content == "partial answer"
+    # Registry retained the (now-done) state so a slow-reload
+    # consume_generation would still see the events. Clean up so
+    # the next test starts fresh.
+    generation.live_generations.pop(chat.id, None)
 
 
 @pytest.mark.asyncio
@@ -2027,27 +2080,22 @@ async def test_stream_persists_placeholder_when_aclosed_during_tool_execution(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The user's actual reported scenario: the tool card has appeared
-    (so a tool_call row is in the DB) but the user reloads BEFORE the
-    streaming phase starts — i.e., cancellation lands inside
-    `await run_tool(...)`. Without the top-level try/finally, only the
-    inner streaming-phase try/finally would run and that branch is
-    never reached, so no assistant row gets written. With the outer
-    finally, the placeholder lands and the chat panel renders cleanly
-    on reload."""
+    """The user's reported scenario: a tool_call row has been
+    persisted (the tool card is on screen) but the user reloads
+    BEFORE the streaming phase starts — i.e., cancellation lands
+    inside `await run_tool(...)` between the tool-call event and
+    its result. The safety-net try/finally writes the placeholder
+    so the chat panel stays consistent on reload."""
     import asyncio as _asyncio
 
-    from app import queries
+    from app import generation, queries
     from app.connection import open_connection
     from app.db import initialize_database
-    from app.routes import _stream_assistant_reply
 
     db_path = tmp_path / "chats.db"
     initialize_database(db_path)
 
     async def slow_run_tool(name, args):
-        # Suspend forever — gives the test a stable point to call
-        # aclose() while the tool is "running".
         await _asyncio.sleep(60)
         return "never returned"
 
@@ -2062,16 +2110,16 @@ async def test_stream_persists_placeholder_when_aclosed_during_tool_execution(
             "",
         )
 
-    monkeypatch.setattr("app.routes.run_tool", slow_run_tool)
+    monkeypatch.setattr("app.generation.run_tool", slow_run_tool)
     monkeypatch.setattr(
-        "app.routes.ollama.maybe_tool_call", fake_maybe_tool_call
+        "app.generation.ollama.maybe_tool_call", fake_maybe_tool_call
     )
 
     with open_connection(db_path) as db:
         chat = queries.create_conversation(db, "tool-cancel test", "llama3")
         queries.append_message(db, chat.id, "user", "what time?")
 
-        gen = _stream_assistant_reply(
+        state = generation.start_generation(
             client=None,
             db=db,
             conversation_id=chat.id,
@@ -2079,26 +2127,33 @@ async def test_stream_persists_placeholder_when_aclosed_during_tool_execution(
             history=queries.list_messages(db, chat.id),
             on_complete="append",
         )
-        # Consume the first event: the tool-call card OOB. After this
-        # yield, control is back inside the generator awaiting on
-        # slow_run_tool — exactly where the user's reload lands.
-        first_payload = await gen.__anext__()
-        assert "tool-card" in first_payload
+        # Wait until the tool-call event has been emitted (after
+        # which the producer is awaiting on slow_run_tool — exactly
+        # where the user's reload would land).
+        for _ in range(50):
+            await _asyncio.sleep(0)
+            if any(ev == "tool-call" for ev, _ in state.events):
+                break
+        assert any(ev == "tool-call" for ev, _ in state.events)
 
-        # Simulate client disconnect via aclose() — GeneratorExit
-        # propagates into the generator at run_tool's await.
-        await gen.aclose()
+        # Simulate disconnect.
+        state.task.cancel()
+        try:
+            await state.task
+        except _asyncio.CancelledError:
+            pass
 
         rows = queries.list_messages(db, chat.id)
 
     roles = [r.role for r in rows]
-    # user + tool_call (persisted before run_tool ran) + assistant placeholder.
-    # No tool_result because run_tool never returned.
+    # user + tool_call (persisted before run_tool ran) + assistant
+    # placeholder. No tool_result because run_tool never returned.
     assert "tool_call" in roles
     assert "tool_result" not in roles
     assistant_rows = [r for r in rows if r.role == "assistant"]
     assert len(assistant_rows) == 1
     assert assistant_rows[0].content == "(response interrupted)"
+    generation.live_generations.pop(chat.id, None)
 
 
 def test_stream_persists_partial_assistant_on_cancellation(
@@ -2120,7 +2175,7 @@ def test_stream_persists_partial_assistant_on_cancellation(
         yield _ollama.ChatChunk(content="answer", done=False)
         raise _asyncio.CancelledError
 
-    monkeypatch.setattr("app.routes.ollama.stream_chat", fake_stream_chat)
+    monkeypatch.setattr("app.generation.ollama.stream_chat", fake_stream_chat)
 
     def handler(request: httpx.Request) -> httpx.Response:
         # Probe returns no tool calls — release straight into streaming.
@@ -2169,7 +2224,7 @@ def test_stream_persists_placeholder_when_cancelled_with_zero_chunks(
         raise _asyncio.CancelledError
         yield  # unreachable, makes this an async generator
 
-    monkeypatch.setattr("app.routes.ollama.stream_chat", fake_stream_chat)
+    monkeypatch.setattr("app.generation.ollama.stream_chat", fake_stream_chat)
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -2200,128 +2255,142 @@ def test_stream_persists_placeholder_when_cancelled_with_zero_chunks(
     assert row[0] == "(response interrupted)"
 
 
-def test_regenerate_stream_cancellation_preserves_original_when_no_chunks(
-    make_client: ClientFactory,
+@pytest.mark.asyncio
+async def test_regenerate_cancellation_preserves_original_when_no_chunks(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """On the regenerate path, a cancellation before any token
-    streamed must NOT clobber the original assistant message with the
-    placeholder — that would silently destroy the user's previous
-    response on an accidental reload. Verified by counting assistant
-    rows: still exactly one, and its content is the original."""
+    """Regen + cancellation BEFORE any token streamed must NOT
+    clobber the existing assistant message with the
+    `(response interrupted)` placeholder — that would silently
+    destroy the user's previous response on an accidental reload."""
     import asyncio as _asyncio
 
-    async def fake_stream_chat(client_, model_, messages_):
-        raise _asyncio.CancelledError
-        yield
+    from app import generation, ollama as _ollama, queries
+    from app.connection import open_connection
+    from app.db import initialize_database
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200, json={"message": {"content": "", "tool_calls": []}}
-        )
+    db_path = tmp_path / "chats.db"
+    initialize_database(db_path)
 
-    # Set up a chat with an existing assistant reply first (so
-    # regenerate has something to replace).
-    with make_client(handler) as client:
-        # First turn: real (non-cancelled) stream produces "original".
-        async def real_stream_chat(client_, model_, messages_):
-            from app import ollama as _ollama
-            yield _ollama.ChatChunk(content="original", done=False)
-            yield _ollama.ChatChunk(content="", done=True)
+    async def fake_maybe_tool_call(client_, model_, messages_, tools=None):
+        return ([], "")
+
+    monkeypatch.setattr(
+        "app.generation.ollama.maybe_tool_call", fake_maybe_tool_call
+    )
+
+    with open_connection(db_path) as db:
+        chat = queries.create_conversation(db, "regen cancel", "llama3")
+        queries.append_message(db, chat.id, "user", "first")
+        queries.append_message(db, chat.id, "assistant", "original")
+
+        # Regen path: stream_chat raises CancelledError immediately,
+        # meaning the producer never collected any chunks.
+        async def cancel_immediately(client_, model_, messages_):
+            raise _asyncio.CancelledError
+            yield  # unreachable, makes this an async generator
 
         monkeypatch.setattr(
-            "app.routes.ollama.stream_chat", real_stream_chat
+            "app.generation.ollama.stream_chat", cancel_immediately
         )
-        chat_id = _create_chat_and_get_id(client, "regen cancel test")
-        client.post(
-            f"/chats/{chat_id}/messages", data={"content": "ping"}
-        )
-        client.get(f"/chats/{chat_id}/stream")
 
-        # Now regen, but stream_chat raises CancelledError immediately.
-        monkeypatch.setattr(
-            "app.routes.ollama.stream_chat", fake_stream_chat
+        # Mimic POST /regenerate: drop the last assistant from prompt
+        # history, spawn with on_complete="replace".
+        history = queries.list_messages(db, chat.id)
+        state = generation.start_generation(
+            client=None,
+            db=db,
+            conversation_id=chat.id,
+            model=chat.model,
+            history=history[:-1],
+            on_complete="replace",
         )
-        client.post(f"/chats/{chat_id}/regenerate")
         try:
-            client.get(f"/chats/{chat_id}/regenerate-stream")
+            await state.task
         except _asyncio.CancelledError:
             pass
 
-    import os
-    import sqlite3 as _sqlite3
-    db_path = os.environ["DB_PATH"]
-    with _sqlite3.connect(db_path) as conn:
-        rows = conn.execute(
-            "SELECT content FROM messages"
-            " WHERE conversation_id = ? AND role = 'assistant'"
-            " ORDER BY id ASC",
-            (chat_id,),
-        ).fetchall()
-    # Exactly one assistant row, still carrying the original content.
+        # Exactly one assistant row, still carrying the original.
+        # The safety net's `elif chunks:` branch skipped the replace
+        # because no chunks ever arrived.
+        rows = [
+            r for r in queries.list_messages(db, chat.id)
+            if r.role == "assistant"
+        ]
     assert len(rows) == 1
-    assert rows[0][0] == "original"
+    assert rows[0].content == "original"
+    generation.live_generations.pop(chat.id, None)
 
 
-def test_regenerate_stream_cancellation_writes_partial_when_tokens_arrived(
-    make_client: ClientFactory,
+@pytest.mark.asyncio
+async def test_regenerate_cancellation_writes_partial_when_tokens_arrived(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Regen + cancellation AFTER some tokens streamed: overwrite the
-    original assistant message with the partial. The user opted into
-    regenerate, and the partial is more informative than the stale
-    original at that point."""
+    """Regen + cancellation AFTER some tokens streamed: the
+    `elif chunks` branch DOES run replace_last_assistant_message,
+    overwriting the original with the partial. The user opted into
+    regen and the partial is more informative than the stale
+    original."""
     import asyncio as _asyncio
 
-    from app import ollama as _ollama
+    from app import generation, ollama as _ollama, queries
+    from app.connection import open_connection
+    from app.db import initialize_database
 
-    async def real_stream_chat(client_, model_, messages_):
-        yield _ollama.ChatChunk(content="original", done=False)
-        yield _ollama.ChatChunk(content="", done=True)
+    db_path = tmp_path / "chats.db"
+    initialize_database(db_path)
 
-    async def partial_then_cancel(client_, model_, messages_):
+    async def fake_maybe_tool_call(client_, model_, messages_, tools=None):
+        return ([], "")
+
+    async def partial_then_block(client_, model_, messages_):
         yield _ollama.ChatChunk(content="new partial", done=False)
-        raise _asyncio.CancelledError
+        await _asyncio.sleep(60)
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200, json={"message": {"content": "", "tool_calls": []}}
-        )
+    monkeypatch.setattr(
+        "app.generation.ollama.maybe_tool_call", fake_maybe_tool_call
+    )
+    monkeypatch.setattr(
+        "app.generation.ollama.stream_chat", partial_then_block
+    )
 
-    with make_client(handler) as client:
-        monkeypatch.setattr(
-            "app.routes.ollama.stream_chat", real_stream_chat
-        )
-        chat_id = _create_chat_and_get_id(client, "regen partial test")
-        client.post(
-            f"/chats/{chat_id}/messages", data={"content": "ping"}
-        )
-        client.get(f"/chats/{chat_id}/stream")
+    with open_connection(db_path) as db:
+        chat = queries.create_conversation(db, "regen partial", "llama3")
+        queries.append_message(db, chat.id, "user", "first")
+        queries.append_message(db, chat.id, "assistant", "original")
 
-        # Regen: stream yields one chunk then cancels.
-        monkeypatch.setattr(
-            "app.routes.ollama.stream_chat", partial_then_cancel
+        history = queries.list_messages(db, chat.id)
+        state = generation.start_generation(
+            client=None,
+            db=db,
+            conversation_id=chat.id,
+            model=chat.model,
+            history=history[:-1],
+            on_complete="replace",
         )
-        client.post(f"/chats/{chat_id}/regenerate")
+        # Wait until the token event lands (after which the
+        # producer is awaiting on the sleep).
+        for _ in range(50):
+            await _asyncio.sleep(0)
+            if any(ev == "token" for ev, _ in state.events):
+                break
+        state.task.cancel()
         try:
-            client.get(f"/chats/{chat_id}/regenerate-stream")
+            await state.task
         except _asyncio.CancelledError:
             pass
 
-    import os
-    import sqlite3 as _sqlite3
-    db_path = os.environ["DB_PATH"]
-    with _sqlite3.connect(db_path) as conn:
-        rows = conn.execute(
-            "SELECT content FROM messages"
-            " WHERE conversation_id = ? AND role = 'assistant'"
-            " ORDER BY id ASC",
-            (chat_id,),
-        ).fetchall()
+        rows = [
+            r for r in queries.list_messages(db, chat.id)
+            if r.role == "assistant"
+        ]
     # Still exactly one assistant row (replace, not append), but
-    # content is now the partial — the original was overwritten.
+    # the content is now the partial — original was overwritten.
     assert len(rows) == 1
-    assert rows[0][0] == "new partial"
+    assert rows[0].content == "new partial"
+    generation.live_generations.pop(chat.id, None)
 
 
 def test_build_done_card_oobs_empty_in_flight_only_emits_summary() -> None:
@@ -2329,7 +2398,7 @@ def test_build_done_card_oobs_empty_in_flight_only_emits_summary() -> None:
     the loop released into streaming. The done payload's card
     contribution is just the past-tense summary swap; no frozen-row
     OOBs needed."""
-    from app.routes import _build_done_card_oobs
+    from app.generation import _build_done_card_oobs
 
     result = _build_done_card_oobs(
         call_count=2, in_flight={}, summary_id="tool-card-T-summary"
@@ -2344,7 +2413,7 @@ def test_build_done_card_oobs_empty_in_flight_only_emits_summary() -> None:
 def test_build_done_card_oobs_zero_calls_returns_empty() -> None:
     """A turn with no tool calls has no card to update — the helper
     returns an empty string so the done payload stays compact."""
-    from app.routes import _build_done_card_oobs
+    from app.generation import _build_done_card_oobs
 
     assert _build_done_card_oobs(0, {}, "tool-card-T-summary") == ""
 
@@ -2356,7 +2425,7 @@ def test_build_done_card_oobs_freezes_in_flight_rows() -> None:
     stops incrementing it after SSE close. Dead code in the current
     control flow — exercised here directly so the safety net stays
     covered."""
-    from app.routes import _build_done_card_oobs
+    from app.generation import _build_done_card_oobs
 
     in_flight = {
         "tool-card-T-row-0": {
@@ -2425,7 +2494,7 @@ def test_stream_two_tool_calls_emit_row_append_and_summary_bump(
         )
 
     with make_client(handler) as client:
-        chat_id = _create_chat_and_get_id(client, "two-tool test")
+        chat_id = _create_chat_db_only("two-tool test")
         client.post(
             f"/chats/{chat_id}/messages",
             data={"content": "do two things"},
@@ -2478,7 +2547,7 @@ def test_stream_iteration_cap_freezes_unpaired_row_in_done(
         )
 
     with make_client(handler) as client:
-        chat_id = _create_chat_and_get_id(client, "bail freeze test")
+        chat_id = _create_chat_db_only("bail freeze test")
         client.post(
             f"/chats/{chat_id}/messages", data={"content": "loop"}
         )
@@ -2536,7 +2605,7 @@ def test_stream_passes_tools_payload_to_ollama(
         )
 
     with make_client(handler) as client:
-        chat_id = _create_chat_and_get_id(client, "tools probe")
+        chat_id = _create_chat_db_only("tools probe")
         client.post(
             f"/chats/{chat_id}/messages", data={"content": "hello"}
         )
@@ -2557,6 +2626,138 @@ def test_stream_passes_tools_payload_to_ollama(
     assert "query_rag" in names
 
 
+# ---------------------------------------------------------------------------
+# Phase 12g: resume flow tests
+# ---------------------------------------------------------------------------
+
+
+def test_post_messages_409_when_generation_in_flight(
+    make_client: ClientFactory,
+) -> None:
+    """POST /messages returns 409 if another generation is still
+    in flight for the same conversation. The UI gate (streaming
+    placeholder disables the send button) makes this rare, but the
+    defensive 409 catches duplicate POSTs that slip through."""
+    from app import generation
+
+    with make_client(_ollama_unreachable) as client:
+        chat_id = _create_chat_db_only("409 test")
+        # Plant a sentinel non-done state so start_generation raises.
+        generation.live_generations[chat_id] = generation.GenerationState(
+            conversation_id=chat_id
+        )
+        response = client.post(
+            f"/chats/{chat_id}/messages", data={"content": "another"}
+        )
+    assert response.status_code == 409
+    assert "already streaming" in response.text.lower()
+
+
+def test_chat_panel_renders_placeholder_for_in_progress_gen(
+    make_client: ClientFactory,
+) -> None:
+    """GET /chats/{id} while a generation is live renders a streaming
+    placeholder with sse-connect pointing at /stream. The chat-panel
+    template's existing pending_stream_url path is reused for resume."""
+    from app import generation
+
+    with make_client(_ollama_unreachable) as client:
+        chat_id = _create_chat_db_only("resume placeholder")
+        generation.live_generations[chat_id] = generation.GenerationState(
+            conversation_id=chat_id
+        )
+        response = client.get(f"/chats/{chat_id}")
+    assert response.status_code == 200
+    assert f'sse-connect="/chats/{chat_id}/stream"' in response.text
+    assert "message--streaming" in response.text
+
+
+def test_chat_panel_skips_placeholder_when_gen_is_done(
+    make_client: ClientFactory,
+) -> None:
+    """A DONE state lingers in the registry for slow-reload replay,
+    but the chat panel must NOT render a streaming placeholder for
+    it — the conversation is already complete and the historic
+    render handles its state.
+
+    Asserts on the placeholder div's id rather than the CSS class
+    name (which also appears in base.html's CSS rule selectors,
+    making it a false-positive match)."""
+    from app import generation
+
+    with make_client(_ollama_unreachable) as client:
+        chat_id = _create_chat_db_only("done placeholder")
+        state = generation.GenerationState(conversation_id=chat_id)
+        state.done = True
+        generation.live_generations[chat_id] = state
+        response = client.get(f"/chats/{chat_id}")
+    assert response.status_code == 200
+    # No streaming placeholder element rendered.
+    assert f'id="assistant-stream-{chat_id}"' not in response.text
+
+
+def test_chat_panel_skips_trailing_tool_batch_during_gen(
+    make_client: ClientFactory,
+) -> None:
+    """When a live (non-done) generation exists AND the conv has
+    trailing tool_call/tool_result rows (no following assistant),
+    those rows are NOT rendered as a historic ToolBatchBlock — the
+    SSE replay will rebuild the card via OOB swaps."""
+    import json as _json
+
+    from app import generation, queries
+    from app.connection import open_connection
+
+    with make_client(_ollama_unreachable) as client:
+        chat_id = _create_chat_db_only("trailing tool batch")
+        # Insert trailing tool rows directly.
+        import os
+        db_path = os.environ["DB_PATH"]
+        with open_connection(db_path) as conn:
+            queries.append_message(
+                conn, chat_id, "tool_call",
+                _json.dumps({"name": "current_time", "arguments": {}}),
+            )
+            queries.append_message(
+                conn, chat_id, "tool_result", "2026-05-19T12:00:00Z",
+            )
+        generation.live_generations[chat_id] = generation.GenerationState(
+            conversation_id=chat_id
+        )
+        response = client.get(f"/chats/{chat_id}")
+    text = response.text
+    # The trailing tool batch's id would appear as `tool-card-hist-N`
+    # if we rendered it. With the live gen, we skip it.
+    assert "tool-card-hist-" not in text
+    # Placeholder IS present (live gen → pending_stream_url).
+    assert "message--streaming" in text
+
+
+def test_stream_endpoint_falls_back_to_consume_finished(
+    make_client: ClientFactory,
+) -> None:
+    """GET /stream with no entry in live_generations yields a done
+    event built from the persisted assistant row — the slow-reload-
+    AFTER-completion case where the registry was cleared."""
+    from app import queries
+    from app.connection import open_connection
+    import os
+
+    with make_client(_ollama_unreachable) as client:
+        chat_id = _create_chat_db_only("finished fallback")
+        db_path = os.environ["DB_PATH"]
+        with open_connection(db_path) as conn:
+            queries.append_message(
+                conn, chat_id, "assistant", "the completed reply"
+            )
+        response = client.get(f"/chats/{chat_id}/stream")
+    text = response.text
+    assert response.status_code == 200
+    assert "event: done" in text
+    assert "the completed reply" in text
+    assert f'outerHTML:#assistant-stream-{chat_id}' in text
+
+
 def test_build_history_payload_handles_tool_roles() -> None:
     """`_build_history_payload` maps each role to Ollama's wire format:
     user/assistant pass through, tool_call becomes assistant+tool_calls,
@@ -2565,7 +2766,7 @@ def test_build_history_payload_handles_tool_roles() -> None:
     from datetime import datetime, timezone
 
     from app.queries import Message
-    from app.routes import _build_history_payload
+    from app.generation import _build_history_payload
 
     now = datetime.now(timezone.utc)
     history = [
@@ -2621,7 +2822,7 @@ def test_build_history_payload_skips_malformed_tool_call_rows() -> None:
     from datetime import datetime, timezone
 
     from app.queries import Message
-    from app.routes import _build_history_payload
+    from app.generation import _build_history_payload
 
     now = datetime.now(timezone.utc)
     history = [
