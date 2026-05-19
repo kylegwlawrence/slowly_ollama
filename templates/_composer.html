@@ -15,8 +15,7 @@
    The model select sits in a toolbar below the pill (Claude-style),
    and auto-loads options from GET /models on insert. #}
 <section class="composer">
-  <h1 class="composer__greeting">What's on your mind?</h1>
-  {# `hx-push-url` is deliberately NOT set on the form. HTMX attributes
+{# `hx-push-url` is deliberately NOT set on the form. HTMX attributes
      are inherited by descendants, so a form-level `hx-push-url="true"`
      leaks onto the <select>'s `hx-get="/models"` and pushes
      `/models?model=` into the address bar on page load. The URL update
