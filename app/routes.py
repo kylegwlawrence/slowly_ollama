@@ -110,6 +110,34 @@ def new_chat_endpoint(request: Request) -> Response:
 # ---------------------------------------------------------------------------
 
 
+def _placeholder_name(content: str) -> str:
+    """Derive a sidebar-friendly placeholder name from a user message.
+
+    Used by ``create_chat_endpoint`` to give every new chat an
+    immediately-identifiable sidebar entry from the moment it's
+    created, instead of a generic "New chat" everyone has. The
+    phase 11d auto-titler may replace it later with a cleaner
+    model-generated summary.
+
+    Args:
+        content: The user's first message. Multi-line content is
+            collapsed to the first non-empty line; whitespace
+            is trimmed. The 40-char cap fits a 280px-wide sidebar
+            without truncation ellipses kicking in.
+
+    Returns:
+        Up to 40 chars of the first non-empty line. Falls back to
+        ``"New chat"`` if ``content`` is empty or whitespace-only
+        (POST /chats requires content via Form() so this is
+        mostly a defensive fallback).
+    """
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped[:40]
+    return "New chat"
+
+
 def _sse(payload: str, event: str | None = None) -> str:
     """Format an HTML payload as a single SSE message.
 
@@ -231,11 +259,15 @@ def create_chat_endpoint(
     would double-render the panel and add a perceived delay before
     the streaming placeholder appears.
 
-    The placeholder name "New chat" is a stand-in; phase 11d will
-    auto-rename via a tiny local model after the first assistant
-    response completes.
+    The placeholder name is derived from the user's first message
+    (first non-empty line, truncated to 40 chars). It's good enough
+    to identify the chat in the sidebar from the moment it's created;
+    phase 11d's auto-titler may overwrite it with a model-generated
+    title after the first assistant response completes.
     """
-    chat = queries.create_conversation(db, name="New chat", model=model)
+    chat = queries.create_conversation(
+        db, name=_placeholder_name(content), model=model
+    )
     queries.append_message(db, chat.id, "user", content)
     messages = queries.list_messages(db, chat.id)
 
@@ -621,6 +653,30 @@ async def _stream_assistant_reply(
             db, conversation_id, full_text
         )
 
+    # Phase 11d: auto-generated title fires BEFORE the done event.
+    #
+    # The done event uses outerHTML OOB to remove the streaming
+    # placeholder (replacing it with the persisted bubble). Once the
+    # placeholder is gone, htmx-ext-sse's mutation observer detects
+    # the removal and closes the EventSource — so any SSE event sent
+    # AFTER done is dropped on the floor.
+    #
+    # Cost of this ordering: the placeholder keeps its
+    # message--streaming class for the duration of title generation
+    # (~1-2s with tinyllama), which keeps the send button disabled
+    # and the regenerate button hidden. The accumulated text is
+    # already visible to the user, so this reads as a brief
+    # "settling" pause. Acceptable tradeoff; the alternative
+    # (multiplexed SSE on a stable parent element) is much heavier.
+    #
+    # Skipped entirely on the regenerate path: replace doesn't add
+    # an assistant row, so the count-based gate would lie.
+    if on_complete == "append":
+        async for sse_event in _maybe_generate_title(
+            client, db, conversation_id
+        ):
+            yield sse_event
+
     # On completion, hand back the final persisted message bubble
     # carrying `hx-swap-oob` so HTMX replaces the streaming
     # placeholder element with this real row (rather than nesting it
@@ -632,19 +688,6 @@ async def _stream_assistant_reply(
     )
     yield _sse(final_html, event="done")
 
-    # Phase 11d: auto-generated title.
-    #
-    # Fires only on the "new message" path — regenerate-driven streams
-    # don't add an assistant message (they replace one), so the count-
-    # based gate would either no-op or double-fire and we'd end up
-    # arguing with the user about renames.
-    if on_complete != "append":
-        return
-    async for sse_event in _maybe_generate_title(
-        client, db, conversation_id
-    ):
-        yield sse_event
-
 
 async def _maybe_generate_title(
     client,
@@ -653,12 +696,13 @@ async def _maybe_generate_title(
 ) -> AsyncIterator[str]:
     """Fire the auto-titler after the 1st, 2nd, or 3rd assistant reply.
 
-    Runs as the tail of `_stream_assistant_reply` AFTER the `done` event
-    has been yielded — keeps the user-visible streaming latency
-    unchanged, at the cost of holding the SSE connection open for the
-    title-generation roundtrip (typically a couple seconds against
-    tinyllama). Acceptable for a single-user local app; revisit if
-    we ever multiplex SSE connections.
+    Runs INSIDE `_stream_assistant_reply` between persisting the
+    assistant message and yielding the `done` event. The done event
+    removes the streaming placeholder, which closes the SSE
+    connection — so the title MUST go out first or HTMX never sees
+    it. See the call-site comment in _stream_assistant_reply for
+    the UX tradeoff (placeholder lingers in its streaming state
+    for the title-gen roundtrip).
 
     Yields zero or one SSE event:
     - ``title``: an OOB sidebar-row swap with the new name.

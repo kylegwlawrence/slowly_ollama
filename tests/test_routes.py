@@ -124,6 +124,33 @@ def test_models_returns_disabled_option_on_protocol_error(
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def test_placeholder_name_takes_first_non_empty_line_capped_at_40() -> None:
+    """`_placeholder_name` derives a sidebar-friendly label from message
+    content: first non-empty line, trimmed, max 40 chars. Empty input
+    falls back to "New chat" so the sidebar never shows an empty row."""
+    from app.routes import _placeholder_name
+
+    # Single short line — passes through unchanged (just trimmed).
+    assert _placeholder_name("Hello there") == "Hello there"
+    assert _placeholder_name("  surrounded by spaces  ") == "surrounded by spaces"
+
+    # Multi-line: leading blanks skipped, first content line wins.
+    assert _placeholder_name("\n\nFirst content\nSecond line") == "First content"
+
+    # Long content truncates at 40 chars.
+    long = "x" * 100
+    assert len(_placeholder_name(long)) == 40
+
+    # Empty / whitespace-only falls back to the generic name.
+    assert _placeholder_name("") == "New chat"
+    assert _placeholder_name("   \n  \t  \n") == "New chat"
+
+
+# ---------------------------------------------------------------------------
 # /chats (sidebar list + CRUD)
 # ---------------------------------------------------------------------------
 
@@ -303,9 +330,9 @@ def test_index_lists_existing_chats_in_sidebar(
 ) -> None:
     """GET / populates the sidebar from the DB.
 
-    The placeholder name "New chat" is used for every conversation
-    until phase 11d's auto-titler runs, so all rows render with the
-    same name until then — that's expected and we just count them.
+    The placeholder name is derived from each chat's first user
+    message (first non-empty line, capped at 40 chars), so two chats
+    created with different content render with different names.
     """
     with make_client(_ollama_unreachable) as client:
         _create_chat_and_get_id(client, "first")
@@ -313,9 +340,10 @@ def test_index_lists_existing_chats_in_sidebar(
 
         response = client.get("/")
 
-    # Two rows expected; both carry the placeholder name.
     assert response.text.count('class="chat-item"') == 2
-    assert response.text.count(">New chat<") == 2
+    # Each row's link text is the message-derived placeholder.
+    assert ">first<" in response.text
+    assert ">second<" in response.text
 
 
 def test_chat_url_direct_hit_renders_full_page_with_panel(
@@ -606,12 +634,12 @@ def test_get_chat_edit_returns_edit_fragment(
     # target on the existing row) but a distinguishing class.
     assert f'id="chat-{chat_id}"' in response.text
     assert "chat-item--editing" in response.text
-    # Has the rename form with the current placeholder name pre-filled.
-    # (Phase 11d's auto-titler will replace "New chat" with a model-
-    # generated title; until that's wired the placeholder sticks.)
+    # The edit form pre-fills the current name. With no arg, the
+    # helper sends content="first message", so the placeholder name
+    # derived from that message is what the form starts with.
     assert f'hx-patch="/chats/{chat_id}"' in response.text
     assert 'name="name"' in response.text
-    assert 'value="New chat"' in response.text
+    assert 'value="first message"' in response.text
 
 
 def test_get_chat_edit_404_for_unknown_id(
@@ -640,8 +668,9 @@ def test_get_chat_item_returns_display_fragment(
     assert "chat-item" in response.text
     # No edit form in the display fragment.
     assert "chat-item--editing" not in response.text
-    # Placeholder name from the composer-driven create path.
-    assert "New chat" in response.text
+    # Placeholder name derived from the first message ("first message"
+    # is the helper's default content).
+    assert "first message" in response.text
 
 
 def test_get_chat_item_404_for_unknown_id(
@@ -675,9 +704,9 @@ def test_rename_round_trip_via_edit_and_patch(
         edit_response = client.get(f"/chats/{chat_id}/edit")
         assert edit_response.status_code == 200
         assert "chat-item--editing" in edit_response.text
-        # The composer always assigns the placeholder name "New chat";
-        # the edit form pre-fills it for the user to overwrite.
-        assert 'value="New chat"' in edit_response.text
+        # Placeholder name comes from the first message ("first message"
+        # is the helper's default content); the edit form pre-fills it.
+        assert 'value="first message"' in edit_response.text
         assert f'hx-patch="/chats/{chat_id}"' in edit_response.text
 
         patch_response = client.patch(
@@ -686,9 +715,9 @@ def test_rename_round_trip_via_edit_and_patch(
         assert patch_response.status_code == 200
         # Use bracket-anchored substrings so "Renamed" doesn't also
         # match part of "Renamed Topic" — we want the post-rename
-        # name visible as link text and the placeholder gone.
+        # name visible as link text and the original placeholder gone.
         assert ">Renamed Topic<" in patch_response.text
-        assert ">New chat<" not in patch_response.text
+        assert ">first message<" not in patch_response.text
         # Came back as display fragment, not edit fragment.
         assert "chat-item--editing" not in patch_response.text
 
@@ -706,9 +735,10 @@ def test_rename_chat_returns_updated_item(
 
     assert response.status_code == 200
     assert ">Renamed<" in response.text
-    # The placeholder name set by POST /chats should be gone after the
-    # rename. Anchor on >…< so we don't accidentally match other text.
-    assert ">New chat<" not in response.text
+    # The placeholder name (derived from the first message — "first
+    # message" with the helper's default content) should be gone after
+    # the rename.
+    assert ">first message<" not in response.text
 
 
 def test_rename_chat_404_for_unknown_id(

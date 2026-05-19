@@ -126,10 +126,11 @@ def test_full_user_journey(integration_client: TestClient) -> None:
     assert f'sse-connect="/chats/{chat_id}/stream"' in created.text
     assert created.headers.get("HX-Push-Url") == f"/chats/{chat_id}"
 
-    # 3. Sidebar now shows the chat (placeholder name "New chat" —
-    # phase 11d will auto-title later).
+    # 3. Sidebar now shows the chat. The placeholder name is derived
+    # from the first user message ("hello") — phase 11d may auto-rename
+    # to a tinyllama-generated title after the assistant replies.
     chats = client.get("/chats")
-    assert "New chat" in chats.text
+    assert ">hello<" in chats.text
     assert f'data-chat-id="{chat_id}"' in chats.text
 
     # 4. Reload-safe: a direct browser hit on /chats/{id} returns the
@@ -177,7 +178,8 @@ def test_full_user_journey(integration_client: TestClient) -> None:
     )
     assert rename.status_code == 200
     assert ">Renamed Journey<" in rename.text
-    assert ">New chat<" not in rename.text
+    # The placeholder was derived from the first message ("hello").
+    assert ">hello<" not in rename.text
     assert "chat-item--editing" not in rename.text
 
     # 11. Delete from the sidebar while not currently viewing this
