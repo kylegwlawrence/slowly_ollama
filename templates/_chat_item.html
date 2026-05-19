@@ -59,6 +59,7 @@
     <div class="chat-item__menu-popup" role="menu">
       <button class="chat-item__rename"
               type="button"
+              role="menuitem"
               aria-label="Rename chat"
               hx-get="/chats/{{ chat.id }}/edit"
               hx-target="#chat-{{ chat.id }}"
@@ -68,6 +69,7 @@
       </button>
       <button class="chat-item__delete"
               type="button"
+              role="menuitem"
               aria-label="Delete chat"
               hx-delete="/chats/{{ chat.id }}"
               hx-target="#chat-{{ chat.id }}"
