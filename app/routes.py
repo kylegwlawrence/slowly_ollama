@@ -52,7 +52,7 @@ from fastapi import APIRouter, Form, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
-from app import ollama, queries, render
+from app import generation, ollama, queries, render
 from app import rag_servers as _rag_servers_module
 from app.dependencies import DB, OllamaClient
 from app.ollama import OllamaProtocolError, OllamaUnavailable
@@ -410,9 +410,10 @@ def list_chats_endpoint(request: Request, db: DB) -> Response:
     response_class=HTMLResponse,
     status_code=status.HTTP_201_CREATED,
 )
-def create_chat_endpoint(
+async def create_chat_endpoint(
     request: Request,
     db: DB,
+    client: OllamaClient,
     model: Annotated[str, Form()],
     content: Annotated[str, Form()],
 ) -> Response:
@@ -444,6 +445,19 @@ def create_chat_endpoint(
     queries.append_message(db, chat.id, "user", content)
     messages = queries.list_messages(db, chat.id)
     blocks = render.group_messages_for_render(messages)
+
+    # Phase 12g: spawn the generation task now so it's already
+    # running when the browser opens the SSE connection. A
+    # brand-new chat can't have a generation in flight, so no
+    # GenerationInProgress catch needed here.
+    generation.start_generation(
+        client=client,
+        db=db,
+        conversation_id=chat.id,
+        model=chat.model,
+        history=messages,
+        on_complete="append",
+    )
 
     # Panel includes the just-saved user bubble AND an inline assistant
     # placeholder that opens the SSE stream on insert. Inlining the
@@ -498,11 +512,34 @@ def get_chat_panel_endpoint(
     messages = queries.list_messages(db, conversation_id)
     blocks = render.group_messages_for_render(messages)
 
+    # Phase 12g: if a generation is IN PROGRESS for this conv, the
+    # trailing ToolBatchBlock (if any) belongs to the in-progress
+    # turn — exclude it from the panel render so the SSE replay can
+    # rebuild the card via OOB swaps. Setting `pending_stream_url`
+    # makes the chat-panel template render a streaming placeholder
+    # pointing at /stream, where consume_generation attaches as a
+    # fresh consumer.
+    #
+    # `live_generations` retains DONE entries for replay-on-slow-
+    # reload, so the `not done` check matters — we don't want to
+    # render a streaming placeholder on top of an already-finished
+    # historic conversation.
+    pending_stream_url = None
+    live = generation.live_generations.get(conversation_id)
+    if live is not None and not live.done:
+        if blocks and blocks[-1].kind == "tool_batch":
+            blocks = blocks[:-1]
+        pending_stream_url = f"/chats/{conversation_id}/stream"
+
     if request.headers.get("HX-Request"):
         return templates.TemplateResponse(
             request=request,
             name="_chat_panel.html",
-            context={"conversation": conversation, "blocks": blocks},
+            context={
+                "conversation": conversation,
+                "blocks": blocks,
+                "pending_stream_url": pending_stream_url,
+            },
         )
     return templates.TemplateResponse(
         request=request,
@@ -511,6 +548,7 @@ def get_chat_panel_endpoint(
             "chats": queries.list_conversations(db),
             "conversation": conversation,
             "blocks": blocks,
+            "pending_stream_url": pending_stream_url,
             # The active row highlight lives in the sidebar; pass the
             # id so `_chat_item.html` can set `aria-current="page"`.
             "active_chat_id": conversation.id,
@@ -621,10 +659,11 @@ def delete_chat_endpoint(
     "/chats/{conversation_id}/messages",
     response_class=HTMLResponse,
 )
-def send_message_endpoint(
+async def send_message_endpoint(
     request: Request,
     conversation_id: int,
     db: DB,
+    client: OllamaClient,
     content: Annotated[str, Form()],
 ) -> Response:
     """Save the user message; return user-bubble + assistant placeholder.
@@ -637,15 +676,38 @@ def send_message_endpoint(
     GET-based ``sse-connect``.
     """
     try:
-        # Confirm the conversation exists before saving so we don't
-        # leave an orphan FK error for the user to puzzle over.
-        queries.get_conversation(db, conversation_id)
+        conversation = queries.get_conversation(db, conversation_id)
     except LookupError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
 
     user_message = queries.append_message(
         db, conversation_id, "user", content
     )
+
+    # Phase 12g: spawn the generation task NOW so the LLM call is
+    # already running by the time the browser opens the SSE
+    # connection. The task lives beyond this request's lifecycle —
+    # it's owned by `generation.live_generations`, not by the
+    # response generator. A page reload (client disconnect) won't
+    # cancel it; consume_generation just attaches a new consumer.
+    history = queries.list_messages(db, conversation_id)
+    try:
+        generation.start_generation(
+            client=client,
+            db=db,
+            conversation_id=conversation_id,
+            model=conversation.model,
+            history=history,
+            on_complete="append",
+        )
+    except generation.GenerationInProgress:
+        # UI gate (placeholder keeps the send button disabled) makes
+        # this rare; defensive 409 in case a duplicate POST sneaks
+        # through.
+        return HTMLResponse(
+            '<div class="error">A reply is already streaming for this chat.</div>',
+            status_code=status.HTTP_409_CONFLICT,
+        )
 
     # Render the user bubble + assistant placeholder as one fragment.
     # The browser receives them both, swaps them into #messages, and
@@ -666,17 +728,29 @@ def send_message_endpoint(
 async def stream_endpoint(
     conversation_id: int, db: DB, client: OllamaClient
 ) -> StreamingResponse:
-    """SSE stream of the assistant's reply to the latest user message."""
+    """SSE stream — attach as a consumer to the live generation if one
+    exists, else emit a done event from the persisted assistant row.
+
+    Phase 12g: the POST that triggered this stream (either /messages
+    or /regenerate) spawned a generation task and registered it in
+    `generation.live_generations`. This endpoint is a thin
+    dispatcher — `consume_generation` handles all the replay/tail
+    logic. The fallback to `consume_finished` covers the race where
+    a reload's GET lands AFTER the generation finished and was
+    removed from the registry.
+    """
+    state = generation.live_generations.get(conversation_id)
+    if state is not None:
+        return StreamingResponse(
+            generation.consume_generation(state),
+            media_type="text/event-stream",
+        )
     try:
-        conversation = queries.get_conversation(db, conversation_id)
+        queries.get_conversation(db, conversation_id)
     except LookupError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
-    history = queries.list_messages(db, conversation_id)
     return StreamingResponse(
-        _stream_assistant_reply(
-            client, db, conversation_id, conversation.model,
-            history, on_complete="append",
-        ),
+        generation.consume_finished(db, conversation_id),
         media_type="text/event-stream",
     )
 
@@ -690,636 +764,54 @@ async def stream_endpoint(
     "/chats/{conversation_id}/regenerate",
     response_class=HTMLResponse,
 )
-def regenerate_endpoint(
-    request: Request, conversation_id: int, db: DB
+async def regenerate_endpoint(
+    request: Request, conversation_id: int, db: DB, client: OllamaClient
 ) -> Response:
-    """Return an assistant placeholder that replaces the last bubble.
+    """Spawn a regen generation; return a placeholder that replaces the bubble.
 
-    The placeholder's ``sse-connect`` opens the regenerate stream;
-    HTMX's swap (``outerHTML`` on the existing assistant message)
-    replaces the rendered text with the streaming placeholder.
+    Phase 12g: identical shape to send_message_endpoint, but
+    ``on_complete="replace"`` so the existing assistant row is
+    overwritten in place. The placeholder's ``sse-connect`` points
+    at ``/chats/{id}/stream`` (same endpoint as new-message flow
+    after 12g — the /regenerate-stream endpoint was removed).
     """
     try:
-        queries.get_conversation(db, conversation_id)
+        conversation = queries.get_conversation(db, conversation_id)
     except LookupError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
 
     history = queries.list_messages(db, conversation_id)
     if not history or history[-1].role != "assistant":
-        # Same 400 case as Phase 6 — gives a clearer error than
-        # letting the LookupError surface from the query layer
-        # mid-stream.
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             "No assistant message to regenerate.",
+        )
+
+    # Drop the last assistant message from the prompt so Ollama
+    # generates a fresh reply rather than seeing its own previous
+    # output in the history.
+    prompt_history = history[:-1]
+    try:
+        generation.start_generation(
+            client=client,
+            db=db,
+            conversation_id=conversation_id,
+            model=conversation.model,
+            history=prompt_history,
+            on_complete="replace",
+        )
+    except generation.GenerationInProgress:
+        return HTMLResponse(
+            '<div class="error">A reply is already streaming for this chat.</div>',
+            status_code=status.HTTP_409_CONFLICT,
         )
 
     placeholder_html = templates.get_template(
         "_assistant_placeholder.html"
     ).render(
         conversation_id=conversation_id,
-        stream_url=f"/chats/{conversation_id}/regenerate-stream",
+        stream_url=f"/chats/{conversation_id}/stream",
     )
     return HTMLResponse(content=placeholder_html)
 
 
-@router.get("/chats/{conversation_id}/regenerate-stream")
-async def regenerate_stream_endpoint(
-    conversation_id: int, db: DB, client: OllamaClient
-) -> StreamingResponse:
-    """SSE stream that replaces the last assistant message in place."""
-    try:
-        conversation = queries.get_conversation(db, conversation_id)
-    except LookupError as e:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
-    history = queries.list_messages(db, conversation_id)
-    if not history or history[-1].role != "assistant":
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            "No assistant message to regenerate.",
-        )
-    # Drop the last assistant message from the prompt so Ollama
-    # generates a fresh reply rather than seeing its own previous
-    # output in the history.
-    prompt_history = history[:-1]
-    return StreamingResponse(
-        _stream_assistant_reply(
-            client, db, conversation_id, conversation.model,
-            prompt_history, on_complete="replace",
-        ),
-        media_type="text/event-stream",
-    )
-
-
-# ---------------------------------------------------------------------------
-# Shared streaming generator (used by both stream endpoints)
-# ---------------------------------------------------------------------------
-
-
-# Hard ceiling on how many tool rounds a single assistant turn can run
-# before we bail out. 5 matches the spec in PLAN.md / phase12 plans.
-# Without this, a chatty model that keeps requesting the same tool
-# would spin forever and choke the SSE stream.
-_TOOL_ITERATION_CAP = 5
-
-
-def _build_history_payload(
-    history: list,
-) -> list[dict]:
-    """Turn Message dataclasses into the wire format Ollama expects.
-
-    Phase 12d roles map:
-        user / assistant → passed through as ``{"role", "content"}``.
-        tool_call → assistant message carrying a ``tool_calls`` list,
-            unparsed from the JSON we stored in ``content``.
-        tool_result → ``{"role": "tool", "content": <result text>}``.
-
-    Malformed ``tool_call`` rows (corrupt JSON, missing keys) are
-    skipped silently rather than crashing the request — the rest of
-    the conversation is still usable for Ollama to respond to. The
-    skip is intentional: a hard failure here would block every
-    subsequent turn in a chat that hit one bad row historically.
-
-    Returns:
-        A list of dicts in Ollama's ``/api/chat`` ``messages`` shape.
-    """
-    out: list[dict] = []
-    for m in history:
-        if m.role == "tool_call":
-            # tool_call rows stash the call as JSON in `content`. Unparse
-            # back to dicts so the wire format carries structured
-            # arguments rather than a stringified blob.
-            try:
-                call = json.loads(m.content)
-                out.append({
-                    "role": "assistant",
-                    # Ollama wants `content` even on tool-call turns;
-                    # empty string is the conventional placeholder.
-                    "content": "",
-                    "tool_calls": [{
-                        "function": {
-                            "name": call["name"],
-                            "arguments": call.get("arguments", {}),
-                        },
-                    }],
-                })
-            except (json.JSONDecodeError, KeyError, TypeError):
-                # Skip rather than fail — see docstring rationale.
-                continue
-        elif m.role == "tool_result":
-            # The model expects role="tool" so it can attribute the
-            # content back to its earlier tool_calls request.
-            out.append({"role": "tool", "content": m.content})
-        else:
-            out.append({"role": m.role, "content": m.content})
-    return out
-
-
-def _build_done_card_oobs(
-    call_count: int,
-    in_flight: dict[str, dict],
-    summary_id: str,
-) -> str:
-    """Build the per-turn OOB fragments that ride along with `done`.
-
-    Two things happen when the assistant turn finishes:
-
-    1. The card summary span swaps from present-tense / ellipsis
-       ("using N tool(s)…") to past-tense ("used N tool(s)").
-    2. Any rows still missing a paired tool_result get OOB-replaced
-       with a frozen variant carrying `data-elapsed-final`. The JS
-       tick driver only ticks rows that have `data-elapsed-start`
-       AND no `data-elapsed-final`; once SSE closes (on `done`) we
-       never get another chance to freeze, so leftover live rows
-       would tick forever. The happy path has nothing in
-       `in_flight` here; the bail branch hits the iteration cap
-       with one unpaired call left.
-
-    Args:
-        call_count: Total tool calls emitted this turn. Zero means
-            no card exists; the function returns the empty string.
-        in_flight: row_id → {start_ms, label, …} for unpaired calls.
-        summary_id: DOM id of the card's summary span.
-
-    Returns:
-        Concatenated HTML for zero-or-more `hx-swap-oob` fragments,
-        ready to splice into a `done` SSE payload alongside the
-        final message bubble.
-    """
-    if call_count == 0:
-        return ""
-
-    summary_html = (
-        f'<span id="{summary_id}" hx-swap-oob="outerHTML">'
-        f"{html.escape(render.summary_text(call_count, done=True))}"
-        f"</span>"
-    )
-
-    if not in_flight:
-        return summary_html
-
-    now_ms = int(time.time() * 1000)
-    frozen_rows_html = ""
-    for row_id, info in in_flight.items():
-        duration_ms = max(0, now_ms - info["start_ms"])
-        frozen_row = render.ToolRowView(
-            id=row_id,
-            label=info["label"],
-            elapsed_start_ms=None,
-            elapsed_final_ms=duration_ms,
-            elapsed_display=render.format_elapsed_mm_ss(duration_ms),
-        )
-        frozen_rows_html += templates.get_template(
-            "_tool_row.html"
-        ).render(row=frozen_row, swap_oob="outerHTML")
-    return summary_html + frozen_rows_html
-
-
-async def _stream_assistant_reply(
-    client,
-    db,
-    conversation_id: int,
-    model: str,
-    history: list,
-    on_complete: str,
-) -> AsyncIterator[str]:
-    """Run the tool-calling loop, then stream the final assistant reply.
-
-    Phase 12d wraps the streaming codepath in an iteration loop so the
-    model can call tools mid-turn. Each iteration:
-
-    1. Asks Ollama (one non-streaming /api/chat call) whether it wants
-       to call a tool given the current history.
-    2. If yes: persist each tool_call, emit a placeholder ``tool-call``
-       SSE event, run the tool, persist a tool_result row, emit a
-       placeholder ``tool-result`` event. Refresh history from the DB
-       and loop.
-    3. If no: break out of the loop and switch to ``stream_chat`` for
-       the visible response.
-
-    Hard cap at ``_TOOL_ITERATION_CAP`` rounds — if Ollama is still
-    asking for tools at that point, persist an apology assistant
-    message and stop.
-
-    After the streaming response completes (the non-tool branch), the
-    phase 11d auto-titler is invoked BEFORE the ``done`` event — the
-    done event removes the streaming placeholder which closes the SSE
-    connection, so any later events are dropped on the floor.
-
-    Capability gating: phase 12d always passes ``tools=`` regardless of
-    whether the chat's model supports tool-calling. The
-    ``model_supports_tools`` helper is a 12f deliverable; until it
-    ships, chats whose model lacks tool capability will surface an
-    Ollama 400 as an SSE ``error`` event. Acceptable since 12f arrives
-    shortly and the failure is loud.
-
-    Args:
-        client: Shared httpx AsyncClient.
-        db: Shared SQLite Connection.
-        conversation_id: Parent conversation id.
-        model: Ollama model identifier.
-        history: Initial Message dataclasses for the prompt. After
-            each tool round the history is re-read from the DB so the
-            next call to Ollama sees the freshly persisted rows.
-        on_complete: ``"append"`` for the new-send case (creates a new
-            assistant row); ``"replace"`` for regenerate (overwrites
-            the existing last assistant row in place).
-    """
-    # `working_history` is the live view used to build each Ollama
-    # payload. We seed from the caller's list, then refresh from the DB
-    # after every tool round so newly-persisted tool_call/tool_result
-    # rows are visible to the next iteration.
-    working_history = list(history)
-    # 12d always advertises every registered tool. Filtering by model
-    # capability is 12f — this means non-tool-capable models will see
-    # an Ollama 400 here until 12f lands. Documented in the function
-    # docstring.
-    tools_payload = tool_specs_for_ollama()
-
-    # Phase 12e: state for the aggregated tool-usage card that sits
-    # above the assistant bubble.
-    #   turn_id        — monotonic ns, unique per assistant turn
-    #   card_id/list_id/summary_id — derived DOM ids, used by OOB targets
-    #   call_index     — total calls seen this turn (across all iters);
-    #                    bumps with every tool-call we emit
-    #   in_flight      — row_id → {start_ms, name, arguments} for rows
-    #                    that have been emitted but not yet paired with
-    #                    a result. Used by the bail/done branches to
-    #                    freeze any still-ticking rows.
-    turn_id = str(time.monotonic_ns())
-    card_id = render.card_id_for(turn_id)
-    list_id = f"{card_id}-list"
-    summary_id = f"{card_id}-summary"
-    call_index = 0
-    in_flight: dict[str, dict] = {}
-
-    # Phase 12e.1: persistence safety net for mid-stream cancellation.
-    #
-    # Hoisting `chunks` and the `persisted_or_errored` flag here lets
-    # the top-level try/finally below catch ANY non-normal exit
-    # (CancelledError, GeneratorExit, or an unhandled exception) at
-    # ANY phase — probe call, tool execution, streaming — and persist
-    # a partial assistant row before the exception resumes. Without
-    # this, a page reload between the tool-card appearing and the
-    # streamed reply finishing would persist the tool_call/tool_result
-    # rows but never write the assistant row, leaving the chat panel
-    # to render an orphan tool-card on reload.
-    #
-    # The flag is set to True at every site that has already either
-    # (a) persisted the assistant row itself or (b) deliberately
-    # decided not to (Ollama errors yield an error event instead).
-    # The finally branch only acts when neither happened.
-    chunks: list[str] = []
-    persisted_or_errored = False
-
-    try:
-        # `for` loop with an `else`: the `else` branch fires only if the
-        # loop runs to completion without hitting `break`, i.e. we hit the
-        # cap and the model is still requesting tools. Inside the loop we
-        # `break` as soon as the model returns no tool calls (signal that
-        # it's ready to stream the final answer).
-        for iteration in range(_TOOL_ITERATION_CAP):
-            try:
-                tool_calls, _content = await ollama.maybe_tool_call(
-                    client,
-                    model,
-                    _build_history_payload(working_history),
-                    tools=tools_payload,
-                )
-            except OllamaUnavailable as e:
-                persisted_or_errored = True
-                yield _sse(
-                    f'<div class="error">Ollama unavailable: {html.escape(str(e))}</div>',
-                    event="error",
-                )
-                return
-            except OllamaProtocolError as e:
-                persisted_or_errored = True
-                yield _sse(
-                    f'<div class="error">Ollama protocol error: {html.escape(str(e))}</div>',
-                    event="error",
-                )
-                return
-
-            if not tool_calls:
-                # Model is done with tools; fall through to streaming.
-                break
-
-            for call in tool_calls:
-                name = call["name"]
-                arguments = call.get("arguments") or {}
-
-                queries.append_message(
-                    db,
-                    conversation_id,
-                    "tool_call",
-                    # JSON in `content` so _build_history_payload can
-                    # round-trip it back to Ollama's wire shape next iter.
-                    content=json.dumps(
-                        {"name": name, "arguments": arguments}
-                    ),
-                )
-
-                # Server-stamp the start time so the JS tick driver counts
-                # from the same instant the call was persisted (rather than
-                # whenever the SSE event happens to arrive on the client).
-                start_ms = int(time.time() * 1000)
-                row_id = f"{card_id}-row-{call_index}"
-                label = format_tool_invocation(name, arguments)
-                live_row = render.ToolRowView(
-                    id=row_id,
-                    label=label,
-                    elapsed_start_ms=start_ms,
-                    elapsed_final_ms=None,
-                    elapsed_display="0:00",
-                )
-
-                if call_index == 0:
-                    # First call: emit the entire card (one OOB swap
-                    # inserting it ahead of the streaming placeholder).
-                    payload = templates.get_template(
-                        "_tool_card_shell.html"
-                    ).render(
-                        card_id=card_id,
-                        list_id=list_id,
-                        summary_id=summary_id,
-                        summary_text=render.summary_text(1, done=False),
-                        rows=[live_row],
-                        swap_oob=(
-                            f"beforebegin:#assistant-stream-"
-                            f"{conversation_id}"
-                        ),
-                    )
-                else:
-                    # Subsequent: append the new row inside the existing
-                    # card's list AND re-render the summary span to bump
-                    # count + plural ("using 2 tools…" etc). Both fragments
-                    # carry hx-swap-oob so they're processed as independent
-                    # OOB swaps inside the same SSE event payload.
-                    row_html = templates.get_template(
-                        "_tool_row.html"
-                    ).render(
-                        row=live_row,
-                        swap_oob=f"beforeend:#{list_id}",
-                    )
-                    summary_html = (
-                        f'<span id="{summary_id}" hx-swap-oob="outerHTML">'
-                        f"{html.escape(render.summary_text(call_index + 1, done=False))}"
-                        f"</span>"
-                    )
-                    payload = row_html + summary_html
-
-                yield _sse(payload, event="tool-call")
-
-                # Track the in-flight call so the bail/done branches can
-                # freeze it if the model abandons the turn before a
-                # tool_result lands.
-                in_flight[row_id] = {
-                    "start_ms": start_ms,
-                    "name": name,
-                    "arguments": arguments,
-                    "label": label,
-                }
-                call_index += 1
-
-                result = await run_tool(name, arguments)
-
-                queries.append_message(
-                    db,
-                    conversation_id,
-                    "tool_result",
-                    content=result,
-                )
-
-                # Freeze the row: OOB-replace it with a frozen variant
-                # carrying data-elapsed-final, which makes the JS tick
-                # driver skip it on the next interval.
-                end_ms = int(time.time() * 1000)
-                duration_ms = max(0, end_ms - start_ms)
-                frozen_row = render.ToolRowView(
-                    id=row_id,
-                    label=label,
-                    elapsed_start_ms=None,
-                    elapsed_final_ms=duration_ms,
-                    elapsed_display=render.format_elapsed_mm_ss(duration_ms),
-                )
-                row_html = templates.get_template("_tool_row.html").render(
-                    row=frozen_row,
-                    swap_oob="outerHTML",
-                )
-                yield _sse(row_html, event="tool-result")
-
-                del in_flight[row_id]
-
-            # Re-read history so the next iteration's payload includes the
-            # rows we just persisted. Cheap (one SELECT) and keeps the
-            # loop's mental model simple — `working_history` is always the
-            # source of truth.
-            working_history = queries.list_messages(db, conversation_id)
-        else:
-            # Loop ran to completion without breaking: the model kept
-            # requesting tools past the cap. Persist an apology assistant
-            # message, freeze any still-in-flight rows (so the JS driver
-            # stops incrementing them after SSE close), update the card
-            # summary to past tense, and emit `done`. Skipping titling
-            # here on purpose — a runaway loop isn't representative
-            # content for the auto-titler.
-            message = queries.append_message(
-                db,
-                conversation_id,
-                "assistant",
-                "(Tool-call limit reached; no final answer produced.)",
-            )
-            persisted_or_errored = True
-            bail_payload = _build_done_card_oobs(
-                call_index, in_flight, summary_id
-            )
-            final_html = templates.get_template("_message.html").render(
-                message=message,
-                swap_target=f"#assistant-stream-{conversation_id}",
-            )
-            yield _sse(bail_payload + final_html, event="done")
-            return
-
-        # Final round: stream the model's text response. Identical to the
-        # pre-12d streaming codepath, with `working_history` (rather than
-        # the initial `history`) as the prompt so any tool rounds we ran
-        # are visible to the model.
-        try:
-            async for chunk in ollama.stream_chat(
-                client, model, _build_history_payload(working_history)
-            ):
-                if chunk.content:
-                    chunks.append(chunk.content)
-                    # html.escape so a token containing `<` or `&`
-                    # doesn't break the page when swapped into the DOM.
-                    yield _sse(html.escape(chunk.content), event="token")
-                if chunk.done:
-                    break
-        except OllamaUnavailable as e:
-            persisted_or_errored = True
-            yield _sse(
-                f'<div class="error">Ollama unavailable: {html.escape(str(e))}</div>',
-                event="error",
-            )
-            return
-        except OllamaProtocolError as e:
-            persisted_or_errored = True
-            yield _sse(
-                f'<div class="error">Ollama protocol error: {html.escape(str(e))}</div>',
-                event="error",
-            )
-            return
-
-        full_text = "".join(chunks)
-        if on_complete == "append":
-            message = queries.append_message(
-                db, conversation_id, "assistant", full_text
-            )
-        else:  # "replace"
-            message = queries.replace_last_assistant_message(
-                db, conversation_id, full_text
-            )
-        # Persisted — the outer finally must not double-write a partial.
-        # Set BEFORE any further yields, since a yield is an await point
-        # and cancellation can land there.
-        persisted_or_errored = True
-
-        # Phase 11d: auto-generated title fires BEFORE the done event.
-        #
-        # The done event uses outerHTML OOB to remove the streaming
-        # placeholder (replacing it with the persisted bubble). Once the
-        # placeholder is gone, htmx-ext-sse's mutation observer detects
-        # the removal and closes the EventSource — so any SSE event sent
-        # AFTER done is dropped on the floor.
-        #
-        # Cost of this ordering: the placeholder keeps its
-        # message--streaming class for the duration of title generation
-        # (~1-2s with tinyllama), which keeps the send button disabled
-        # and the regenerate button hidden. The accumulated text is
-        # already visible to the user, so this reads as a brief
-        # "settling" pause. Acceptable tradeoff; the alternative
-        # (multiplexed SSE on a stable parent element) is much heavier.
-        #
-        # Skipped entirely on the regenerate path: replace doesn't add
-        # an assistant row, so the count-based gate would lie.
-        if on_complete == "append":
-            async for sse_event in _maybe_generate_title(
-                client, db, conversation_id
-            ):
-                yield sse_event
-
-        # On completion, hand back the final persisted message bubble
-        # carrying `hx-swap-oob` so HTMX replaces the streaming
-        # placeholder element with this real row (rather than nesting it
-        # inside, which would leave the placeholder and its `streaming`
-        # class around forever).
-        #
-        # If the turn used any tools, bundle the card's past-tense
-        # summary swap (and a safety freeze on any in-flight rows —
-        # should be empty on the happy path, but defensive against a
-        # future codepath that yields done without pairing every call)
-        # into the same payload. All elements are top-level so HTMX
-        # processes each OOB independently before the placeholder
-        # removal closes the SSE connection.
-        done_card_oobs = _build_done_card_oobs(
-            call_index, in_flight, summary_id
-        )
-        final_html = templates.get_template("_message.html").render(
-            message=message,
-            swap_target=f"#assistant-stream-{conversation_id}",
-        )
-        yield _sse(done_card_oobs + final_html, event="done")
-    finally:
-        # Persistence safety net (phase 12e.1). The finally fires on:
-        #   - normal completion (persisted_or_errored=True → skip)
-        #   - Ollama errors that already yielded an error event
-        #     (persisted_or_errored=True → skip)
-        #   - CancelledError or GeneratorExit at ANY await/yield point
-        #     above (flag still False → write a partial)
-        #   - any unhandled exception (flag False → write a partial,
-        #     then exception continues propagating)
-        # SQLite writes are synchronous, so the row lands before the
-        # propagating exception resumes.
-        if not persisted_or_errored:
-            partial = "".join(chunks) if chunks else "(response interrupted)"
-            if on_complete == "append":
-                queries.append_message(
-                    db, conversation_id, "assistant", partial
-                )
-            elif chunks:
-                # Regen path: only overwrite the previous assistant
-                # message when we actually got some tokens. Don't
-                # clobber the original with a bare placeholder if the
-                # user accidentally reloads before anything streamed.
-                queries.replace_last_assistant_message(
-                    db, conversation_id, partial
-                )
-
-
-async def _maybe_generate_title(
-    client,
-    db,
-    conversation_id: int,
-) -> AsyncIterator[str]:
-    """Fire the auto-titler after the 1st, 2nd, or 3rd assistant reply.
-
-    Runs INSIDE `_stream_assistant_reply` between persisting the
-    assistant message and yielding the `done` event. The done event
-    removes the streaming placeholder, which closes the SSE
-    connection — so the title MUST go out first or HTMX never sees
-    it. See the call-site comment in _stream_assistant_reply for
-    the UX tradeoff (placeholder lingers in its streaming state
-    for the title-gen roundtrip).
-
-    Yields zero or one ``title`` SSE event: an OOB sidebar-row swap
-    with the new name. The chat's own model is reused for the title
-    request (already warm in Ollama from the assistant reply), so
-    there's no separate model to install or load.
-
-    Silent skips (no event yielded):
-    - The chat has been manually renamed (`name_locked`).
-    - The count is outside 1..3 (cap on how many times we refresh).
-    - Any Ollama failure (down, malformed reply, timeout). The user
-      didn't ask for a title; we don't owe them an error.
-    - The model returns empty text after stripping.
-    """
-    conversation = queries.get_conversation(db, conversation_id)
-    if conversation.name_locked:
-        return
-
-    count = queries.count_assistant_messages(db, conversation_id)
-    if not 1 <= count <= 3:
-        return
-
-    full_history = queries.list_messages(db, conversation_id)
-    try:
-        title = await ollama.generate_title(
-            client,
-            conversation.model,
-            _build_history_payload(full_history),
-        )
-    except (OllamaUnavailable, OllamaProtocolError):
-        # Silent — the chat keeps its current name (placeholder or
-        # last successful auto-title). User can rename manually.
-        return
-
-    if not title:
-        return
-
-    updated = queries.set_name_auto(db, conversation_id, title)
-    if updated is None:
-        # User renamed between get_conversation above and this UPDATE.
-        # The name_locked check inside set_name_auto kept us from
-        # overwriting their choice.
-        return
-
-    # Render the sidebar row WITH hx-swap-oob="true" baked into the
-    # root <li>. The id="chat-{id}" already matches the live row, so
-    # HTMX swaps in place via the OOB pass.
-    row_html = templates.get_template("_chat_item.html").render(
-        chat=updated,
-        active_chat_id=updated.id,
-        oob_swap=True,
-    )
-    yield _sse(row_html, event="title")

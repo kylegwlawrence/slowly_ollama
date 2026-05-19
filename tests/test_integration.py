@@ -168,12 +168,12 @@ def test_full_user_journey(integration_client: TestClient) -> None:
     regen_placeholder = client.post(f"/chats/{chat_id}/regenerate")
     assert regen_placeholder.status_code == 200
     assert (
-        f'sse-connect="/chats/{chat_id}/regenerate-stream"'
+        f'sse-connect="/chats/{chat_id}/stream"'
         in regen_placeholder.text
     )
 
     # 8. Drive the regenerate stream.
-    regen_stream = client.get(f"/chats/{chat_id}/regenerate-stream")
+    regen_stream = client.get(f"/chats/{chat_id}/stream")
     assert regen_stream.status_code == 200
     assert "Regenerated " in regen_stream.text
 
