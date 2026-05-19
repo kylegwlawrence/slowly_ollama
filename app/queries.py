@@ -15,10 +15,13 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal
 
-# Role values are constrained at the schema level (CHECK constraint in Phase 2)
-# AND at the type level here. The Literal alias documents intent and lets a
-# type checker catch wrong-role bugs before they hit SQLite.
-Role = Literal["user", "assistant"]
+# Role values are constrained at the type level here. The schema-level
+# CHECK was dropped in phase 12a — the role set grows over time (12a
+# adds tool_call/tool_result; future phases may add system) and SQLite
+# can't ALTER CHECK constraints, so we enforce here in Python instead.
+# The Literal alias documents intent and lets a type checker catch
+# wrong-role bugs before they hit SQLite.
+Role = Literal["user", "assistant", "tool_call", "tool_result"]
 
 
 @dataclass(frozen=True)
@@ -53,7 +56,10 @@ class Message:
     Attributes:
         id: Auto-assigned primary key.
         conversation_id: Foreign key into `conversations`.
-        role: Either "user" or "assistant" (enforced by the schema CHECK).
+        role: One of the values in the `Role` literal alias above.
+            Phase 12a widened this to include "tool_call" and
+            "tool_result"; validation now lives in Python (the schema
+            CHECK was dropped in the same phase).
         content: The message text.
         created_at: When the row was first inserted (UTC). For a regenerated
             assistant message the original timestamp is preserved so message
@@ -298,15 +304,16 @@ def append_message(
     Args:
         conn: Open SQLite connection.
         conversation_id: Id of the parent conversation.
-        role: Either "user" or "assistant".
+        role: One of the `Role` literal values (currently "user",
+            "assistant", "tool_call", "tool_result"). The type checker
+            enforces this — the SQLite CHECK was dropped in phase 12a.
         content: The message text.
 
     Returns:
         The newly inserted Message.
 
     Raises:
-        sqlite3.IntegrityError: If `conversation_id` doesn't exist (FK), or
-            if `role` is not one of the documented values (CHECK).
+        sqlite3.IntegrityError: If `conversation_id` doesn't exist (FK).
     """
     now = _now_iso()
     with conn:

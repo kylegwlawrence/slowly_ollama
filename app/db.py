@@ -24,34 +24,52 @@ from app.config import db_path
 # - messages.conversation_id: FK with ON DELETE CASCADE so deleting a
 #   conversation cleans up its messages. Note: FK enforcement is OFF by
 #   default in SQLite — every connection must opt in via PRAGMA.
-# - role CHECK: limited to v1's two roles. Add 'system' here when/if a
-#   system-prompt feature is introduced (currently a non-goal per PLAN.md).
+# - messages.role: no CHECK constraint as of phase 12a. Validation lives in
+#   `app.queries.Role` (a typing.Literal). Tool-calling adds two new roles
+#   (`tool_call`, `tool_result`) and we expect more in future phases; the
+#   Python-level enum avoids painful SQLite ALTER TABLE migrations each time.
 # - composite index on messages(conversation_id, created_at): supports the
 #   primary read pattern, "give me this conversation's messages in order."
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS conversations (
-    id          INTEGER PRIMARY KEY,
-    name        TEXT NOT NULL,
-    model       TEXT NOT NULL,
+    id           INTEGER PRIMARY KEY,
+    name         TEXT NOT NULL,
+    model        TEXT NOT NULL,
     -- Phase 11d: when 1, the auto-titler must leave the name alone.
     -- Set to 1 by `rename_conversation` so a manual rename always wins
     -- over a subsequent automated title refresh.
-    name_locked INTEGER NOT NULL DEFAULT 0,
-    created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL
+    name_locked  INTEGER NOT NULL DEFAULT 0,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
 );
 
+-- The role CHECK has been removed (phase 12a). Validation now lives
+-- in app.queries.Role (a typing.Literal). SQLite can't ALTER an
+-- existing CHECK, so this only takes effect for fresh DBs; existing
+-- DBs are migrated by _migrate_messages_drop_role_check below.
 CREATE TABLE IF NOT EXISTS messages (
     id              INTEGER PRIMARY KEY,
     conversation_id INTEGER NOT NULL
         REFERENCES conversations(id) ON DELETE CASCADE,
-    role            TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+    role            TEXT NOT NULL,
     content         TEXT NOT NULL,
     created_at      TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_conversation_created
 ON messages (conversation_id, created_at);
+
+-- Phase 12a: configured RAG endpoints. Each row is one source the
+-- chat model can query via the query_rag tool. `url` is the FULL
+-- base URL up through the source prefix (e.g.
+-- "http://10.0.0.5:8002/arxiv"); the tool appends "/chunks" itself.
+CREATE TABLE IF NOT EXISTS rag_servers (
+    id         INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL UNIQUE,
+    url        TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -75,6 +93,59 @@ def _ensure_name_locked_column(conn: sqlite3.Connection) -> None:
             "ALTER TABLE conversations"
             " ADD COLUMN name_locked INTEGER NOT NULL DEFAULT 0;"
         )
+
+
+def _migrate_messages_drop_role_check(conn: sqlite3.Connection) -> None:
+    """Drop the role CHECK from an existing messages table.
+
+    The original schema (phases 2-11) had `CHECK (role IN ('user',
+    'assistant'))` on `messages.role`. Phase 12a expands the allowed
+    roles to include `tool_call` and `tool_result`; the cleanest
+    approach is to drop the CHECK entirely and let the Python `Role`
+    literal enforce validity at the app layer.
+
+    SQLite has no `ALTER TABLE ... DROP CONSTRAINT`. The portable
+    workaround is to recreate the table without the CHECK and copy
+    rows over. Idempotent: re-running detects the absence of the
+    CHECK in `sqlite_master` and exits early.
+
+    Args:
+        conn: Open SQLite connection.
+    """
+    # sqlite_master.sql holds the original CREATE TABLE text. If the
+    # word "CHECK" is missing, either the table doesn't exist yet
+    # (fresh DB — the CREATE TABLE in _SCHEMA_SQL already produced a
+    # CHECK-free table) or we already migrated. Either way: skip.
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master"
+        " WHERE type='table' AND name='messages';"
+    ).fetchone()
+    if row is None or "CHECK" not in (row[0] or ""):
+        return
+    # Table-recreate dance: build messages_new with the new schema,
+    # copy data, drop the original, rename. executescript wraps the
+    # whole thing in BEGIN/COMMIT so the swap is atomic — if any
+    # step fails partway, the original table is preserved.
+    conn.executescript(
+        """
+        BEGIN;
+        CREATE TABLE messages_new (
+            id              INTEGER PRIMARY KEY,
+            conversation_id INTEGER NOT NULL
+                REFERENCES conversations(id) ON DELETE CASCADE,
+            role            TEXT NOT NULL,
+            content         TEXT NOT NULL,
+            created_at      TEXT NOT NULL
+        );
+        INSERT INTO messages_new (id, conversation_id, role, content, created_at)
+            SELECT id, conversation_id, role, content, created_at FROM messages;
+        DROP TABLE messages;
+        ALTER TABLE messages_new RENAME TO messages;
+        CREATE INDEX IF NOT EXISTS idx_messages_conversation_created
+            ON messages (conversation_id, created_at);
+        COMMIT;
+        """
+    )
 
 
 def initialize_database(path: Path | None = None) -> Path:
@@ -111,5 +182,8 @@ def initialize_database(path: Path | None = None) -> Path:
         conn.executescript(_SCHEMA_SQL)
         # One-shot migration for databases created before phase 11d.
         _ensure_name_locked_column(conn)
+        # Phase 12a: drop the role CHECK on the legacy messages table
+        # so tool_call / tool_result rows can be inserted.
+        _migrate_messages_drop_role_check(conn)
 
     return target

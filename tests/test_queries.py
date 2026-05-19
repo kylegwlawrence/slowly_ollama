@@ -173,16 +173,12 @@ def test_append_message_bumps_parent_updated_at(
     assert refreshed.updated_at >= original_updated
 
 
-def test_append_message_rejects_invalid_role(
-    conn: sqlite3.Connection,
-) -> None:
-    """The schema CHECK constraint still applies through the query layer."""
-    c = create_conversation(conn, "X", "llama3")
-
-    with pytest.raises(sqlite3.IntegrityError):
-        # Bypass the Literal type hint by casting — we're testing the DB,
-        # not the type system.
-        append_message(conn, c.id, "system", "should fail")  # type: ignore[arg-type]
+# Note: a previous test (`test_append_message_rejects_invalid_role`)
+# verified that the schema CHECK rejected unknown roles. Phase 12a
+# dropped that CHECK — validation now lives entirely in the Python
+# `Role` literal, which is a type-checker concern, not a runtime one.
+# There's nothing left for pytest to assert here, so the test was
+# removed.
 
 
 def test_list_messages_returns_chronological_order(
