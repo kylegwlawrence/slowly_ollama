@@ -852,5 +852,9 @@ body {
   padding: var(--space-xs) var(--space-md);
   border-radius: var(--radius-md);
   cursor: pointer;
+  font-size: 13px;
   font-weight: 500;
+  /* Pico adds margin-bottom to form controls; zero it so the button
+     aligns with the bottom of the inputs in the grid row. */
+  margin: 0;
 }
