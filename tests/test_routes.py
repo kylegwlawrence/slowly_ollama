@@ -1496,7 +1496,8 @@ def test_settings_add_server_duplicate_name_returns_409(
 
     HTMX's default is to NOT swap a non-2xx response, so the existing
     list stays intact and the form's after-request reset (gated on
-    `event.detail.successful`) keeps the typed values.
+    `event.detail.successful`) keeps the typed values. The error region
+    in the settings page (see test below) is what the user actually sees.
     """
     with make_client(_ollama_unreachable) as client:
         first = client.post(
@@ -1511,9 +1512,31 @@ def test_settings_add_server_duplicate_name_returns_409(
         )
 
     assert response.status_code == 409
-    # Body is a short plain-text message naming the offending value
-    # so the user (or the network tab) sees what blew up.
+    # Body is a short plain-text message naming the offending value;
+    # the form's hx-on copies it verbatim into #rag-server-form-error.
     assert "already in use" in response.text
+
+
+def test_settings_renders_form_error_region(
+    make_client: ClientFactory,
+) -> None:
+    """The settings page renders the inline error region for the add-server
+    form.
+
+    Contract: a `#rag-server-form-error` element with `role="alert"` and
+    the `hidden` attribute must be present so the form's
+    `hx-on::after-request` has a stable target to write 4xx messages
+    into. Hidden by default — only the JS toggles it visible.
+    """
+    with make_client(_ollama_unreachable) as client:
+        response = client.get("/settings", headers={"HX-Request": "true"})
+
+    assert response.status_code == 200
+    assert 'id="rag-server-form-error"' in response.text
+    assert 'class="form-error"' in response.text
+    assert 'role="alert"' in response.text
+    # `hidden` is a boolean attribute — present means hidden.
+    assert "hidden></div>" in response.text or 'hidden=""' in response.text
 
 
 def test_settings_delete_server_empty_200(

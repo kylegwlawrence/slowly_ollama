@@ -26,11 +26,29 @@
       {% endfor %}
     </ul>
 
+    {# `hx-on::after-request` does double duty: on success it resets the
+       form and hides the error region; on any non-2xx it copies the
+       response body into the error region and unhides it. HTMX still
+       skips the target swap on non-2xx (good — the list stays intact)
+       so the error region is the only thing the user sees change.
+
+       The 4xx body is plain text (e.g. "Server name 'arxiv' already in
+       use.") so assigning to `textContent` is the right escape boundary
+       — never use innerHTML here. #}
     <form class="rag-server-form"
           hx-post="/settings/servers"
           hx-target="#rag-servers-list"
           hx-swap="beforeend"
-          hx-on::after-request="if (event.detail.successful) this.reset()">
+          hx-on::after-request="
+            const err = document.getElementById('rag-server-form-error');
+            if (event.detail.successful) {
+              this.reset();
+              err.hidden = true;
+              err.textContent = '';
+            } else {
+              err.textContent = event.detail.xhr.responseText || 'Failed to add server.';
+              err.hidden = false;
+            }">
       <label>
         Name
         <input type="text" name="name" required placeholder="arxiv">
@@ -41,6 +59,11 @@
                placeholder="http://10.0.0.5:8002/arxiv">
       </label>
       <button type="submit">Add server</button>
+      {# Spans all three columns of the form grid (see `.form-error` in
+         style.css). `hidden` + `role="alert"` is the screen-reader-
+         friendly idiom — when the JS toggles `hidden` off and writes
+         text, the AT announces it once. #}
+      <div id="rag-server-form-error" class="form-error" role="alert" hidden></div>
     </form>
   </section>
 </section>
