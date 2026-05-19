@@ -39,10 +39,12 @@ Mid-stream failures emit an SSE ``event: error`` (headers already sent).
 """
 
 import html
+import re
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Annotated
 
+import markdown as _md
 from fastapi import APIRouter, Form, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
@@ -56,6 +58,43 @@ from app.ollama import OllamaProtocolError, OllamaUnavailable
 # `uvicorn` is launched from.
 _TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=_TEMPLATE_DIR)
+
+# fenced_code: ```lang ... ``` blocks; tables: GFM-style tables.
+_md_converter = _md.Markdown(extensions=["fenced_code", "tables"])
+
+# Matches any line that starts a list item (ordered or unordered).
+_LIST_ITEM_RE = re.compile(r"^[ \t]*(\d+[.)]\s+|[-*+]\s+)")
+
+
+def _ensure_list_spacing(text: str) -> str:
+    """Insert a blank line before list items that directly follow non-list text.
+
+    LLMs often omit the blank line that standard Markdown requires before a
+    list when it comes after paragraph text (e.g. "Steps:\n1. First").
+    Without the blank line the markdown library renders everything as a single
+    paragraph.  This pass inserts the missing blank line so the list is
+    recognised correctly.
+    """
+    lines = text.split("\n")
+    out: list[str] = []
+    for line in lines:
+        if _LIST_ITEM_RE.match(line) and out and out[-1].strip() and not _LIST_ITEM_RE.match(out[-1]):
+            out.append("")
+        out.append(line)
+    return "\n".join(out)
+
+
+def _render_markdown(text: str) -> str:
+    """Convert markdown text to an HTML string.
+
+    Resets internal state between calls because the Markdown instance is
+    reused across requests for efficiency.
+    """
+    _md_converter.reset()
+    return _md_converter.convert(_ensure_list_spacing(text))
+
+
+templates.env.filters["markdown"] = _render_markdown
 
 router = APIRouter()
 

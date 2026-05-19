@@ -14,7 +14,13 @@
      data-message-id="{{ message.id }}"
      data-role="{{ message.role }}"
      {%- if swap_target %} hx-swap-oob="outerHTML:{{ swap_target }}"{% endif %}>
-  <div class="message__content">{{ message.content }}</div>
+  <div class="message__content">
+    {%- if message.role == "assistant" %}
+    {{ message.content | markdown | safe }}
+    {%- else %}
+    {{ message.content }}
+    {%- endif %}
+  </div>
   {%- if message.role == "assistant" %}
   {# Regenerate is rendered on every assistant bubble; CSS in
      base.html hides it unless the bubble is the last child of
