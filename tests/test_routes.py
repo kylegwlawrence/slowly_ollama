@@ -1367,3 +1367,160 @@ def test_regenerate_stream_does_not_emit_title(
     assert regen_response.status_code == 200
     assert "event: title" not in regen_response.text
     assert called["n"] == baseline, "generate_title fired on regenerate"
+
+
+# ---------------------------------------------------------------------------
+# Phase 12c: /settings + /settings/servers (RAG server CRUD)
+# ---------------------------------------------------------------------------
+
+
+def test_settings_get_renders_full_page_on_direct_hit(
+    make_client: ClientFactory,
+) -> None:
+    """Direct GET /settings returns the full index shell with the settings
+    fragment preloaded — same pattern as /chats/{id} on a direct hit.
+
+    This is the bookmark / reload path: the URL alone must be enough
+    to restore the same view.
+    """
+    with make_client(_ollama_unreachable) as client:
+        response = client.get("/settings")
+
+    assert response.status_code == 200
+    # Full page (base.html shell), not just a fragment.
+    assert "<!DOCTYPE html>" in response.text
+    assert 'class="sidebar"' in response.text
+    # And the settings fragment is preloaded into #main.
+    assert 'class="settings"' in response.text
+    # Empty state: no rows in the list yet, but the add-server form
+    # is still rendered.
+    assert 'class="rag-server-form"' in response.text
+
+
+def test_settings_get_returns_fragment_for_htmx(
+    make_client: ClientFactory,
+) -> None:
+    """An HX-Request to /settings returns just the settings fragment.
+
+    HTMX swaps it into #main (the sidebar Settings link's hx-target)
+    without re-rendering the rest of the page.
+    """
+    with make_client(_ollama_unreachable) as client:
+        response = client.get("/settings", headers={"HX-Request": "true"})
+
+    assert response.status_code == 200
+    assert "<!DOCTYPE html>" not in response.text
+    assert 'class="sidebar"' not in response.text
+    assert 'class="settings"' in response.text
+
+
+def test_settings_add_server_returns_row(
+    make_client: ClientFactory,
+) -> None:
+    """POST /settings/servers returns the new <li> for beforeend swap."""
+    with make_client(_ollama_unreachable) as client:
+        response = client.post(
+            "/settings/servers",
+            data={"name": "arxiv", "url": "http://x/arxiv"},
+        )
+
+    assert response.status_code == 200
+    # The row template renders both the name and the URL inside an
+    # <li> whose id encodes the new server's id.
+    assert "arxiv" in response.text
+    assert "http://x/arxiv" in response.text
+    assert 'id="rag-server-' in response.text
+    # Delete affordance is right there on the row.
+    assert 'hx-delete="/settings/servers/' in response.text
+
+
+def test_settings_add_server_duplicate_name_returns_409(
+    make_client: ClientFactory,
+) -> None:
+    """A second POST with the same name surfaces as HTTP 409.
+
+    HTMX's default is to NOT swap a non-2xx response, so the existing
+    list stays intact and the form's after-request reset (gated on
+    `event.detail.successful`) keeps the typed values.
+    """
+    with make_client(_ollama_unreachable) as client:
+        first = client.post(
+            "/settings/servers",
+            data={"name": "x", "url": "http://x/"},
+        )
+        assert first.status_code == 200
+
+        response = client.post(
+            "/settings/servers",
+            data={"name": "x", "url": "http://y/"},
+        )
+
+    assert response.status_code == 409
+    # Body is a short plain-text message naming the offending value
+    # so the user (or the network tab) sees what blew up.
+    assert "already in use" in response.text
+
+
+def test_settings_delete_server_empty_200(
+    make_client: ClientFactory,
+) -> None:
+    """DELETE /settings/servers/{id} returns empty 200 for hx-swap="delete"."""
+    with make_client(_ollama_unreachable) as client:
+        add_response = client.post(
+            "/settings/servers",
+            data={"name": "y", "url": "http://y/"},
+        )
+        # Pull the new server's id out of the returned row's id attribute.
+        marker = 'id="rag-server-'
+        start = add_response.text.index(marker) + len(marker)
+        end = add_response.text.index('"', start)
+        server_id = int(add_response.text[start:end])
+
+        response = client.delete(f"/settings/servers/{server_id}")
+
+    assert response.status_code == 200
+    assert response.text == ""
+
+
+def test_settings_delete_server_idempotent(
+    make_client: ClientFactory,
+) -> None:
+    """Deleting a missing id is a 200 no-op (matches the query layer)."""
+    with make_client(_ollama_unreachable) as client:
+        response = client.delete("/settings/servers/9999")
+
+    assert response.status_code == 200
+
+
+def test_settings_get_lists_existing_servers(
+    make_client: ClientFactory,
+) -> None:
+    """The settings page renders previously-added servers in order."""
+    with make_client(_ollama_unreachable) as client:
+        client.post(
+            "/settings/servers",
+            data={"name": "first", "url": "http://x/first"},
+        )
+        client.post(
+            "/settings/servers",
+            data={"name": "second", "url": "http://x/second"},
+        )
+        response = client.get("/settings")
+
+    assert response.status_code == 200
+    # Both rows present in insertion order.
+    assert "first" in response.text
+    assert "second" in response.text
+    assert response.text.index("first") < response.text.index("second")
+
+
+def test_sidebar_includes_settings_link(
+    make_client: ClientFactory,
+) -> None:
+    """The sidebar footer carries a Settings link that hx-gets /settings."""
+    with make_client(_ollama_unreachable) as client:
+        response = client.get("/")
+
+    assert 'class="sidebar__footer"' in response.text
+    assert 'class="sidebar__settings"' in response.text
+    assert 'hx-get="/settings"' in response.text

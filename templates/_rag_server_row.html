@@ -1,0 +1,18 @@
+{# One row in the RAG servers list.
+
+   The `<li>`'s id is the swap target for the delete button (so
+   hx-swap="delete" removes just this row, not the whole list).
+   The same template is reused as the POST /settings/servers response
+   body, where it gets appended into #rag-servers-list via beforeend. #}
+<li id="rag-server-{{ server.id }}" class="rag-server">
+  <div class="rag-server__name">{{ server.name }}</div>
+  <code class="rag-server__url">{{ server.url }}</code>
+  <button type="button" class="rag-server__delete"
+          aria-label="Delete RAG server"
+          hx-delete="/settings/servers/{{ server.id }}"
+          hx-target="#rag-server-{{ server.id }}"
+          hx-swap="delete"
+          hx-confirm="Remove RAG server '{{ server.name }}'?">
+    <span class="material-symbols-outlined">delete</span>
+  </button>
+</li>

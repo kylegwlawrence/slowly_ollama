@@ -1,0 +1,46 @@
+{# Settings page — RAG server management in phase 12.
+
+   Rendered as the main pane when `settings_view=True` in index.html
+   (direct hit on /settings) or returned standalone for HTMX swaps from
+   the sidebar Settings link.
+
+   The form's `hx-on::after-request` resets the inputs only on success,
+   mirroring the chat composer's gated reset so a failed POST (e.g. 409
+   duplicate name) leaves the user's typed values intact. #}
+<section class="settings">
+  <header class="settings__header">
+    <h1 class="settings__title">Settings</h1>
+    <p class="settings__subtitle">Configure RAG servers the chat model can query as a tool.</p>
+  </header>
+
+  <section class="settings__section">
+    <h2 class="settings__section-title">RAG servers</h2>
+
+    {# Servers are rendered in stable insertion order (oldest first) so
+       the list doesn't shuffle on reload. A newly-added server is
+       prepended-by-beforeend via the POST below; deletes vanish via
+       hx-swap="delete" on the row's own button. #}
+    <ul id="rag-servers-list" class="rag-servers">
+      {% for server in servers %}
+        {% include "_rag_server_row.html" %}
+      {% endfor %}
+    </ul>
+
+    <form class="rag-server-form"
+          hx-post="/settings/servers"
+          hx-target="#rag-servers-list"
+          hx-swap="beforeend"
+          hx-on::after-request="if (event.detail.successful) this.reset()">
+      <label>
+        Name
+        <input type="text" name="name" required placeholder="arxiv">
+      </label>
+      <label>
+        URL
+        <input type="url" name="url" required
+               placeholder="http://10.0.0.5:8002/arxiv">
+      </label>
+      <button type="submit">Add server</button>
+    </form>
+  </section>
+</section>
