@@ -7,11 +7,12 @@ response — no network, no subprocess, no fixture infrastructure.
 """
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 
 import httpx
 import pytest
 
+from app import ollama as _ollama_module
 from app.ollama import (
     ChatChunk,
     OllamaProtocolError,
@@ -19,9 +20,27 @@ from app.ollama import (
     create_client,
     generate_title,
     list_models,
+    list_tool_capable_models,
     maybe_tool_call,
+    model_supports_tools,
+    reset_capability_cache,
     stream_chat,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_capability_cache() -> Iterator[None]:
+    """Drop the module-level capability cache around every test.
+
+    Phase 12f's ``list_tool_capable_models`` memoises results in a
+    process-global dict so the dropdown's /api/show fan-out only pays
+    its cost once per minute. That state would leak between tests
+    otherwise — one test populating it could make a later test see
+    cached names instead of hitting its own mock transport.
+    """
+    reset_capability_cache()
+    yield
+    reset_capability_cache()
 
 
 def _client_with(
@@ -540,3 +559,218 @@ async def test_maybe_tool_call_raises_protocol_error_on_bad_json() -> None:
             await maybe_tool_call(
                 client, "llama3", messages=[], tools=None
             )
+
+
+# ---------------------------------------------------------------------------
+# list_tool_capable_models / model_supports_tools (phase 12f)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_tool_capable_models_filters_to_tool_capable() -> None:
+    """Only models whose /api/show capabilities include 'tools' are returned.
+
+    Also pins ordering: the filtered list matches the /api/tags order
+    (asyncio.gather preserves input order in its result, so the filter
+    inherits the same stability).
+    """
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(
+                200,
+                json={"models": [
+                    {"name": "llama3.1:8b"},
+                    {"name": "nomic-embed-text:latest"},
+                    {"name": "qwen2.5:7b"},
+                ]},
+            )
+        if request.url.path == "/api/show":
+            body = json.loads(request.content)
+            tool_capable = body["model"] in {"llama3.1:8b", "qwen2.5:7b"}
+            caps = ["completion", "tools"] if tool_capable else ["embedding"]
+            return httpx.Response(200, json={"capabilities": caps})
+        return httpx.Response(404)
+
+    async with _client_with(handler) as client:
+        names = await list_tool_capable_models(client)
+
+    assert names == ["llama3.1:8b", "qwen2.5:7b"]
+
+
+@pytest.mark.asyncio
+async def test_list_tool_capable_models_rejects_tools_without_completion() -> None:
+    """A model reporting ``["embedding", "tools"]`` is still filtered out.
+
+    Ollama sometimes inherits the ``tools`` capability flag on rerankers
+    and embedder-derived models that share a chat base — Ollama itself
+    runs the user's
+    ``pdurugyan/qwen3-reranker-0.6b-q8_0`` with ``capabilities = ["embedding", "tools"]``,
+    but it's not a usable chat model: /api/chat against it returns
+    garbage or 400s. Requiring BOTH "completion" and "tools" is the
+    cheapest reliable signal that the model is a chat model that can
+    actually run a tool round.
+    """
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(
+                200,
+                json={"models": [
+                    {"name": "real-chat"},
+                    {"name": "reranker"},
+                ]},
+            )
+        if request.url.path == "/api/show":
+            body = json.loads(request.content)
+            caps = (
+                ["completion", "tools"]
+                if body["model"] == "real-chat"
+                else ["embedding", "tools"]
+            )
+            return httpx.Response(200, json={"capabilities": caps})
+        return httpx.Response(404)
+
+    async with _client_with(handler) as client:
+        names = await list_tool_capable_models(client)
+
+    assert names == ["real-chat"]
+
+
+@pytest.mark.asyncio
+async def test_list_tool_capable_models_drops_models_where_show_errors() -> None:
+    """A 5xx (or any HTTPError) on one model's /api/show isn't fatal.
+
+    The misbehaving model is silently dropped; the rest of the dropdown
+    stays usable. A single Ollama hiccup on a single model shouldn't
+    leave the user staring at an empty dropdown.
+    """
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(
+                200,
+                json={"models": [
+                    {"name": "good-model"},
+                    {"name": "broken-model"},
+                ]},
+            )
+        if request.url.path == "/api/show":
+            body = json.loads(request.content)
+            if body["model"] == "broken-model":
+                return httpx.Response(500)
+            return httpx.Response(
+                200, json={"capabilities": ["completion", "tools"]}
+            )
+        return httpx.Response(404)
+
+    async with _client_with(handler) as client:
+        names = await list_tool_capable_models(client)
+
+    assert names == ["good-model"]
+
+
+@pytest.mark.asyncio
+async def test_list_tool_capable_models_caches_results_within_ttl() -> None:
+    """Two calls in quick succession only hit /api/show once per model.
+
+    The cache is the whole point — a fresh dropdown render should never
+    re-probe Ollama for capabilities it just learned a moment ago.
+    """
+    show_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal show_calls
+        if request.url.path == "/api/tags":
+            return httpx.Response(
+                200, json={"models": [{"name": "llama3"}, {"name": "qwen"}]}
+            )
+        if request.url.path == "/api/show":
+            show_calls += 1
+            return httpx.Response(
+                200, json={"capabilities": ["completion", "tools"]}
+            )
+        return httpx.Response(404)
+
+    async with _client_with(handler) as client:
+        names1 = await list_tool_capable_models(client)
+        names2 = await list_tool_capable_models(client)
+
+    assert names1 == ["llama3", "qwen"]
+    assert names2 == ["llama3", "qwen"]
+    # Two models × one fetch each — the second list_tool_capable_models
+    # call returned from the cache without hitting /api/show again.
+    assert show_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_list_tool_capable_models_refreshes_after_cache_expiry() -> None:
+    """Once the TTL has elapsed the next call re-probes /api/show."""
+    show_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal show_calls
+        if request.url.path == "/api/tags":
+            return httpx.Response(
+                200, json={"models": [{"name": "llama3"}]}
+            )
+        if request.url.path == "/api/show":
+            show_calls += 1
+            return httpx.Response(
+                200, json={"capabilities": ["completion", "tools"]}
+            )
+        return httpx.Response(404)
+
+    async with _client_with(handler) as client:
+        await list_tool_capable_models(client)
+        assert show_calls == 1
+        # Force the cache to look expired without messing with the
+        # global clock — `expires_at` is the only TTL signal we care
+        # about, so pushing it into the past is a faithful simulation.
+        assert _ollama_module._capability_cache is not None
+        _ollama_module._capability_cache["expires_at"] = -1
+        await list_tool_capable_models(client)
+
+    assert show_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_model_supports_tools_reflects_capability_membership() -> None:
+    """True when /api/show lists 'tools' for the model, False otherwise."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(
+                200,
+                json={"models": [
+                    {"name": "chatty"}, {"name": "embed-only"}
+                ]},
+            )
+        if request.url.path == "/api/show":
+            body = json.loads(request.content)
+            caps = (
+                ["completion", "tools"]
+                if body["model"] == "chatty"
+                else ["embedding"]
+            )
+            return httpx.Response(200, json={"capabilities": caps})
+        return httpx.Response(404)
+
+    async with _client_with(handler) as client:
+        assert await model_supports_tools(client, "chatty") is True
+        assert await model_supports_tools(client, "embed-only") is False
+        # A name Ollama doesn't even know about behaves like "not capable"
+        # — same outcome as embed-only above.
+        assert await model_supports_tools(client, "no-such-model") is False
+
+
+@pytest.mark.asyncio
+async def test_model_supports_tools_returns_false_when_ollama_unavailable() -> None:
+    """A /api/tags failure resolves to False, not an exception.
+
+    The generation path uses this helper synchronously inside the
+    streaming generator; raising would break the SSE flow. False
+    collapses to ``tools_payload = None`` and the chat falls back to
+    plain streaming — far safer than 400ing Ollama.
+    """
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("Connection refused")
+
+    async with _client_with(handler) as client:
+        assert await model_supports_tools(client, "llama3") is False

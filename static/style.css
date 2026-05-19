@@ -114,22 +114,17 @@ body {
   gap: var(--space-md);
 }
 
-.sidebar h1 {
-  font-size: 16px;
-  font-weight: 500;
-  color: var(--text-primary);
-  margin: 0;
-  /* No padding — the h1 sits inside `.sidebar__header` (flex row with
-     the "+ New chat" link) and the sidebar's own 20px padding already
-     insets it from the right edge. */
-  padding: 0;
-}
-
+/* The logo IS the only h1 in the sidebar — no separate `.sidebar h1`
+   selector needed (and using one would beat the BEM class on
+   specificity and silently override font-size / color). The h1
+   margin/padding reset moved in here. */
 .sidebar__logo {
   font-size: 24px;
-  font-weight: 700;
+  font-weight: 400;
   color: var(--accent-tonal-text);
   letter-spacing: -0.5px;
+  margin: 0;
+  padding: 0;
 }
 
 #main {
@@ -811,6 +806,15 @@ body {
   display: flex;
   flex-direction: column;
   gap: var(--space-xl);
+  /* `#main` is `overflow: hidden` so its children can't escape the
+     viewport — the chat panel solves this by giving `.messages` its
+     own scroll region. Settings needs the same treatment: flex-grow
+     to fill #main, then scroll when content (e.g. many RAG servers)
+     exceeds the available height. `min-height: 0` overrides the flex
+     default that prevents shrinking below content size. */
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .settings__title {
@@ -876,9 +880,9 @@ body {
 
 .rag-server__delete:hover { background: var(--surface-hover); color: var(--danger); }
 
-/* The "add new server" form. Three-column grid: name input, url input,
-   submit button. Stacks nicely on narrow viewports because the inputs
-   wrap their labels. */
+/* The "add new server" form. Four-column grid: name input, url input,
+   submit button, health-check icon. Inputs wrap their own labels so
+   the form compresses gracefully on narrow viewports. */
 .rag-server-form {
   display: grid;
   /* Four tracks: name input, URL input, Add-server button, then a

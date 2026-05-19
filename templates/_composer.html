@@ -26,16 +26,9 @@
         hx-post="/chats"
         hx-target="#main"
         hx-swap="innerHTML">
-    <div class="input-pill">
-      <textarea name="content" required
-                placeholder="Message Ollama…"
-                rows="1"
-                hx-on:input="this.style.height = 'auto'; this.style.height = this.scrollHeight + 'px'"
-                hx-on:keydown="if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); this.form.requestSubmit(); }"></textarea>
-      <button type="submit" aria-label="Send">
-        <span class="material-symbols-outlined">arrow_upward</span>
-      </button>
-    </div>
+    {# Shared with the in-chat message form so both pills behave
+       identically (autogrow, Enter-to-submit, send icon). #}
+    {% include "_input_pill.html" %}
     {# Model selector lives in a toolbar below the input. The placeholder
        option blocks submission via the `required` attribute until /models
        responds (or until the user manually picks). #}

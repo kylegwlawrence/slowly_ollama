@@ -44,10 +44,11 @@
         <span class="material-symbols-outlined">settings</span>
         Settings
       </a>
-      {# Icon text is set by JS on load (DOMContentLoaded) and on each
-         toggle — shows the mode you'll switch TO (moon = currently light,
-         sun = currently dark). #}
-      <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" type="button">
+      {# Icon text is set by app.js on load (DOMContentLoaded) and on
+         each toggle — shows the mode you'll switch TO (moon = currently
+         light, sun = currently dark). The click handler is wired in
+         app.js too so we don't ship a global `toggleTheme` function. #}
+      <button class="theme-toggle" aria-label="Toggle dark mode" type="button">
         <span class="material-symbols-outlined theme-toggle__icon">dark_mode</span>
       </button>
     </div>

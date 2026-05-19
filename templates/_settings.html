@@ -4,9 +4,10 @@
    (direct hit on /settings) or returned standalone for HTMX swaps from
    the sidebar Settings link.
 
-   The form's `hx-on::after-request` resets the inputs only on success,
-   mirroring the chat composer's gated reset so a failed POST (e.g. 409
-   duplicate name) leaves the user's typed values intact. #}
+   app.js's `.rag-server-form` branch resets the inputs only on a
+   successful response, mirroring the chat composer's gated reset so
+   a failed POST (e.g. 409 duplicate name) leaves the user's typed
+   values intact. #}
 <section class="settings">
   <header class="settings__header">
     <h1 class="settings__title">Settings</h1>
@@ -18,48 +19,30 @@
 
     {# Servers are rendered in stable insertion order (oldest first) so
        the list doesn't shuffle on reload. A newly-added server is
-       prepended-by-beforeend via the POST below; deletes vanish via
-       hx-swap="delete" on the row's own button. #}
+       appended to the bottom of the list via the POST below's
+       `hx-swap="beforeend"`; deletes vanish via `hx-swap="delete"`
+       on the row's own button. #}
     <ul id="rag-servers-list" class="rag-servers">
       {% for server in servers %}
         {% include "_rag_server_row.html" %}
       {% endfor %}
     </ul>
 
-    {# `hx-on::after-request` does triple duty: on success it resets
-       the form, hides the error region, and sets the icon to a green
-       check; on any non-2xx it pipes the plain-text response body
-       into the error region and sets the icon to a red ✗. HTMX still
-       skips the target swap on non-2xx (good — the list stays intact)
-       so the error region + icon are the only things the user sees
-       change.
-
-       `hx-on::before-request` clears the icon so a stale ✓/✗ from
-       the previous submit doesn't linger while the new probe runs.
-
-       The 4xx/5xx body is plain text (e.g. "Server name 'arxiv'
-       already in use.") so assigning to `textContent` is the right
-       escape boundary — never use innerHTML here. The icon DOES use
-       innerHTML, but only with a static string literal we control. #}
+    {# Form lifecycle is handled by the `.rag-server-form` branches in
+       static/app.js:
+       - htmx:beforeRequest clears the icon so a stale ✓/✗ from the
+         previous submit doesn't linger while the new probe runs.
+       - htmx:afterRequest on success: reset the form, hide the error
+         region, paint the green check_circle into #health-check-icon.
+       - htmx:afterRequest on non-2xx: write the plain-text response
+         body into the error region (textContent — never innerHTML —
+         since the body is untrusted), unhide it, paint the red cancel
+         glyph. HTMX skips the target swap on non-2xx, so the list
+         stays intact and the user only sees the error + icon change. #}
     <form class="rag-server-form"
           hx-post="/settings/servers"
           hx-target="#rag-servers-list"
-          hx-swap="beforeend"
-          hx-on::before-request="
-            document.getElementById('health-check-icon').innerHTML = '';"
-          hx-on::after-request="
-            const err = document.getElementById('rag-server-form-error');
-            const icon = document.getElementById('health-check-icon');
-            if (event.detail.successful) {
-              this.reset();
-              err.hidden = true;
-              err.textContent = '';
-              icon.innerHTML = '<span class=&quot;material-symbols-outlined health-icon__ok&quot; aria-label=&quot;Healthy&quot;>check_circle</span>';
-            } else {
-              err.textContent = event.detail.xhr.responseText || 'Failed to add server.';
-              err.hidden = false;
-              icon.innerHTML = '<span class=&quot;material-symbols-outlined health-icon__fail&quot; aria-label=&quot;Failed&quot;>cancel</span>';
-            }">
+          hx-swap="beforeend">
       <label>
         Name
         <input type="text" name="name" required placeholder="arxiv_rag">
@@ -70,8 +53,8 @@
                placeholder="http://pop-os:8002/arxiv_rag">
       </label>
       <button type="submit">Add server</button>
-      {# Health-check result indicator. Populated by the form's
-         `hx-on::after-request` JS — empty until the first submit,
+      {# Health-check result indicator. Populated by app.js's
+         setHealthIcon helper after each submit — empty until then,
          then a Material Symbols glyph (check_circle / cancel).
          `aria-live="polite"` so screen readers announce the result
          when the glyph swaps in. #}

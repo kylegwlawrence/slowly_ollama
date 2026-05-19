@@ -22,6 +22,21 @@ from fastapi.testclient import TestClient
 from app.dependencies import get_ollama_client
 
 
+@pytest.fixture(autouse=True)
+def _reset_capability_cache() -> Iterator[None]:
+    """Drop the tool-capability cache around every integration test.
+
+    Phase 12f memoises /api/show results in module-level state on
+    ``app.ollama``. If another test file populates the cache first,
+    the journey's /models call returns the leaked names and never
+    exercises this test's own mock transport.
+    """
+    from app import ollama as _ollama
+    _ollama.reset_capability_cache()
+    yield
+    _ollama.reset_capability_cache()
+
+
 def _ndjson_chat(chunks: list[str]) -> bytes:
     """Build an NDJSON `/api/chat` stream body from text chunks.
 
@@ -61,6 +76,14 @@ def integration_client(
         if request.url.path == "/api/tags":
             return httpx.Response(
                 200, json={"models": [{"name": "llama3"}]}
+            )
+        # Phase 12f: list_tool_capable_models fans out one /api/show
+        # per model behind the dropdown. The journey relies on `llama3`
+        # surfacing in the dropdown AND on the generation-side guard
+        # passing tools= through, so advertise the "tools" capability.
+        if request.url.path == "/api/show":
+            return httpx.Response(
+                200, json={"capabilities": ["completion", "tools"]}
             )
         # /api/chat — branch on whether it's the probe or the stream.
         body = _json.loads(request.content or b"{}")
