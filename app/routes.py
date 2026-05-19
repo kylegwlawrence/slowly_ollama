@@ -450,7 +450,7 @@ async def create_chat_endpoint(
     item_html = templates.get_template("_chat_item.html").render(
         chat=chat,
         active_chat_id=chat.id,
-        oob_position="afterbegin:#chats-list",
+        oob_swap="afterbegin:#chats-list",
     )
 
     body = panel_html + item_html
