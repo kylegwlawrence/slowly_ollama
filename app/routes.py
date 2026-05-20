@@ -47,6 +47,11 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 
 from app import generation, ollama, queries, render
 from app import rag_servers as _rag_servers_module
+from app.agents.prompts import (
+    GENERATION_SYSTEM_PROMPT,
+    RESEARCH_SYSTEM_PROMPT,
+    REVIEW_SYSTEM_PROMPT,
+)
 from app.dependencies import DB, OllamaClient
 from app.ollama import OllamaProtocolError, OllamaUnavailable
 from app.rag_health import probe_rag_health
@@ -114,13 +119,13 @@ def new_chat_endpoint(request: Request) -> Response:
 
 
 # ---------------------------------------------------------------------------
-# Settings (RAG servers — phase 12c)
+# Settings — RAG servers (phase 12c) + agentic-mode toggle (phase 13e)
 # ---------------------------------------------------------------------------
 
 
 @router.get("/settings", response_class=HTMLResponse)
 def settings_endpoint(request: Request, db: DB) -> Response:
-    """Standalone settings page — RAG servers in phase 12c.
+    """Standalone settings page — RAG servers + (phase 13) agentic mode.
 
     Direct browser hits return the full index shell with the settings
     fragment preloaded in the main slot (so reload / bookmarks land on
@@ -129,11 +134,21 @@ def settings_endpoint(request: Request, db: DB) -> Response:
     ``get_chat_panel_endpoint``.
     """
     servers = _rag_servers_module.list_servers(db)
+    agentic_mode_on = queries.get_agentic_mode(db)
+    agentic_prompts = {
+        "research": RESEARCH_SYSTEM_PROMPT,
+        "review": REVIEW_SYSTEM_PROMPT,
+        "generation": GENERATION_SYSTEM_PROMPT,
+    }
     if request.headers.get("HX-Request"):
         return templates.TemplateResponse(
             request=request,
             name="_settings.html",
-            context={"servers": servers},
+            context={
+                "servers": servers,
+                "agentic_mode_on": agentic_mode_on,
+                "agentic_prompts": agentic_prompts,
+            },
         )
     return templates.TemplateResponse(
         request=request,
@@ -148,6 +163,8 @@ def settings_endpoint(request: Request, db: DB) -> Response:
             # `{% set servers = rag_servers %}` adapter resolves it for
             # the included _settings.html fragment.
             "rag_servers": servers,
+            "agentic_mode_on": agentic_mode_on,
+            "agentic_prompts": agentic_prompts,
         },
     )
 
@@ -220,6 +237,40 @@ def delete_server_endpoint(server_id: int, db: DB) -> Response:
     _rag_servers_module.delete_server(db, server_id)
     refresh_query_rag_source_description()
     return Response(content="", status_code=status.HTTP_200_OK)
+
+
+@router.post("/settings/agentic-mode", response_class=HTMLResponse)
+def toggle_agentic_mode_endpoint(
+    request: Request,
+    db: DB,
+    enabled: Annotated[str | None, Form()] = None,
+) -> Response:
+    """Toggle the global agentic-mode setting (phase 13e).
+
+    The checkbox sends ``enabled=on`` when checked; the field is absent
+    entirely when unchecked. This matches the standard HTML form
+    convention and lets us write the helper as a presence check rather
+    than a string compare.
+
+    Returns the agentic-mode section fragment so HTMX swaps it in place
+    (the toggle lives inside ``#settings-agentic-section``). The
+    read-only prompt block is included in the fragment so toggling on
+    reveals it without a follow-up round trip.
+    """
+    agentic_mode_on = enabled is not None
+    queries.set_agentic_mode(db, agentic_mode_on)
+    return templates.TemplateResponse(
+        request=request,
+        name="_settings_agentic_section.html",
+        context={
+            "agentic_mode_on": agentic_mode_on,
+            "agentic_prompts": {
+                "research": RESEARCH_SYSTEM_PROMPT,
+                "review": REVIEW_SYSTEM_PROMPT,
+                "generation": GENERATION_SYSTEM_PROMPT,
+            },
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
