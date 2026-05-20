@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import ClassVar, Union
 
 from app.queries import Message
-from app.tools import format_tool_invocation
+from app.tools import Source, decode_tool_result, format_tool_invocation
 
 
 def card_id_for(turn_id: str) -> str:
@@ -87,6 +87,66 @@ def format_elapsed_mm_ss(ms: int) -> str:
 
 
 @dataclass(frozen=True)
+class DedupedSource:
+    """One source entry as the tool-row template renders it.
+
+    Produced by :func:`dedup_sources` from the raw :class:`Source` list
+    on a :class:`ToolRowView`. Kept in this module (not in
+    ``app/tools``) because the dedup choice + display-suffix shape
+    are render concerns — the tool itself doesn't know how the UI
+    chooses to collapse chunks.
+
+    Attributes:
+        title: Document title, unmodified from the underlying ``Source``.
+        meta: Parenthesized suffix to display after the title:
+
+            - ``"(§Section)"`` when count == 1 and the chunk has a section
+            - ``"(N chunks)"`` when count > 1 (section dropped on
+              purpose; chunks from the same title may span sections)
+            - ``""`` when count == 1 and there is no section
+    """
+
+    title: str
+    meta: str
+
+
+def dedup_sources(sources: list[Source]) -> list[DedupedSource]:
+    """Collapse :class:`Source` entries by title, first-seen order.
+
+    A RAG retrieval often returns several chunks from the same paper.
+    Phase 12h's UI design (chosen by the user) is "one line per
+    document"; the line shows the section when only one chunk exists,
+    or a chunk count when multiple do. Chapter / page metadata are not
+    rendered — see the phase 12h plan for rationale.
+
+    Args:
+        sources: Raw entries in retrieval (relevance) order.
+
+    Returns:
+        One :class:`DedupedSource` per unique title, preserving the
+        relevance order of the first chunk seen for each title.
+    """
+    groups: dict[str, list[Source]] = {}
+    order: list[str] = []
+    for s in sources:
+        if s.title not in groups:
+            groups[s.title] = []
+            order.append(s.title)
+        groups[s.title].append(s)
+    out: list[DedupedSource] = []
+    for title in order:
+        items = groups[title]
+        if len(items) > 1:
+            meta = f"({len(items)} chunks)"
+        elif items[0].section:
+            meta = f"(§{items[0].section})"
+        else:
+            meta = ""
+        out.append(DedupedSource(title=title, meta=meta))
+    return out
+
+
+@dataclass(frozen=True)
 class ToolRowView:
     """Precomputed view of one tool invocation row, ready for template render.
 
@@ -115,6 +175,11 @@ class ToolRowView:
             still-running and historic-unpaired rows.
         elapsed_display: Initial text shown in the elapsed span. The
             JS driver overwrites it on each tick for live-ticking rows.
+        sources: Phase 12h. Retrieved-source metadata for the tool
+            row. Empty for tools without sources (e.g. ``current_time``)
+            and for live (pending) rows; populated when the
+            ``tool-result`` SSE event freezes the row, and when historic
+            replay decodes a stored JSON envelope.
     """
 
     id: str
@@ -122,6 +187,18 @@ class ToolRowView:
     elapsed_start_ms: int | None
     elapsed_final_ms: int | None
     elapsed_display: str
+    sources: list[Source] = field(default_factory=list)
+
+    @property
+    def deduped_sources(self) -> list[DedupedSource]:
+        """Template-facing collapsed source list.
+
+        Computed on demand rather than at construction time so test
+        fixtures can build ``ToolRowView`` instances without paying
+        the dedup cost, and so the underlying ``sources`` list
+        remains the canonical record.
+        """
+        return dedup_sources(self.sources)
 
 
 def _row_view_from_pair(
@@ -165,6 +242,7 @@ def _row_view_from_pair(
             elapsed_final_ms=None,
             elapsed_display="?",
         )
+    decoded = decode_tool_result(result.content)
     duration_ms = int(
         (result.created_at - call.created_at).total_seconds() * 1000
     )
@@ -174,6 +252,7 @@ def _row_view_from_pair(
         elapsed_start_ms=None,
         elapsed_final_ms=duration_ms,
         elapsed_display=format_elapsed_mm_ss(duration_ms),
+        sources=decoded.sources,
     )
 
 

@@ -427,3 +427,332 @@ async def test_generation_omits_tools_when_model_not_tool_capable(
         assert "tools" not in body, (
             f"non-tool-capable model still received tools=: {body}"
         )
+
+
+# ---------------------------------------------------------------------------
+# tool_result JSON envelope (phase 12h)
+# ---------------------------------------------------------------------------
+
+
+def _tool_handler(
+    *,
+    items: list[dict],
+    used_dense: bool = True,
+) -> "callable":
+    """Build a handler that asks for one query_rag call, then streams a reply.
+
+    Round 1 (non-stream probe): emits a single ``tool_calls`` entry the
+    generation loop picks up and runs through ``run_tool``.
+    Round 2 (non-stream probe): no tool calls, so the loop breaks out.
+    Stream: a short final assistant token then done.
+
+    The RAG response body for the in-loop ``query_rag`` is delivered by
+    a separate fake httpx client patched into ``app.tools.rag`` at test
+    time (see ``test_tool_result_persisted_as_json_envelope`` below).
+    """
+    state = {"chat_calls": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content or b"{}")
+        if body.get("stream"):
+            return httpx.Response(
+                200,
+                content=(
+                    b'{"message":{"content":"answer"},"done":false}\n'
+                    b'{"message":{"content":""},"done":true}\n'
+                ),
+            )
+        state["chat_calls"] += 1
+        if state["chat_calls"] == 1:
+            # First non-stream probe: tell the model to call query_rag.
+            return httpx.Response(
+                200,
+                json={
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "name": "query_rag",
+                                    "arguments": {
+                                        "source": "arxiv",
+                                        "query": "test",
+                                    },
+                                }
+                            }
+                        ],
+                    }
+                },
+            )
+        # Subsequent non-stream probes: no further calls, break loop.
+        return httpx.Response(
+            200, json={"message": {"content": "", "tool_calls": []}}
+        )
+
+    return handler
+
+
+def _install_rag_server(db_path: Path, monkeypatch) -> None:
+    """Seed an arxiv RAG server + point DB_PATH so query_rag sees it."""
+    from app import rag_servers as _rs
+
+    monkeypatch.setenv("DB_PATH", str(db_path))
+    with open_connection(db_path) as conn:
+        _rs.create_server(conn, "arxiv", "http://fake/arxiv")
+
+
+def _patch_rag_http(monkeypatch, items: list[dict], used_dense: bool = True):
+    """Patch ``httpx.AsyncClient`` inside app.tools.rag to a MockTransport.
+
+    Mirrors the pattern in test_tools.py — see the comment there for
+    why we snapshot the real AsyncClient before patching.
+    """
+    from app.tools import rag as _rag
+
+    def rag_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"items": items, "used_dense": used_dense},
+        )
+
+    real_client = httpx.AsyncClient
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs):
+            self._client = real_client(
+                transport=httpx.MockTransport(rag_handler)
+            )
+
+        async def __aenter__(self):
+            return self._client
+
+        async def __aexit__(self, *exc):
+            await self._client.aclose()
+
+    monkeypatch.setattr(_rag.httpx, "AsyncClient", _FakeClient)
+
+
+@pytest.mark.asyncio
+async def test_tool_result_persisted_as_json_envelope_with_sources(
+    tmp_path, monkeypatch
+):
+    """End-to-end: a query_rag tool call lands as a JSON envelope on
+    the tool_result row, with title+section preserved for historic
+    render."""
+    db_path = tmp_path / "chats.db"
+    conv_id = _setup_chat(db_path)
+    _install_rag_server(db_path, monkeypatch)
+    # Build the test's Ollama chat client BEFORE patching httpx —
+    # _patch_rag_http monkeypatches httpx.AsyncClient at module level
+    # (since `_rag.httpx is httpx`), so any AsyncClient(...) call AFTER
+    # the patch would resolve to the fake. Capture the real one first.
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(_tool_handler(items=[])),
+        base_url="http://test",
+    )
+    _patch_rag_http(monkeypatch, items=[
+        {"title": "Doc A", "section": "1", "text": "first"},
+        {"title": "Doc B", "section": None, "text": "second"},
+    ])
+
+    async def _capable(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr(ollama, "model_supports_tools", _capable)
+
+    with open_connection(db_path) as db:
+        state = generation.start_generation(
+            client=client,
+            db=db,
+            conversation_id=conv_id,
+            model="llama3",
+            history=queries.list_messages(db, conv_id),
+            on_complete="append",
+        )
+        await state.task
+
+        rows = queries.list_messages(db, conv_id)
+    tool_results = [r for r in rows if r.role == "tool_result"]
+    assert len(tool_results) == 1
+
+    envelope = json.loads(tool_results[0].content)
+    assert "text" in envelope
+    assert "[1] Doc A (§1)" in envelope["text"]
+    assert envelope["sources"] == [
+        {"title": "Doc A", "section": "1"},
+        {"title": "Doc B", "section": None},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_tool_result_persisted_as_json_envelope_for_text_only_tool(
+    tmp_path, monkeypatch
+):
+    """Even for tools with no sources (e.g. current_time), the envelope
+    shape is uniform — sources is just an empty list. Simplifies the
+    decode path: every row is JSON; no per-row shape detection."""
+    from app.tools import builtins  # noqa: F401 — registers current_time
+
+    db_path = tmp_path / "chats.db"
+    conv_id = _setup_chat(db_path)
+    monkeypatch.setenv("DB_PATH", str(db_path))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content or b"{}")
+        if body.get("stream"):
+            return httpx.Response(
+                200,
+                content=(
+                    b'{"message":{"content":"ok"},"done":false}\n'
+                    b'{"message":{"content":""},"done":true}\n'
+                ),
+            )
+        # First non-stream probe asks for current_time; subsequent ones
+        # return no tool_calls so the loop exits.
+        if not getattr(handler, "_called", False):
+            handler._called = True
+            return httpx.Response(
+                200,
+                json={
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "name": "current_time",
+                                    "arguments": {"timezone": "UTC"},
+                                }
+                            }
+                        ],
+                    }
+                },
+            )
+        return httpx.Response(
+            200, json={"message": {"content": "", "tool_calls": []}}
+        )
+
+    async def _capable(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr(ollama, "model_supports_tools", _capable)
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="http://test",
+    )
+
+    with open_connection(db_path) as db:
+        state = generation.start_generation(
+            client=client,
+            db=db,
+            conversation_id=conv_id,
+            model="llama3",
+            history=queries.list_messages(db, conv_id),
+            on_complete="append",
+        )
+        await state.task
+
+        rows = queries.list_messages(db, conv_id)
+    tool_results = [r for r in rows if r.role == "tool_result"]
+    assert len(tool_results) == 1
+    envelope = json.loads(tool_results[0].content)
+    # current_time has no sources — uniform envelope with empty list.
+    assert envelope["sources"] == []
+    assert envelope["text"].startswith("20")  # ISO timestamp
+
+
+def test_build_history_payload_decodes_json_envelope_tool_result() -> None:
+    """A tool_result row whose content is the JSON envelope is mapped
+    to {"role": "tool", "content": <text only>} for Ollama — the
+    model never sees the JSON envelope wrapper."""
+    from app.generation import _build_history_payload
+    from app.queries import Message
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    envelope = json.dumps({
+        "text": "[1] Doc (§Intro)\n    body",
+        "sources": [{"title": "Doc", "section": "Intro"}],
+    })
+    history = [
+        Message(
+            id=1, conversation_id=1, role="tool_result",
+            content=envelope, created_at=now,
+        ),
+    ]
+    out = _build_history_payload(history)
+    assert out == [
+        {"role": "tool", "content": "[1] Doc (§Intro)\n    body"},
+    ]
+
+
+def test_build_history_payload_plain_text_tool_result_backwards_compat() -> None:
+    """Pre-12h plain-text content passes through unchanged via the
+    decode fallback. Pin: old conversations keep replaying."""
+    from app.generation import _build_history_payload
+    from app.queries import Message
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    history = [
+        Message(
+            id=1, conversation_id=1, role="tool_result",
+            content="2026-05-19T12:00:00Z", created_at=now,
+        ),
+    ]
+    out = _build_history_payload(history)
+    assert out == [
+        {"role": "tool", "content": "2026-05-19T12:00:00Z"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_frozen_row_after_tool_result_carries_sources_in_oob_payload(
+    tmp_path, monkeypatch
+):
+    """The tool-result SSE event's HTML payload contains the
+    expandable-row markers (tool-row--expandable + <details>) when
+    the tool returns sources. Pins the live-stream contract end-to-end."""
+    db_path = tmp_path / "chats.db"
+    conv_id = _setup_chat(db_path)
+    _install_rag_server(db_path, monkeypatch)
+    # Build the chat client BEFORE patching httpx (see the
+    # backwards-comment in the sibling test for the rationale).
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(_tool_handler(items=[])),
+        base_url="http://test",
+    )
+    _patch_rag_http(monkeypatch, items=[
+        {"title": "Doc Z", "section": "Body", "text": "x"},
+    ])
+
+    async def _capable(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr(ollama, "model_supports_tools", _capable)
+
+    with open_connection(db_path) as db:
+        state = generation.start_generation(
+            client=client,
+            db=db,
+            conversation_id=conv_id,
+            model="llama3",
+            history=queries.list_messages(db, conv_id),
+            on_complete="append",
+        )
+        await state.task
+
+    # Find the tool-result event payload in the event log.
+    tool_result_events = [
+        payload for (ev, payload) in state.events if ev == "tool-result"
+    ]
+    assert tool_result_events, "expected a tool-result SSE event"
+    payload = tool_result_events[0]
+    assert "tool-row--expandable" in payload
+    assert "<details" in payload
+    assert "Doc Z" in payload
+    assert "(§Body)" in payload
+    # The OOB swap unit is the outer <li>, not the inner <details>.
+    li_prefix, _, details_part = payload.partition("<details")
+    assert 'hx-swap-oob="outerHTML"' in li_prefix
+    assert "hx-swap-oob" not in details_part

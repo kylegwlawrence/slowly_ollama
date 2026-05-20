@@ -234,7 +234,22 @@ has been violated and we learned the cost, the cost is named.
 - **Tool framework lives at `app/tools/`.** `__init__.py` owns the
   `@tool` decorator, `ToolSpec` dataclass, the `TOOLS` registry,
   `tool_specs_for_ollama()` (formats for `/api/chat` payload), and
-  `run_tool()` (dispatch + execute + return string result).
+  `run_tool()` (dispatch + execute + return a `ToolResult`).
+- **`run_tool` always returns a `ToolResult`** (phase 12h). A tool
+  may return either a plain string or a `ToolResult(text, sources)`;
+  strings get wrapped at the boundary so the generation loop only
+  handles one shape. The model itself only ever sees `.text` —
+  sources are a UI-only concern, surfaced in the expandable tool
+  row in the chat panel.
+- **`tool_result.content` is a JSON envelope** (phase 12h):
+  `{"text": "...", "sources": [{"title": "...", "section": "..."}]}`.
+  Produced by `encode_tool_result(result)` at write time and read
+  back via `decode_tool_result(content)` — both live in `app/tools/`.
+  Legacy pre-12h rows are plain text; `decode_tool_result` round-trips
+  them cleanly via its fallback so old conversations still render
+  (as plain non-expandable rows). The generation loop's
+  `_build_history_payload` decodes the envelope before sending to
+  Ollama so the model never sees the JSON wrapper.
 - **Side-effecting registration imports.** `app/routes.py` and
   `main.py` import `app.tools.builtins` and `app.tools.rag` for the
   side effect of `@tool`-decorating their functions. Without these

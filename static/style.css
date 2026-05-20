@@ -659,6 +659,63 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* ===== Tool-row expandable sources (phase 12h) ===========================
+   A RAG tool row carries retrieved source metadata; the row wraps its
+   label/elapsed line in a nested <details>. Chevron sits to the right
+   of the elapsed value; the sources list lives indented underneath.
+   Visual language matches the parent .tool-card: same chevron rotation,
+   same monospace + secondary-text tone. Non-RAG rows (no sources) keep
+   the original plain-<li> layout and are unaffected.                      */
+
+.tool-row--expandable {
+  /* Override the base .tool-row { display: flex } so the <details>
+     stacks its summary line + sources list vertically. */
+  display: block;
+  padding: 0;
+}
+
+.tool-row__details { width: 100%; }
+
+.tool-row__summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  cursor: pointer;
+  list-style: none;
+  padding: 0.15rem 0;
+}
+.tool-row__summary::-webkit-details-marker { display: none; }
+
+.tool-row__summary .tool-row__label { flex: 1; }
+.tool-row__summary .tool-row__elapsed { font-variant-numeric: tabular-nums; }
+
+.tool-row__chevron {
+  font-size: 1em;
+  color: var(--text-secondary);
+  transition: transform 0.15s;
+}
+.tool-row__details[open] .tool-row__chevron { transform: rotate(180deg); }
+
+.tool-row__sources {
+  list-style: none;
+  margin: 0;
+  /* Indent uses --space-md (half the card's outer indent) to imply
+     "sub-list of a sub-list" without pushing too far right on narrow panels. */
+  padding: var(--space-xs) 0 var(--space-xs) var(--space-md);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tool-row__source {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.85em;
+  color: var(--text-secondary);
+}
+
+.tool-row__source-title { color: var(--text-primary); }
+.tool-row__source-meta { color: var(--text-secondary); margin-left: var(--space-xs); }
+
 /* ===== Regenerate button =================================================
    The visibility logic (`display: none` by default, override on
    `:last-child.message--assistant:not(.message--streaming)`) MUST remain

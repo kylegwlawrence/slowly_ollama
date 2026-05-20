@@ -29,15 +29,18 @@ controlled artifacts, not workspace scratch.
 - **Phases 0–11 done.** v1 PLAN.md scope is complete (`PLAN.md` is frozen at
   Phase 10; phases 11–16 are off-PLAN.md extensions documented in their own
   plan files).
-- **Phase 12 (tool-calling + RAG) complete.** Sub-phases 12a → 12g
+- **Phase 12 (tool-calling + RAG) complete.** Sub-phases 12a → 12h
   shipped: schema migration, `@tool` decorator + registry, `current_time`
   baseline, `query_rag` tool, RAG server CRUD + `/settings` UI, server-
   side tool-calling loop, tool-card UI, resumable assistant generation,
-  and (12f) composer dropdown filtered to tool-capable models via
+  (12f) composer dropdown filtered to tool-capable models via
   `/api/show` capabilities — with a generation-side belt-and-suspenders
   in `_run_generation` so chats pinned to a now-non-capable model
-  degrade to plain chat instead of 400ing.
-- **122/122 tests passing** as of end of Phase 11; coverage 99% on `app/` + `main.py`.
+  degrade to plain chat instead of 400ing — and (12h) expandable
+  per-row sources list on the tool card, with `tool_result.content`
+  now a JSON envelope `{"text": ..., "sources": [...]}` produced by
+  `encode_tool_result` (legacy plain-text rows decode via fallback).
+- **297/297 tests passing** as of end of Phase 12h; coverage 97% on `app/` + `main.py`.
 
 ## Working rules (override Claude defaults where they conflict)
 

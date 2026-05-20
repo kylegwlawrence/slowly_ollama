@@ -7,14 +7,17 @@ import pytest
 
 from app.queries import Message
 from app.render import (
+    DedupedSource,
     MessageBlock,
     ToolBatchBlock,
     ToolRowView,
     card_id_for,
+    dedup_sources,
     format_elapsed_mm_ss,
     group_messages_for_render,
     summary_text,
 )
+from app.tools import Source, ToolResult, encode_tool_result
 
 
 def _msg(
@@ -408,3 +411,197 @@ def test_batch_summary_text_is_past_tense() -> None:
         calls=[(call, result), (call2, result2)], turn_id="hist-1"
     )
     assert batch2.summary == "used 2 tools"
+
+
+# ---------------------------------------------------------------------------
+# dedup_sources (phase 12h)
+# ---------------------------------------------------------------------------
+
+
+def test_dedup_sources_empty_input() -> None:
+    """No sources → empty deduped list. No edge-case crash on empty input."""
+    assert dedup_sources([]) == []
+
+
+def test_dedup_sources_single_chunk_with_section() -> None:
+    """count == 1 with section → `(§Section)` meta suffix."""
+    out = dedup_sources([Source(title="Paper", section="Intro")])
+    assert out == [DedupedSource(title="Paper", meta="(§Intro)")]
+
+
+def test_dedup_sources_single_chunk_no_section() -> None:
+    """count == 1 with no section → empty meta (just the title)."""
+    out = dedup_sources([Source(title="Paper", section=None)])
+    assert out == [DedupedSource(title="Paper", meta="")]
+
+
+def test_dedup_sources_multi_chunk_same_title_drops_section() -> None:
+    """count > 1 → `(N chunks)` even when chunks share a section.
+
+    The chosen dedup-by-title trades section granularity for a
+    cleaner list; multi-chunk meta always reads "(N chunks)".
+    """
+    out = dedup_sources([
+        Source(title="Paper", section="Intro"),
+        Source(title="Paper", section="Results"),
+    ])
+    assert out == [DedupedSource(title="Paper", meta="(2 chunks)")]
+
+
+def test_dedup_sources_multi_chunk_same_title_same_section_still_chunks() -> None:
+    """Even when every chunk has the same section, multi-chunk reads
+    `(N chunks)` not `(§Section)`. The format is uniform once N > 1."""
+    out = dedup_sources([
+        Source(title="Paper", section="Intro"),
+        Source(title="Paper", section="Intro"),
+        Source(title="Paper", section="Intro"),
+    ])
+    assert out == [DedupedSource(title="Paper", meta="(3 chunks)")]
+
+
+def test_dedup_sources_preserves_first_seen_order() -> None:
+    """Order matches the first-seen title in the input; later chunks
+    of an earlier-seen title stay grouped with their first."""
+    out = dedup_sources([
+        Source(title="A", section="1"),
+        Source(title="B", section=None),
+        Source(title="A", section="2"),
+    ])
+    assert out == [
+        DedupedSource(title="A", meta="(2 chunks)"),
+        DedupedSource(title="B", meta=""),
+    ]
+
+
+def test_dedup_sources_three_unique_titles_no_collapse() -> None:
+    """Unique titles each get their own line — no collapsing."""
+    out = dedup_sources([
+        Source(title="A", section="1"),
+        Source(title="B", section=None),
+        Source(title="C", section="X"),
+    ])
+    assert out == [
+        DedupedSource(title="A", meta="(§1)"),
+        DedupedSource(title="B", meta=""),
+        DedupedSource(title="C", meta="(§X)"),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# ToolRowView.sources + deduped_sources property (phase 12h)
+# ---------------------------------------------------------------------------
+
+
+def test_tool_row_view_default_sources_is_empty_list() -> None:
+    """Sources defaults to [] so pre-12h call sites and pending rows
+    (no sources yet) keep constructing the view without spelling it out."""
+    row = ToolRowView(
+        id="r",
+        label="x",
+        elapsed_start_ms=None,
+        elapsed_final_ms=1000,
+        elapsed_display="0:01",
+    )
+    assert row.sources == []
+    assert row.deduped_sources == []
+
+
+def test_tool_row_view_deduped_sources_property_routes_through_dedup() -> None:
+    """The property is just sugar over dedup_sources(self.sources)."""
+    row = ToolRowView(
+        id="r",
+        label="x",
+        elapsed_start_ms=None,
+        elapsed_final_ms=1000,
+        elapsed_display="0:01",
+        sources=[
+            Source(title="A", section="1"),
+            Source(title="A", section="2"),
+            Source(title="B", section=None),
+        ],
+    )
+    assert row.deduped_sources == [
+        DedupedSource(title="A", meta="(2 chunks)"),
+        DedupedSource(title="B", meta=""),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Historic render path picks up sources from the JSON envelope (phase 12h)
+# ---------------------------------------------------------------------------
+
+
+def test_historic_row_view_extracts_sources_from_json_envelope() -> None:
+    """A `tool_result` row whose content is the JSON envelope produces
+    a ToolRowView with the decoded sources attached."""
+    call = _msg(
+        id=10,
+        role="tool_call",
+        content=json.dumps(
+            {
+                "name": "query_rag",
+                "arguments": {"source": "arxiv", "query": "x"},
+            }
+        ),
+    )
+    envelope = encode_tool_result(
+        ToolResult(
+            text="[1] Foo (§Intro)\n    body",
+            sources=[
+                Source(title="Foo", section="Intro"),
+                Source(title="Bar", section=None),
+            ],
+        )
+    )
+    result = _msg(
+        id=11,
+        role="tool_result",
+        content=envelope,
+        created_at=call.created_at + timedelta(seconds=1),
+    )
+    batch = ToolBatchBlock(calls=[(call, result)], turn_id="hist-10")
+
+    row = batch.rows[0]
+    assert row.sources == [
+        Source(title="Foo", section="Intro"),
+        Source(title="Bar", section=None),
+    ]
+
+
+def test_historic_row_view_plain_text_content_has_empty_sources() -> None:
+    """Pre-12h rows (plain text content) decode to ToolResult with
+    sources=[], so historic rendering of old conversations shows a
+    plain row — no chevron, no expand affordance."""
+    call = _msg(
+        id=20,
+        role="tool_call",
+        content=json.dumps(
+            {
+                "name": "query_rag",
+                "arguments": {"source": "arxiv", "query": "x"},
+            }
+        ),
+    )
+    result = _msg(
+        id=21,
+        role="tool_result",
+        content="[1] Foo\n    just plain pre-12h text",
+        created_at=call.created_at + timedelta(seconds=1),
+    )
+    batch = ToolBatchBlock(calls=[(call, result)], turn_id="hist-20")
+
+    row = batch.rows[0]
+    assert row.sources == []
+    assert row.deduped_sources == []
+
+
+def test_historic_row_view_unpaired_call_has_empty_sources() -> None:
+    """A loop-bailed call has no result to decode → sources stays [].
+    Doesn't crash on the missing result row."""
+    call = _msg(
+        id=30,
+        role="tool_call",
+        content=json.dumps({"name": "current_time", "arguments": {}}),
+    )
+    batch = ToolBatchBlock(calls=[(call, None)], turn_id="hist-30")
+    assert batch.rows[0].sources == []
