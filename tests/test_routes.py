@@ -2038,6 +2038,158 @@ def test_settings_get_with_agentic_on_renders_prompts(
 
 
 # ---------------------------------------------------------------------------
+# Phase 13g: agentic-skipped banner on chat panel
+# ---------------------------------------------------------------------------
+
+
+def _tool_capable_handler(
+    request: httpx.Request,
+) -> httpx.Response:
+    """Stub that advertises ``"tools"`` capability for every model.
+
+    Used by banner tests that need GET /chats/{id} to complete its
+    `model_supports_tools` lookup without hitting the default
+    `_ollama_unreachable` (which would make the helper return False
+    and falsely trip the banner).
+    """
+    if request.url.path == "/api/tags":
+        return httpx.Response(200, json={"models": [{"name": "llama3"}]})
+    if request.url.path == "/api/show":
+        return httpx.Response(
+            200, json={"capabilities": ["completion", "tools"]}
+        )
+    # Anything else (e.g. /api/chat probes during in-flight gens) gets
+    # a benign no-tool-calls reply so a follow-on POST won't accidentally
+    # crash the test.
+    return httpx.Response(
+        200, json={"message": {"content": "", "tool_calls": []}}
+    )
+
+
+def _non_tool_capable_handler(
+    request: httpx.Request,
+) -> httpx.Response:
+    """Sibling of ``_tool_capable_handler`` that flips the capability flag."""
+    if request.url.path == "/api/tags":
+        return httpx.Response(200, json={"models": [{"name": "llama3"}]})
+    if request.url.path == "/api/show":
+        return httpx.Response(
+            200, json={"capabilities": ["completion"]}
+        )
+    return httpx.Response(
+        200, json={"message": {"content": "", "tool_calls": []}}
+    )
+
+
+def test_chat_panel_no_banner_when_agentic_mode_off(
+    make_client: ClientFactory,
+) -> None:
+    """The off-by-default state is the happy path — no banner at all,
+    even when the model can't do tools. Toggle determines the signal,
+    not the model alone.
+    """
+    with make_client(_non_tool_capable_handler) as client:
+        chat_id = _create_chat_db_only()
+        response = client.get(
+            f"/chats/{chat_id}", headers={"HX-Request": "true"}
+        )
+
+    assert response.status_code == 200
+    assert "chat-panel__agentic-skipped" not in response.text
+
+
+def test_chat_panel_no_banner_when_model_supports_tools(
+    make_client: ClientFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Agentic mode on + tool-capable model → loop will run normally,
+    so no fallback banner. Worth testing because this is the common
+    case once a user enables the feature."""
+    db_path = Path(os.environ["DB_PATH"])
+    initialize_database(db_path)
+    with open_connection(db_path) as conn:
+        queries.set_agentic_mode(conn, True)
+    # Test fleet's `_default_tool_capable` autouse fixture stubs
+    # `ollama.model_supports_tools` to True; this test exercises the
+    # banner-suppression branch through that stub. Override removed
+    # only by tests that explicitly want a non-tool-capable model.
+
+    with make_client(_tool_capable_handler) as client:
+        chat_id = _create_chat_db_only()
+        response = client.get(
+            f"/chats/{chat_id}", headers={"HX-Request": "true"}
+        )
+
+    assert response.status_code == 200
+    assert "chat-panel__agentic-skipped" not in response.text
+
+
+def test_chat_panel_shows_banner_when_agentic_on_but_model_lacks_tools(
+    make_client: ClientFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The actual signal: agentic mode globally enabled, but the
+    chat's pinned model doesn't advertise the `tools` capability.
+    Banner explains why the loop isn't running and names the model
+    so the user knows which one to swap."""
+    db_path = Path(os.environ["DB_PATH"])
+    initialize_database(db_path)
+    with open_connection(db_path) as conn:
+        queries.set_agentic_mode(conn, True)
+        chat = queries.create_conversation(
+            conn, name="banner test", model="not-tool-capable"
+        )
+        queries.append_message(conn, chat.id, "user", "hi")
+
+    # The route-test autouse fixture defaults model_supports_tools to
+    # True; override here so this test exercises the False branch.
+    async def _not_capable(_client: object, _name: str) -> bool:
+        return False
+
+    monkeypatch.setattr(ollama, "model_supports_tools", _not_capable)
+
+    with make_client(_non_tool_capable_handler) as client:
+        response = client.get(
+            f"/chats/{chat.id}", headers={"HX-Request": "true"}
+        )
+
+    assert response.status_code == 200
+    assert "chat-panel__agentic-skipped" in response.text
+    # Model name surfaces inline so the user can act on it.
+    assert "not-tool-capable" in response.text
+
+
+def test_chat_panel_banner_also_shows_on_direct_hit(
+    make_client: ClientFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The full-page render (no HX-Request header) is the bookmark /
+    reload path. The banner must surface there too — otherwise users
+    arriving via a URL wouldn't see the fallback signal."""
+    db_path = Path(os.environ["DB_PATH"])
+    initialize_database(db_path)
+    with open_connection(db_path) as conn:
+        queries.set_agentic_mode(conn, True)
+        chat = queries.create_conversation(
+            conn, name="direct hit", model="not-tool-capable"
+        )
+        queries.append_message(conn, chat.id, "user", "hi")
+
+    async def _not_capable(_client: object, _name: str) -> bool:
+        return False
+
+    monkeypatch.setattr(ollama, "model_supports_tools", _not_capable)
+
+    with make_client(_non_tool_capable_handler) as client:
+        response = client.get(f"/chats/{chat.id}")
+
+    assert response.status_code == 200
+    # Full page renders the layout + the banner inside the chat panel.
+    assert "<!DOCTYPE html>" in response.text
+    assert "chat-panel__agentic-skipped" in response.text
+
+
+# ---------------------------------------------------------------------------
 # Phase 12d: server-side tool-calling loop
 # ---------------------------------------------------------------------------
 

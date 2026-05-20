@@ -422,6 +422,31 @@ body {
   font-weight: 500;
 }
 
+/* Phase 13g: silent-fallback banner. Shown above #messages when
+   agentic mode is globally enabled but the chat's pinned model
+   can't do tools — explains why the agentic loop isn't running.
+   Tinted with the danger token (matching .form-error) so it reads
+   as an "informational warning" without introducing a new colour. */
+.chat-panel__agentic-skipped {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin: var(--space-md) var(--space-xl) 0;
+  padding: var(--space-sm) var(--space-md);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  color: var(--text-primary);
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  border-radius: var(--radius-md);
+  font-size: 13px;
+}
+
+.chat-panel__agentic-skipped code {
+  background: var(--surface);
+  padding: 0 var(--space-xs);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+}
+
 .messages {
   flex: 1;
   overflow-y: auto;

@@ -8,6 +8,23 @@
     <span class="chat-panel__model">{{ conversation.model }}</span>
   </header>
 
+  {# Phase 13g: agentic-mode silent-fallback signal. The dispatcher in
+     app/generation.py picks single-agent when the conversation's
+     pinned model can't do tools, even with agentic mode on globally.
+     This banner tells the user why this chat isn't running the
+     research → review → generation loop. Computed at render time so
+     it reacts to model swaps without persisting state per message. #}
+  {% if agentic_skipped|default(false) %}
+  <div class="chat-panel__agentic-skipped" role="status">
+    <span class="material-symbols-outlined">info</span>
+    <span>
+      Agentic mode is on, but
+      <code>{{ conversation.model }}</code>
+      doesn't support tool calls. This chat uses single-agent mode.
+    </span>
+  </div>
+  {% endif %}
+
   {# app.js keeps the bottom of the conversation in view via a
      delegated `htmx:afterSwap` listener: any swap whose target is
      `#main` (chat-panel mount) or `#messages` (new message / token

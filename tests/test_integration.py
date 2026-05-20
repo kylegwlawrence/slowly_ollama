@@ -242,3 +242,309 @@ def test_delete_while_viewing_emits_hx_location(
     )
     assert response.status_code == 200
     assert response.headers.get("HX-Location") == "/"
+
+
+# ---------------------------------------------------------------------------
+# Phase 13g: agentic-mode end-to-end happy path
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def agentic_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[TestClient]:
+    """TestClient wired for an agentic-mode happy-path journey.
+
+    Scripts an Ollama mock that:
+    - Reports `llama3` as tool-capable (so the dispatcher routes to
+      `_run_agentic_generation` instead of the single-agent fallback).
+    - Returns a `current_time` tool call on research's first probe,
+      then findings text on its second probe (no more tools).
+    - Returns a `mark_passed` verdict tool call on review's probe.
+    - Streams the generation agent's final answer.
+
+    Probe vs. stream is branched on `body["stream"]`; probe-call
+    counting picks the right scripted response based on which agent's
+    turn it is.
+    """
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "chats.db"))
+    monkeypatch.setenv("OLLAMA_HOST", "http://test")
+
+    import json as _json
+    probe_count = [0]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(
+                200, json={"models": [{"name": "llama3"}]}
+            )
+        if request.url.path == "/api/show":
+            return httpx.Response(
+                200, json={"capabilities": ["completion", "tools"]}
+            )
+        # Must be /api/chat — branch by stream flag.
+        body = _json.loads(request.content or b"{}")
+        if body.get("stream"):
+            # Generation agent's final answer.
+            return httpx.Response(
+                200, content=_ndjson_chat(["The ", "answer ", "is 42."])
+            )
+        # Non-streaming probe. The orchestrator calls maybe_tool_call
+        # three times per happy-path turn:
+        #   1. Research: emit one current_time tool call.
+        #   2. Research: emit findings text, no more tools.
+        #   3. Review: emit mark_passed verdict tool call.
+        # Plus title-gen at the end via another stream — but title
+        # generation flows through stream_chat, not the probe.
+        probe_count[0] += 1
+        if probe_count[0] == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "name": "current_time",
+                                    "arguments": {"timezone": "UTC"},
+                                }
+                            }
+                        ],
+                    }
+                },
+            )
+        if probe_count[0] == 2:
+            return httpx.Response(
+                200,
+                json={
+                    "message": {
+                        "content": "Found a timestamp via the tool.",
+                        "tool_calls": [],
+                    }
+                },
+            )
+        if probe_count[0] == 3:
+            return httpx.Response(
+                200,
+                json={
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "name": "mark_passed",
+                                    "arguments": {"reason": "looks good"},
+                                }
+                            }
+                        ],
+                    }
+                },
+            )
+        # Any further probes are unexpected (e.g. an accidental
+        # second research iteration). Surface as a clear failure.
+        return httpx.Response(
+            500,
+            content=b"unexpected probe past the happy-path count",
+        )
+
+    mock_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="http://test",
+    )
+
+    from main import app
+
+    saved_overrides = dict(app.dependency_overrides)
+    app.dependency_overrides[get_ollama_client] = lambda: mock_client
+
+    try:
+        with TestClient(app) as client:
+            yield client
+    finally:
+        app.dependency_overrides.clear()
+        app.dependency_overrides.update(saved_overrides)
+
+
+def test_agentic_mode_full_journey(agentic_client: TestClient) -> None:
+    """Enable agentic mode → send a message → loop runs → answer
+    arrives → reload reconstructs the agentic card from persisted rows.
+
+    Covers the seam between every 13-phase piece:
+    - 13a/13e: agentic_mode flag persisted via POST /settings/agentic-mode
+    - 13d.3 dispatcher: routes to `_run_agentic_generation` because
+      both the toggle is on AND llama3 advertises `tools`
+    - 13d.2 orchestrator: emits iteration-start / tool-call /
+      tool-result / research-findings / review-verdict / token / done
+    - 13f historic render: GET /chats/{id} after completion shows the
+      AgenticToolBatchBlock-rendered card
+    """
+    client = agentic_client
+
+    # 1. Toggle agentic mode on.
+    toggle_response = client.post(
+        "/settings/agentic-mode",
+        data={"enabled": "on"},
+        headers={"HX-Request": "true"},
+    )
+    assert toggle_response.status_code == 200
+
+    # 2. Create a chat with the user's first message. The composer
+    # POST kicks off the agentic generation as a side effect.
+    created = client.post(
+        "/chats", data={"model": "llama3", "content": "what time is it?"}
+    )
+    assert created.status_code == 201
+    chat_id = int(
+        re.search(r'data-chat-id="(\d+)"', created.text).group(1)
+    )
+
+    # 3. Drive the SSE stream. The orchestrator's full event sequence
+    # for a one-iteration happy path is:
+    #   iteration-start → tool-call → tool-result →
+    #   research-findings → review-verdict → token* → done
+    stream = client.get(f"/chats/{chat_id}/stream")
+    assert stream.status_code == 200
+
+    # Every named event the orchestrator emits must appear.
+    for event_name in (
+        "iteration-start",
+        "tool-call",
+        "tool-result",
+        "research-findings",
+        "review-verdict",
+        "token",
+        "done",
+    ):
+        assert f"event: {event_name}" in stream.text, (
+            f"missing SSE event '{event_name}' in stream payload"
+        )
+
+    # Order pins the orchestrator's contract. Note: `tool-call`
+    # appears TWICE in the stream — first carrying the empty agentic
+    # card shell (before iteration-start, as the OOB swap target),
+    # then again for each actual tool invocation (after
+    # iteration-start). We don't pin `tool-call`'s position because
+    # the shell-emit precedes iteration-start by design. The
+    # invariants that matter:
+    #   - The iteration header lands before its findings (otherwise
+    #     the findings row has no card to insert into).
+    #   - Findings precede the review verdict for that iteration.
+    #   - The verdict closes the loop before generation tokens stream.
+    #   - `done` is last.
+    indices = {
+        name: stream.text.index(f"event: {name}")
+        for name in (
+            "iteration-start",
+            "research-findings",
+            "review-verdict",
+            "token",
+            "done",
+        )
+    }
+    assert indices["iteration-start"] < indices["research-findings"]
+    assert indices["research-findings"] < indices["review-verdict"]
+    assert indices["review-verdict"] < indices["token"]
+    assert indices["token"] < indices["done"]
+    # Final assistant text appears in the done event's payload.
+    assert "The answer is 42." in stream.text
+
+    # 4. Persisted message sequence matches the agentic-mode shape.
+    panel = client.get(f"/chats/{chat_id}")
+    assert panel.status_code == 200
+    # Historic render uses the agentic card template — the
+    # `tool-card--agentic` modifier class is its distinguishing
+    # marker vs. the single-agent shell.
+    assert "tool-card--agentic" in panel.text
+    # Iteration header surfaces as a <li> with the data-attribute.
+    assert 'data-iteration="1"' in panel.text
+    # Findings + passed-verdict markers are present.
+    assert "tool-card__findings" in panel.text
+    assert "tool-card__verdict--passed" in panel.text
+    # Assistant bubble carries the final answer.
+    assert "The answer is 42." in panel.text
+
+
+def test_agentic_mode_dispatcher_falls_back_when_model_lacks_tools(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Even with agentic mode globally on, a chat pinned to a
+    non-tool-capable model uses the single-agent producer. The chat
+    panel surfaces a banner explaining why.
+
+    Companion to `test_agentic_mode_full_journey`'s happy path —
+    pins the silent-fallback contract that's documented as a locked
+    decision in `docs/plans/phase13-agentic-loop.md`.
+    """
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "chats.db"))
+    monkeypatch.setenv("OLLAMA_HOST", "http://test")
+
+    import json as _json
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(
+                200, json={"models": [{"name": "llama3"}]}
+            )
+        if request.url.path == "/api/show":
+            # The crucial bit: no `tools` capability.
+            return httpx.Response(
+                200, json={"capabilities": ["completion"]}
+            )
+        body = _json.loads(request.content or b"{}")
+        if body.get("stream"):
+            return httpx.Response(
+                200, content=_ndjson_chat(["plain ", "reply"])
+            )
+        return httpx.Response(
+            200, json={"message": {"content": "", "tool_calls": []}}
+        )
+
+    mock_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="http://test",
+    )
+
+    from main import app
+
+    saved_overrides = dict(app.dependency_overrides)
+    app.dependency_overrides[get_ollama_client] = lambda: mock_client
+
+    try:
+        with TestClient(app) as client:
+            # Toggle agentic mode on globally.
+            client.post(
+                "/settings/agentic-mode",
+                data={"enabled": "on"},
+                headers={"HX-Request": "true"},
+            )
+
+            # Create a chat pinned to llama3 (which now lacks tools).
+            created = client.post(
+                "/chats",
+                data={"model": "llama3", "content": "hello"},
+            )
+            assert created.status_code == 201
+            chat_id = int(
+                re.search(r'data-chat-id="(\d+)"', created.text).group(1)
+            )
+
+            # Drive the SSE stream — single-agent flow, plain tokens.
+            stream = client.get(f"/chats/{chat_id}/stream")
+            assert stream.status_code == 200
+            # No agentic-only events should appear; the orchestrator
+            # was never invoked.
+            assert "event: iteration-start" not in stream.text
+            assert "event: research-findings" not in stream.text
+            assert "event: review-verdict" not in stream.text
+            # The plain stream answer landed.
+            assert "plain reply" in stream.text
+
+            # Reload — the chat panel renders the agentic-skipped
+            # banner naming the model.
+            panel = client.get(f"/chats/{chat_id}")
+            assert "chat-panel__agentic-skipped" in panel.text
+            assert "llama3" in panel.text
+    finally:
+        app.dependency_overrides.clear()
+        app.dependency_overrides.update(saved_overrides)
