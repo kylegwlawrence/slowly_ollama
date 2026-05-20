@@ -2138,7 +2138,13 @@ def _build_agentic_block(rows: list[Message]) -> AgenticToolBatchBlock:
    Same outer <details> shape as `_tool_card_shell.html` so existing
    CSS for `tool-card` applies. Adds:
    - `tool-card--agentic` modifier class on the outer <details>
-   - `data-max-iterations="true"` attribute when the loop hit the cap
+   - when the loop hit the cap: a sibling
+     `<span id="{card_id}-max-marker" data-max-iterations="true">
+     (max reached)</span>` inside the summary — matches the DOM
+     shape that render_max_iterations_badge produces on the live SSE
+     path so the CSS selector
+     `.tool-card__summary [data-max-iterations="true"]` styles both
+     paths uniformly.
    - iteration headers as <li.tool-card__iteration-header>
    - findings rows as <li.tool-card__findings> wrapping a <details>
    - verdict rows as <li.tool-card__verdict>
@@ -2150,11 +2156,14 @@ def _build_agentic_block(rows: list[Message]) -> AgenticToolBatchBlock:
      block: AgenticToolBatchBlock
 #}
 <details id="{{ block.card_id }}"
-         class="tool-card tool-card--agentic"
-         {%- if block.max_iterations_reached %} data-max-iterations="true"{% endif %}>
+         class="tool-card tool-card--agentic">
   <summary class="tool-card__summary">
     <span class="material-symbols-outlined">build</span>
     <span id="{{ block.summary_id }}">{{ block.summary }}</span>
+    {%- if block.max_iterations_reached %}
+    <span id="{{ block.card_id }}-max-marker"
+          data-max-iterations="true"> (max reached)</span>
+    {%- endif %}
     <span class="tool-card__chevron material-symbols-outlined">expand_more</span>
   </summary>
   <ul id="{{ block.list_id }}" class="tool-card__list">
@@ -2239,8 +2248,13 @@ Add a third branch:
 ```css
 /* Phase 13: agentic-mode tool card extensions. The base tool-card
    styles apply; these add iteration grouping + verdict colouring. */
-.tool-card--agentic[data-max-iterations="true"] .tool-card__summary::after {
-  content: " (max iterations reached)";
+
+/* Max-iterations badge — text content lives in the marker span
+   itself (filled by render_max_iterations_badge in 13d.1), so CSS
+   just colours the visible text. The marker is a sibling of the
+   summary span so the done-event's outerHTML swap on the summary
+   span leaves the badge intact. */
+.tool-card__summary [data-max-iterations="true"] {
   color: var(--color-warning, #c97e00);
   font-size: 0.875em;
 }
