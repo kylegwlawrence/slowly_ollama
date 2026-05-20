@@ -13,12 +13,16 @@ SQL helpers stay in `app/queries.py`; tool registry / execution stays in
 re-groups them into blocks, templates consume blocks.
 """
 
-import json
 from dataclasses import dataclass, field
 from typing import ClassVar, Union
 
 from app.queries import Message
-from app.tools import Source, decode_tool_result, format_tool_invocation
+from app.tools import (
+    Source,
+    decode_tool_call,
+    decode_tool_result,
+    format_tool_invocation,
+)
 
 
 def card_id_for(turn_id: str) -> str:
@@ -224,15 +228,12 @@ def _row_view_from_pair(
         A `ToolRowView` in either the *frozen* or *historic-unpaired*
         state.
     """
-    try:
-        payload = json.loads(call.content)
-        name = payload.get("name", "?")
-        arguments = payload.get("arguments", {}) or {}
-    except (json.JSONDecodeError, TypeError):
-        # Defensive — a corrupt row shouldn't crash a whole conversation
-        # render. Same posture as _build_history_payload in routes.py.
-        name = "?"
-        arguments = {}
+    # Forgiving fallback: a corrupt row still renders, with the label
+    # showing "calling ?()". `_build_history_payload` in app.generation
+    # treats the same None signal as "drop the row" since orphan
+    # results would 400 Ollama — different recovery, same primitive.
+    decoded_call = decode_tool_call(call.content)
+    name, arguments = decoded_call if decoded_call is not None else ("?", {})
     label = format_tool_invocation(name, arguments)
     if result is None:
         return ToolRowView(

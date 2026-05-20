@@ -9,7 +9,9 @@ from app.tools import (
     TOOLS,
     Source,
     ToolResult,
+    decode_tool_call,
     decode_tool_result,
+    encode_tool_call,
     encode_tool_result,
     run_tool,
     tool,
@@ -225,6 +227,60 @@ def test_decode_tool_result_missing_title_falls_back_to_untitled() -> None:
     raw = '{"text": "x", "sources": [{"section": "S"}]}'
     decoded = decode_tool_result(raw)
     assert decoded.sources == [Source(title="(untitled)", section="S")]
+
+
+# ---------------------------------------------------------------------------
+# encode_tool_call / decode_tool_call round-trip
+# ---------------------------------------------------------------------------
+
+
+def test_encode_decode_tool_call_round_trip() -> None:
+    """Well-formed encode → decode returns the same name + arguments."""
+    encoded = encode_tool_call("query_rag", {"source": "arxiv", "query": "x"})
+    decoded = decode_tool_call(encoded)
+    assert decoded == ("query_rag", {"source": "arxiv", "query": "x"})
+
+
+def test_encode_decode_tool_call_round_trip_empty_arguments() -> None:
+    """Tools with no arguments round-trip with an empty dict."""
+    encoded = encode_tool_call("current_time", {})
+    decoded = decode_tool_call(encoded)
+    assert decoded == ("current_time", {})
+
+
+def test_decode_tool_call_returns_none_on_malformed_json() -> None:
+    """Non-JSON content signals corruption via None, not via a fallback
+    string. Callers (generation.py) need the explicit None to know to
+    drop the row plus its paired tool_result."""
+    assert decode_tool_call("{not valid json") is None
+    assert decode_tool_call("") is None
+
+
+def test_decode_tool_call_returns_none_when_name_missing() -> None:
+    """Valid JSON without a `name` key is treated as corrupt — same
+    posture as a truly malformed row."""
+    assert decode_tool_call('{"arguments": {"x": 1}}') is None
+
+
+def test_decode_tool_call_returns_none_when_not_a_dict() -> None:
+    """Valid JSON that isn't a dict (e.g., a stray list) signals
+    corruption rather than crashing the caller."""
+    assert decode_tool_call("[1, 2, 3]") is None
+    assert decode_tool_call('"just a string"') is None
+
+
+def test_decode_tool_call_coerces_non_dict_arguments_to_empty() -> None:
+    """A model that emits arguments as something other than a dict
+    (e.g., a stray string) is treated as "no arguments" rather than
+    propagating a malformed value into the wire payload."""
+    assert decode_tool_call('{"name": "t", "arguments": "weird"}') == ("t", {})
+    assert decode_tool_call('{"name": "t", "arguments": null}') == ("t", {})
+
+
+def test_decode_tool_call_missing_arguments_key_defaults_to_empty() -> None:
+    """Some models omit the arguments key entirely when the tool takes
+    no args; treat as an empty dict, same as if they'd sent `{}`."""
+    assert decode_tool_call('{"name": "ping"}') == ("ping", {})
 
 
 # ---------------------------------------------------------------------------
