@@ -903,13 +903,19 @@ from app.agents.verdict_tools import (
     VerdictDecision,
     parse_verdict,
 )
+from app import render
 from app.generation import (
     GenerationState,
     _emit,
     _maybe_emit_title,
+    emit_ollama_error,
+    maybe_persist_partial,
+    signal_done,
 )
 from app.ollama import OllamaProtocolError, OllamaUnavailable
+from app.templates import templates
 from app.tools import (
+    encode_tool_call,
     encode_tool_result,
     format_tool_invocation,
     run_tool,
@@ -1059,8 +1065,6 @@ async def _run_agentic_generation(
     See `docs/plans/phase13-agentic-loop.md` §Architecture for the
     high-level diagram.
     """
-    from app.routes import templates  # avoid circular import
-
     # The most recent row in `history` is the user message we're
     # answering. The orchestrator persists everything after this.
     if not history or history[-1].role != "user":
@@ -1091,17 +1095,18 @@ async def _run_agentic_generation(
     # OOB-append rows into #{list_id}. The shell is a
     # `tool-card--agentic` variant so CSS can target the iteration
     # headers / verdicts.
-
-    # PROMPT FOR IMPLEMENTER: render `_tool_card_shell.html` with
-    # `agentic=True` (new template var) so the wrapper picks up the
-    # `--agentic` modifier class, summary is "researching…", and
-    # `data-max-iterations` is absent initially.
+    #
+    # PROMPT FOR IMPLEMENTER: extend `app/render.py` with a sibling
+    # of `render_tool_card_initial` — call it
+    # `render_agentic_card_shell(card_id, list_id, summary_id,
+    # conversation_id)` — that renders `_tool_card_shell.html` with
+    # `rows=[]`, `summary_text="researching…"`, the agentic modifier
+    # class, and an empty `<span id="…-max-marker">` placeholder
+    # inside the summary (the for-else max-iterations branch below
+    # OOB-fills that span). Call it here and `await _emit(...)`.
+    # The existing render_tool_card_initial stays single-agent-only.
 
     try:
-        # Emit the initial empty shell so subsequent OOBs have a target.
-        # Mirror app/generation.py:_run_generation's first tool-call
-        # branch but with rows=[] and the agentic modifier.
-        # ...
 
         for iteration in range(_AGENTIC_ITERATION_CAP):
             iteration_index = iteration + 1
@@ -1112,11 +1117,17 @@ async def _run_agentic_generation(
             # and text like "Iteration 2 of 3". Also OOB-swap the
             # summary span to "researching (iteration N)…" per the
             # summary state machine in the design notes.
+            # PROMPT FOR IMPLEMENTER: add `render_iteration_start(
+            # iteration_index, list_id, summary_id)` to
+            # `app/render.py`. It returns ONE concatenated payload:
+            # the `<li class="tool-card__iteration-header">` row with
+            # `hx-swap-oob="beforeend:#{list_id}"` AND a summary-span
+            # outerHTML swap (`<span id="{summary_id}" hx-swap-oob=
+            # "outerHTML">researching (iteration N)…</span>`). The
+            # inline-string approach below is the prior sketch; replace
+            # it with the helper call once the helper exists.
             await _emit(
                 state, "iteration-start",
-                # PROMPT FOR IMPLEMENTER: payload includes BOTH the
-                # iteration header (beforeend OOB) AND a summary span
-                # update (outerHTML OOB on #{summary_id}).
                 f'<li hx-swap-oob="beforeend:#{list_id}"'
                 f' class="tool-card__iteration-header"'
                 f' data-iteration="{iteration_index}">'
@@ -1158,34 +1169,31 @@ async def _run_agentic_generation(
                         client, model, payload,
                         tools=tool_specs_for_ollama(),
                     )
-                except OllamaUnavailable as e:
+                except (OllamaUnavailable, OllamaProtocolError) as e:
+                    # Flag-before-await: await is a cancellation point,
+                    # so set persisted_or_errored FIRST so the outer
+                    # finally's maybe_persist_partial sees it.
                     persisted_or_errored = True
-                    await _emit(
-                        state, "error",
-                        f'<div class="error">Ollama unavailable: '
-                        f'{html.escape(str(e))}</div>',
-                    )
-                    return
-                except OllamaProtocolError as e:
-                    persisted_or_errored = True
-                    await _emit(
-                        state, "error",
-                        f'<div class="error">Ollama protocol error: '
-                        f'{html.escape(str(e))}</div>',
-                    )
+                    await emit_ollama_error(state, e)
                     return
 
                 if not tool_calls:
                     findings = content.strip()
                     break
 
-                # PROMPT FOR IMPLEMENTER: for each call, persist
-                # tool_call row, emit tool-call SSE (OOB-append the
-                # live row to #{list_id}), run the tool, persist
-                # tool_result row, emit tool-result SSE (OOB-replace
-                # the live row with the frozen one). Mirror the
-                # tool-call section of _run_generation lines 511-598
-                # but with the iteration-scoped row id format.
+                # For each call: persist tool_call row, build the live
+                # ToolRowView, emit the tool-call SSE via
+                # `render.render_tool_card_row_append` (since the
+                # agentic card already exists — the shell was emitted
+                # before the iteration loop), run the tool, persist
+                # tool_result row, emit tool-result SSE via
+                # `render.render_tool_card_row_freeze`.
+                #
+                # Row id format: `f"{card_id}-iter-{iteration_index}-row-{research_call_index}"`.
+                # Live row construction matches `_run_generation` —
+                # mirror the existing `live_row = render.ToolRowView(...)`
+                # pattern in app/generation.py.
+                #
                 # Also append the call+result to intra_turn so the
                 # next maybe_tool_call request sees them.
                 for call in tool_calls:
@@ -1193,9 +1201,7 @@ async def _run_agentic_generation(
                     arguments = call.get("arguments") or {}
                     queries.append_message(
                         db, conversation_id, "tool_call",
-                        content=json.dumps(
-                            {"name": name, "arguments": arguments}
-                        ),
+                        content=encode_tool_call(name, arguments),
                     )
                     intra_turn.append({
                         "role": "assistant", "content": "",
@@ -1203,7 +1209,26 @@ async def _run_agentic_generation(
                             "function": {"name": name, "arguments": arguments}
                         }],
                     })
-                    # ... emit tool-call SSE ...
+                    # PROMPT FOR IMPLEMENTER:
+                    #   row_id = f"{card_id}-iter-{iteration_index}-row-{research_call_index}"
+                    #   live_row = render.ToolRowView(id=row_id, label=..., elapsed_start_ms=..., ...)
+                    #   await _emit(state, "tool-call",
+                    #       render.render_tool_card_row_append(
+                    #           live_row=live_row, list_id=list_id,
+                    #           summary_id=summary_id,
+                    #           call_index=research_call_index,
+                    #       ))
+                    # NOTE: render_tool_card_row_append's existing
+                    # summary text reads "using N tools…" — agentic
+                    # mode wants "researching (iteration N)…" instead.
+                    # Either (a) add a new
+                    # `render_agentic_row_append(...)` helper that
+                    # emits the same row HTML but skips the summary
+                    # bump (the iteration-start event already swapped
+                    # the summary), or (b) extend
+                    # render_tool_card_row_append with a
+                    # `summary_text_override: str | None = None`
+                    # parameter. The first is cleaner; go with that.
                     result = await run_tool(name, arguments)
                     queries.append_message(
                         db, conversation_id, "tool_result",
@@ -1212,7 +1237,13 @@ async def _run_agentic_generation(
                     intra_turn.append({
                         "role": "tool", "content": result.text,
                     })
-                    # ... emit tool-result SSE (freeze the row) ...
+                    # PROMPT FOR IMPLEMENTER:
+                    #   frozen_row = render.ToolRowView(id=row_id, label=..., elapsed_final_ms=..., sources=result.sources, ...)
+                    #   await _emit(state, "tool-result",
+                    #       render.render_tool_card_row_freeze(frozen_row))
+                    # The freeze helper is already source-aware
+                    # (phase 12h) so RAG sources surface in the
+                    # agentic card the same as in single-agent rows.
                     research_call_index += 1
             else:
                 # Inner cap hit. `findings` stays whatever the model
@@ -1235,18 +1266,22 @@ async def _run_agentic_generation(
                 db, conversation_id, "research_findings", findings
             )
             intra_turn.append({"role": "assistant", "content": findings})
-            await _emit(
-                state, "research-findings",
-                # PROMPT FOR IMPLEMENTER: render the findings row via a
-                # new template `_findings_row.html` — a <li> with class
-                # `tool-card__findings`, an expand chevron, and the
-                # findings text inside a <details>. OOB-append to
-                # #{list_id}.
-                f'<li hx-swap-oob="beforeend:#{list_id}"'
-                f' class="tool-card__findings"'
-                f' data-iteration="{iteration_index}">'
-                # ... details / chevron / text ...
-                f'</li>',
+            # PROMPT FOR IMPLEMENTER: add a sibling render helper
+            # `render_findings_row(findings: str, iteration_index: int,
+            # list_id: str) -> str` to `app/render.py`. It returns
+            # the OOB-append HTML for a new template
+            # `_findings_row.html` — a <li class="tool-card__findings"
+            # data-iteration="N" hx-swap-oob="beforeend:#{list_id}">
+            # wrapping a <details><summary>Research findings</summary>
+            # <p>{findings|markdown|safe}</p></details>. Markdown
+            # rendering reuses the `templates.env.filters["markdown"]`
+            # filter already wired in `app/templates.py`.
+            await _emit(state, "research-findings",
+                render.render_findings_row(
+                    findings=findings,
+                    iteration_index=iteration_index,
+                    list_id=list_id,
+                ),
             )
 
             # === Review pass ===
@@ -1256,21 +1291,9 @@ async def _run_agentic_generation(
                 verdict_calls, _ = await ollama.maybe_tool_call(
                     client, model, review_payload, tools=REVIEW_TOOL_SPECS,
                 )
-            except OllamaUnavailable as e:
+            except (OllamaUnavailable, OllamaProtocolError) as e:
                 persisted_or_errored = True
-                await _emit(
-                    state, "error",
-                    f'<div class="error">Ollama unavailable during review:'
-                    f' {html.escape(str(e))}</div>',
-                )
-                return
-            except OllamaProtocolError as e:
-                persisted_or_errored = True
-                await _emit(
-                    state, "error",
-                    f'<div class="error">Ollama protocol error during review:'
-                    f' {html.escape(str(e))}</div>',
-                )
+                await emit_ollama_error(state, e)
                 return
 
             decision = parse_verdict(verdict_calls)
@@ -1281,17 +1304,23 @@ async def _run_agentic_generation(
                     "message": decision.message,
                 }),
             )
-            await _emit(
-                state, "review-verdict",
-                # PROMPT FOR IMPLEMENTER: render a verdict row template
-                # with the verdict status as a class modifier
-                # (`tool-card__verdict--passed` / `--failed`) and the
-                # message text inline. OOB-append to #{list_id}.
-                f'<li hx-swap-oob="beforeend:#{list_id}"'
-                f' class="tool-card__verdict tool-card__verdict--{decision.verdict}"'
-                f' data-iteration="{iteration_index}">'
-                # ... icon / "Passed: " / message text ...
-                f'</li>',
+            # PROMPT FOR IMPLEMENTER: add `render_verdict_row(decision:
+            # VerdictDecision, iteration_index: int, list_id: str) ->
+            # str` to `app/render.py`. Renders a new template
+            # `_verdict_row.html` — a <li class="tool-card__verdict
+            # tool-card__verdict--{passed|failed}" data-iteration="N"
+            # hx-swap-oob="beforeend:#{list_id}"> containing the
+            # check_circle/cancel icon, the verb ("Passed:" /
+            # "Failed:"), and the verdict message. The historic-replay
+            # template (`_agentic_tool_card.html`, see sub-phase 13f)
+            # already builds the same DOM — extract the shared bit so
+            # live + historic agree on classes and icons.
+            await _emit(state, "review-verdict",
+                render.render_verdict_row(
+                    decision=decision,
+                    iteration_index=iteration_index,
+                    list_id=list_id,
+                ),
             )
 
             final_findings = findings
@@ -1314,21 +1343,25 @@ async def _run_agentic_generation(
         else:
             # for-else: ran 3 iterations without break → max reached.
             max_iterations_reached = True
-            # Emit a card-level OOB swap that sets the
-            # data-max-iterations attribute on the <details>. CSS uses
-            # it to render the badge inside the summary.
-            await _emit(
-                state, "iteration-start",  # reuse event name for OOB add
-                f'<details id="{card_id}" hx-swap-oob="outerHTML"'
-                f' data-max-iterations="true" class="tool-card tool-card--agentic"'
-                f' open>'
-                # ... NOTE for implementer: this is a brittle approach;
-                # better: emit a small fragment that adds the attribute
-                # only, not a full re-render. Easiest robust path:
-                # send an outerHTML OOB on a tiny <span id="..."> badge
-                # inside the summary, OR set the attribute via a JS
-                # listener on a custom SSE event. Iterate during impl.
-                f'</details>',
+            # PROMPT FOR IMPLEMENTER: emit a tiny outerHTML OOB on the
+            # sentinel `<span id="{card_id}-max-marker">` that
+            # `render_agentic_card_shell` (see top of try block)
+            # placed inside the summary. Filling that span with the
+            # badge text avoids re-rendering the whole <details> —
+            # which would clobber every row already in the DOM.
+            # Add `render_max_iterations_badge(card_id: str) -> str`
+            # to `app/render.py` that returns the marker swap, and
+            # call it here:
+            #
+            #   await _emit(state, "iteration-start",
+            #       render.render_max_iterations_badge(card_id))
+            #
+            # Use a dedicated event name like "max-iterations" if
+            # you'd rather not overload "iteration-start" — update
+            # the placeholder's `sse-swap=` attribute too. The
+            # current sketch reuses "iteration-start" for compactness.
+            await _emit(state, "iteration-start",
+                render.render_max_iterations_badge(card_id),
             )
 
         # === Generation pass ===
@@ -1343,21 +1376,9 @@ async def _run_agentic_generation(
                     await _emit(state, "token", html.escape(chunk.content))
                 if chunk.done:
                     break
-        except OllamaUnavailable as e:
+        except (OllamaUnavailable, OllamaProtocolError) as e:
             persisted_or_errored = True
-            await _emit(
-                state, "error",
-                f'<div class="error">Ollama unavailable during generation:'
-                f' {html.escape(str(e))}</div>',
-            )
-            return
-        except OllamaProtocolError as e:
-            persisted_or_errored = True
-            await _emit(
-                state, "error",
-                f'<div class="error">Ollama protocol error during generation:'
-                f' {html.escape(str(e))}</div>',
-            )
+            await emit_ollama_error(state, e)
             return
 
         full_text = "".join(chunks)
@@ -1374,11 +1395,21 @@ async def _run_agentic_generation(
         if on_complete == "append":
             await _maybe_emit_title(state, client, db, conversation_id)
 
-        # PROMPT FOR IMPLEMENTER: build the done payload — final
-        # assistant bubble OOB-replacing the streaming placeholder,
-        # PLUS a card-summary outerHTML OOB that flips "researching…"
-        # to a past-tense final summary like "ran N iterations" (and
-        # adds the max-iterations badge when applicable).
+        # PROMPT FOR IMPLEMENTER: extend `app/render.py` with
+        # `render_agentic_done_summary(summary_id, iterations_run,
+        # max_iterations_reached) -> str` mirroring
+        # `render_done_card_oobs` but with the agentic summary text
+        # ("ran N iterations" / "ran N iterations (max reached)").
+        # Then build the done payload as:
+        #
+        #   final_html = templates.get_template("_message.html").render(
+        #       message=message,
+        #       swap_target=f"#assistant-stream-{conversation_id}",
+        #   )
+        #   done_summary = render.render_agentic_done_summary(
+        #       summary_id, len(iterations_run), max_iterations_reached
+        #   )
+        #   await _emit(state, "done", done_summary + final_html)
         final_html = templates.get_template("_message.html").render(
             message=message,
             swap_target=f"#assistant-stream-{conversation_id}",
@@ -1386,19 +1417,12 @@ async def _run_agentic_generation(
         await _emit(state, "done", final_html)
 
     finally:
-        if not persisted_or_errored:
-            partial = "".join(chunks) if chunks else "(response interrupted)"
-            if on_complete == "append":
-                queries.append_message(
-                    db, conversation_id, "assistant", partial
-                )
-            elif chunks:
-                queries.replace_last_assistant_message(
-                    db, conversation_id, partial
-                )
-        async with state.cond:
-            state.done = True
-            state.cond.notify_all()
+        # Same safety net as `_run_generation` — phase 13 reuses the
+        # extracted helpers so any bug fix to one path benefits both.
+        maybe_persist_partial(
+            db, conversation_id, on_complete, chunks, persisted_or_errored
+        )
+        await signal_done(state)
 ```
 
 ### Code: dispatcher in `app/generation.py`
@@ -1527,27 +1551,13 @@ from app import generation, ollama, queries
 from app.agents.loop import _run_agentic_generation
 
 
-@pytest.fixture(autouse=True)
-def _clear_live_generations():
-    """Same shape as test_generation.py:_clear_live_generations."""
-    generation.live_generations.clear()
-    yield
-    generation.live_generations.clear()
-
-
-@pytest.fixture(autouse=True)
-def _reset_capability_cache():
-    """Same shape as test_generation.py:_reset_capability_cache."""
-    ollama.reset_capability_cache()
-    yield
-    ollama.reset_capability_cache()
-
-
 def _setup_chat(db_path, name="test"):
     """Local helper — duplicate of test_generation.py's, intentionally.
 
-    Lifts the burden of standing up conftest.py just for one shared
-    helper; we accept the duplication.
+    Per-area helpers stay co-located with the tests that use them.
+    Module-state isolation (`generation.live_generations` clear,
+    capability-cache reset) is handled by the autouse fixture in
+    `tests/conftest.py`, so this file doesn't need its own copies.
     """
     # ... insert conversation, return its id ...
 
@@ -2474,7 +2484,7 @@ you. None block 13a–13c (foundation); resolve before 13d–13f.
   trial-and-error in real chats (no formal eval suite in v1).
 - The single-agent path (toggle off) is byte-identical to today's
   behavior. Phase 13 must not regress anything in phases 12a–12h.
-- Test suite still green (`pytest`) and coverage holds at ~97% on
+- Test suite still green (`pytest`) and coverage holds at ~98% on
   `app/` + `main.py`. New code paths add their own tests; existing
   paths get no new tests beyond what the new code path requires.
 - One retro file: `docs/retros/phase13-agentic-loop.md`. Following
