@@ -398,57 +398,6 @@ def _build_history_payload(history: list) -> list[dict]:
     return out
 
 
-def _build_done_card_oobs(
-    call_count: int,
-    in_flight: dict[str, dict],
-    summary_id: str,
-) -> str:
-    """Build the per-turn OOB fragments that ride along with `done`.
-
-    See `app.routes._build_done_card_oobs` (phase 12e) for the
-    original; moved here because `_run_generation` is the only
-    caller.
-
-    Two things happen when the assistant turn finishes:
-
-    1. The card summary span swaps from present-tense / ellipsis
-       ("using N tool(s)…") to past-tense ("used N tool(s)").
-    2. Any rows still missing a paired tool_result get OOB-replaced
-       with a frozen variant carrying `data-elapsed-final`. The JS
-       tick driver only ticks rows that have `data-elapsed-start`
-       AND no `data-elapsed-final`; once SSE closes (on `done`) we
-       never get another chance to freeze, so leftover live rows
-       would tick forever.
-    """
-    if call_count == 0:
-        return ""
-
-    summary_html = (
-        f'<span id="{summary_id}" hx-swap-oob="outerHTML">'
-        f"{html.escape(render.summary_text(call_count, done=True))}"
-        f"</span>"
-    )
-
-    if not in_flight:
-        return summary_html
-
-    now_ms = int(time.time() * 1000)
-    frozen_rows_html = ""
-    for row_id, info in in_flight.items():
-        duration_ms = max(0, now_ms - info["start_ms"])
-        frozen_row = render.ToolRowView(
-            id=row_id,
-            label=info["label"],
-            elapsed_start_ms=None,
-            elapsed_final_ms=duration_ms,
-            elapsed_display=render.format_elapsed_mm_ss(duration_ms),
-        )
-        frozen_rows_html += templates.get_template(
-            "_tool_row.html"
-        ).render(row=frozen_row, swap_oob="outerHTML")
-    return summary_html + frozen_rows_html
-
-
 async def _maybe_emit_title(
     state: GenerationState,
     client: httpx.AsyncClient,
@@ -601,32 +550,20 @@ async def _run_generation(
                 )
 
                 if call_index == 0:
-                    payload = templates.get_template(
-                        "_tool_card_shell.html"
-                    ).render(
+                    payload = render.render_tool_card_initial(
                         card_id=card_id,
                         list_id=list_id,
                         summary_id=summary_id,
-                        summary_text=render.summary_text(1, done=False),
-                        rows=[live_row],
-                        swap_oob=(
-                            f"beforebegin:#assistant-stream-"
-                            f"{conversation_id}"
-                        ),
+                        live_row=live_row,
+                        conversation_id=conversation_id,
                     )
                 else:
-                    row_html = templates.get_template(
-                        "_tool_row.html"
-                    ).render(
-                        row=live_row,
-                        swap_oob=f"beforeend:#{list_id}",
+                    payload = render.render_tool_card_row_append(
+                        live_row=live_row,
+                        list_id=list_id,
+                        summary_id=summary_id,
+                        call_index=call_index,
                     )
-                    summary_html = (
-                        f'<span id="{summary_id}" hx-swap-oob="outerHTML">'
-                        f"{html.escape(render.summary_text(call_index + 1, done=False))}"
-                        f"</span>"
-                    )
-                    payload = row_html + summary_html
 
                 await _emit(state, "tool-call", payload)
 
@@ -657,11 +594,11 @@ async def _run_generation(
                     elapsed_display=render.format_elapsed_mm_ss(duration_ms),
                     sources=result.sources,
                 )
-                row_html = templates.get_template("_tool_row.html").render(
-                    row=frozen_row,
-                    swap_oob="outerHTML",
+                await _emit(
+                    state,
+                    "tool-result",
+                    render.render_tool_card_row_freeze(frozen_row),
                 )
-                await _emit(state, "tool-result", row_html)
 
                 del in_flight[row_id]
 
@@ -676,7 +613,7 @@ async def _run_generation(
                 "(Tool-call limit reached; no final answer produced.)",
             )
             persisted_or_errored = True
-            bail_payload = _build_done_card_oobs(
+            bail_payload = render.render_done_card_oobs(
                 call_index, in_flight, summary_id
             )
             final_html = templates.get_template("_message.html").render(
@@ -725,7 +662,7 @@ async def _run_generation(
 
         # Final done event with the persisted message bubble +
         # tool-card past-tense summary OOB.
-        done_card_oobs = _build_done_card_oobs(
+        done_card_oobs = render.render_done_card_oobs(
             call_index, in_flight, summary_id
         )
         final_html = templates.get_template("_message.html").render(

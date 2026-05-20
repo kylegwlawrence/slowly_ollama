@@ -2511,60 +2511,6 @@ async def test_regenerate_cancellation_writes_partial_when_tokens_arrived(
     assert rows[0].content == "new partial"
 
 
-def test_build_done_card_oobs_empty_in_flight_only_emits_summary() -> None:
-    """Happy path: every tool_call was paired with a tool_result before
-    the loop released into streaming. The done payload's card
-    contribution is just the past-tense summary swap; no frozen-row
-    OOBs needed."""
-    from app.generation import _build_done_card_oobs
-
-    result = _build_done_card_oobs(
-        call_count=2, in_flight={}, summary_id="tool-card-T-summary"
-    )
-    assert 'id="tool-card-T-summary"' in result
-    assert 'hx-swap-oob="outerHTML"' in result
-    assert "used 2 tools" in result
-    # No row OOBs.
-    assert "tool-row" not in result
-
-
-def test_build_done_card_oobs_zero_calls_returns_empty() -> None:
-    """A turn with no tool calls has no card to update — the helper
-    returns an empty string so the done payload stays compact."""
-    from app.generation import _build_done_card_oobs
-
-    assert _build_done_card_oobs(0, {}, "tool-card-T-summary") == ""
-
-
-def test_build_done_card_oobs_freezes_in_flight_rows() -> None:
-    """Defensive branch: if any row never got its paired tool_result
-    (e.g., a future codepath raises mid-await), the done payload
-    OOB-replaces the row with a frozen variant so the JS tick driver
-    stops incrementing it after SSE close. Dead code in the current
-    control flow — exercised here directly so the safety net stays
-    covered."""
-    from app.generation import _build_done_card_oobs
-
-    in_flight = {
-        "tool-card-T-row-0": {
-            "start_ms": 1_000_000_000,  # far in the past — duration is huge
-            "name": "current_time",
-            "arguments": {"timezone": "UTC"},
-            "label": "calling current_time(timezone='UTC')",
-        },
-    }
-    result = _build_done_card_oobs(
-        call_count=1, in_flight=in_flight, summary_id="tool-card-T-summary"
-    )
-    # Summary swap is still there.
-    assert "used 1 tool" in result
-    # Plus a frozen-row OOB carrying the original label and a
-    # data-elapsed-final (the JS skip-key).
-    assert 'id="tool-card-T-row-0"' in result
-    assert "data-elapsed-final=" in result
-    assert "calling current_time" in result
-
-
 def test_stream_two_tool_calls_emit_row_append_and_summary_bump(
     make_client: ClientFactory,
 ) -> None:
