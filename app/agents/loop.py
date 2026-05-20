@@ -446,12 +446,13 @@ async def _run_agentic_generation(
         else:
             # for-else: completed all _AGENTIC_ITERATION_CAP without
             # a "passed" break → fall through to generation with the
-            # last iteration's findings.
+            # last iteration's findings. Emits the visible
+            # "(max reached)" badge into the marker span; the badge
+            # survives the done-event's summary swap because the
+            # marker is a sibling of the summary span.
             await _emit(
                 state,
-                "iteration-start",  # reuse the event name; the OOB
-                                    # selector targets the marker
-                                    # span via render_max_iterations_badge
+                "max-iterations",
                 render.render_max_iterations_badge(card_id),
             )
 

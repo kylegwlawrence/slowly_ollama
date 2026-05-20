@@ -12,7 +12,7 @@ each test sets up its own DB tempfile and stubs Ollama.
 """
 
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 
 import pytest
@@ -71,7 +71,7 @@ def _scripted_maybe_tool_call(
 
 def _scripted_stream_chat(
     chunks: list[str],
-) -> Callable[..., Awaitable[None]]:
+) -> Callable[..., AsyncIterator[ollama.ChatChunk]]:
     """Build a fake `stream_chat` that yields the given text chunks."""
     async def fake(client_, model_, messages_):
         for c in chunks:
@@ -336,13 +336,15 @@ async def test_loop_max_iterations_force_generates(tmp_path, monkeypatch):
         "research_findings", "review_verdict",
         "assistant",
     ]
-    # Max-iterations badge was emitted (visible "(max reached)" text).
-    badge_payloads = [
-        p for (ev, p) in state.events
-        if ev == "iteration-start" and "max-marker" in p
-    ]
+    # Max-iterations badge fires under its own event name (not
+    # piggybacking on iteration-start). Carries the visible "(max
+    # reached)" text into the marker span — the badge survives the
+    # done-event's outerHTML swap on the summary span because the
+    # marker is a sibling.
+    badge_payloads = _emitted_payloads(state, "max-iterations")
     assert len(badge_payloads) == 1
     assert "(max reached)" in badge_payloads[0]
+    assert "max-marker" in badge_payloads[0]
     # Generation streamed and the done summary reads 3 iterations
     # (no max-reached suffix in the summary itself — the marker
     # carries that signal).
@@ -610,3 +612,125 @@ async def test_ollama_error_during_generation_emits_error_event(
     assert "research_findings" in roles
     assert "review_verdict" in roles
     assert "assistant" not in roles
+
+
+# ---------------------------------------------------------------------------
+# Regenerate flow — on_complete="replace"
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_loop_regenerate_replaces_existing_assistant(
+    tmp_path, monkeypatch,
+):
+    """The agentic-mode regenerate flow: user has an existing
+    assistant message, hits regenerate, the orchestrator runs the
+    full loop with on_complete="replace", and the existing assistant
+    row is updated in place (same id, new content). Pins the
+    `replace` branch — without this test it's untested production
+    code (the agentic-mode regenerate path is a real UX surface)."""
+    db_path = tmp_path / "chats.db"
+    initialize_database(db_path)
+    with open_connection(db_path) as conn:
+        chat = queries.create_conversation(conn, "regen test", "llama3")
+        queries.append_message(conn, chat.id, "user", "first question")
+        # Seed an existing assistant message that the regen will overwrite.
+        original = queries.append_message(
+            conn, chat.id, "assistant", "original answer to replace",
+        )
+    conv_id = chat.id
+    original_assistant_id = original.id
+
+    fake_call, _ = _scripted_maybe_tool_call([
+        # Iter 1 research: produce findings, no tools.
+        ([], "fresh findings from regen"),
+        # Iter 1 review: mark_passed.
+        (
+            [{"name": "mark_passed", "arguments": {"reason": "ok"}}],
+            "",
+        ),
+    ])
+    monkeypatch.setattr(ollama, "maybe_tool_call", fake_call)
+    _stub_title_noop(monkeypatch)
+    monkeypatch.setattr(
+        ollama, "stream_chat",
+        _scripted_stream_chat(["replacement ", "answer text"]),
+    )
+
+    with open_connection(db_path) as db:
+        state = _make_state(conv_id)
+        # IMPORTANT: regenerate passes history MINUS the last assistant
+        # row so the model doesn't see its own prior reply as part of
+        # the input. Mirrors what regenerate_endpoint does in routes.py.
+        history = queries.list_messages(db, conv_id)
+        prompt_history = history[:-1]  # drop the existing assistant
+        await agentic_loop._run_agentic_generation(
+            state=state, client=None, db=db,
+            conversation_id=conv_id, model="llama3",
+            history=prompt_history, on_complete="replace",
+        )
+
+    # The existing assistant row was UPDATED in place — same id,
+    # new content. No second assistant row was appended.
+    with open_connection(db_path) as conn:
+        rows = queries.list_messages(conn, conv_id)
+    assistant_rows = [m for m in rows if m.role == "assistant"]
+    assert len(assistant_rows) == 1
+    assert assistant_rows[0].id == original_assistant_id
+    assert assistant_rows[0].content == "replacement answer text"
+    # The agentic per-iteration rows (research_findings + review_verdict)
+    # ALSO got appended — regen runs the full loop, not just a re-stream.
+    roles = [m.role for m in rows]
+    assert "research_findings" in roles
+    assert "review_verdict" in roles
+
+
+@pytest.mark.asyncio
+async def test_loop_regenerate_does_not_emit_title(tmp_path, monkeypatch):
+    """`_maybe_emit_title` should fire only when on_complete="append".
+    Regenerate doesn't fire the auto-titler — the auto-titler runs
+    after the 1st/2nd/3rd assistant reply, and regenerate replaces
+    an existing reply rather than adding a new one. Pins this gate
+    so a future refactor doesn't accidentally fire the title call
+    on regen."""
+    db_path = tmp_path / "chats.db"
+    initialize_database(db_path)
+    with open_connection(db_path) as conn:
+        chat = queries.create_conversation(conn, "no-title-on-regen", "llama3")
+        queries.append_message(conn, chat.id, "user", "q")
+        queries.append_message(conn, chat.id, "assistant", "old")
+    conv_id = chat.id
+
+    fake_call, _ = _scripted_maybe_tool_call([
+        ([], "findings"),
+        ([{"name": "mark_passed", "arguments": {"reason": "ok"}}], ""),
+    ])
+    monkeypatch.setattr(ollama, "maybe_tool_call", fake_call)
+
+    # Make generate_title FAIL loudly if invoked — pins that regenerate
+    # never calls it (the on_complete=="append" gate must hold).
+    title_called = {"count": 0}
+
+    async def boom(*args, **kwargs):
+        title_called["count"] += 1
+        raise AssertionError("generate_title must not fire on regenerate")
+
+    monkeypatch.setattr(ollama, "generate_title", boom)
+    monkeypatch.setattr(
+        ollama, "stream_chat", _scripted_stream_chat(["new reply"]),
+    )
+
+    with open_connection(db_path) as db:
+        state = _make_state(conv_id)
+        history = queries.list_messages(db, conv_id)
+        await agentic_loop._run_agentic_generation(
+            state=state, client=None, db=db,
+            conversation_id=conv_id, model="llama3",
+            history=history[:-1], on_complete="replace",
+        )
+
+    assert title_called["count"] == 0
+    # Sanity: regen still completed via "done".
+    assert "done" in _event_names(state)
+    # No title event landed either.
+    assert "title" not in _event_names(state)
