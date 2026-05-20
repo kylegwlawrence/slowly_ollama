@@ -660,6 +660,27 @@ def render_iteration_start(
     return header_html + summary_html
 
 
+def render_agentic_tool_row_append(
+    *,
+    live_row: ToolRowView,
+    list_id: str,
+) -> str:
+    """Append a live tool row inside an agentic iteration.
+
+    Mirrors :func:`render_tool_card_row_append` but emits ONLY the
+    row HTML — no summary span swap. The iteration-start event
+    already swapped the summary to ``"researching (iteration N)…"``
+    and downstream tool rows within the same iteration don't change
+    that phrasing. Same row template + swap target as the single-
+    agent variant, so the JS tick driver picks the live row up the
+    same way.
+    """
+    return templates.get_template("_tool_row.html").render(
+        row=live_row,
+        swap_oob=f"beforeend:#{list_id}",
+    )
+
+
 def render_findings_row(
     *,
     findings: str,
