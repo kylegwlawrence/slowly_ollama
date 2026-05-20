@@ -1909,6 +1909,135 @@ def test_sidebar_includes_settings_link(
 
 
 # ---------------------------------------------------------------------------
+# Phase 13e: /settings agentic-mode toggle + read-only prompts
+# ---------------------------------------------------------------------------
+
+
+def test_settings_get_shows_agentic_toggle_off_by_default(
+    make_client: ClientFactory,
+) -> None:
+    """A fresh DB renders the agentic-mode section with the toggle off
+    and the prompt block hidden.
+
+    Off state is the v1 default — agentic mode is opt-in via this
+    toggle. Showing the prompts only when the toggle is on keeps the
+    page short for users who don't want the feature.
+    """
+    with make_client(_ollama_unreachable) as client:
+        response = client.get("/settings", headers={"HX-Request": "true"})
+
+    assert response.status_code == 200
+    # The section wrapper is present so the POST handler has something
+    # to swap into.
+    assert 'id="settings-agentic-section"' in response.text
+    # Toggle is unchecked: the input is rendered without the `checked`
+    # attribute. Looking at the small window of text immediately
+    # preceding `name="enabled"` is enough to assert this — full DOM
+    # parsing would be overkill.
+    name_idx = response.text.index('name="enabled"')
+    preceding = response.text[max(0, name_idx - 200):name_idx]
+    assert "checked" not in preceding
+    # Prompts <details> is gated on agentic_mode_on, so it must NOT
+    # render in the off state.
+    assert "agentic-prompts" not in response.text
+
+
+def test_settings_toggle_agentic_mode_on_returns_section_with_prompts(
+    make_client: ClientFactory,
+) -> None:
+    """POST /settings/agentic-mode with `enabled=on` flips the setting
+    and returns the section fragment with the prompt block visible.
+
+    The fragment replaces the section's children via
+    `hx-swap="innerHTML"`; we assert on its rendered shape (toggle is
+    now checked, all three prompts present) rather than on
+    `queries.get_agentic_mode` directly — that round-trip is covered
+    in test_queries.py. Here we care that the route persists the flip
+    AND the response carries the right HTML.
+    """
+    with make_client(_ollama_unreachable) as client:
+        response = client.post(
+            "/settings/agentic-mode",
+            data={"enabled": "on"},
+            headers={"HX-Request": "true"},
+        )
+
+    assert response.status_code == 200
+    # Toggle now reports checked.
+    assert "checked" in response.text
+    # Prompt block now rendered with all three agents labelled.
+    assert "agentic-prompts" in response.text
+    assert "Research agent" in response.text
+    assert "Review agent" in response.text
+    assert "Generation agent" in response.text
+    # Spot-check that the review-agent prompt body actually made it
+    # into the rendered HTML — guards against the template forgetting
+    # to interpolate one of the three slots.
+    assert "mark_passed" in response.text
+
+    db_path = os.environ["DB_PATH"]
+    with open_connection(db_path) as conn:
+        assert queries.get_agentic_mode(conn) is True
+
+
+def test_settings_toggle_agentic_mode_off(
+    make_client: ClientFactory,
+) -> None:
+    """POST without an `enabled` field flips the setting off again.
+
+    Browsers omit unchecked checkboxes entirely from form submissions,
+    so the POST body arrives empty when the user clicks an already-on
+    toggle. The route uses presence-vs-absence as the truth value;
+    this test pins that contract.
+    """
+    db_path = Path(os.environ["DB_PATH"])
+    # initialize_database is normally invoked by the FastAPI lifespan
+    # when `make_client(...)` constructs the TestClient. We pre-seed
+    # the setting BEFORE that, so init the schema ourselves first.
+    initialize_database(db_path)
+    with open_connection(db_path) as conn:
+        queries.set_agentic_mode(conn, True)
+
+    with make_client(_ollama_unreachable) as client:
+        response = client.post(
+            "/settings/agentic-mode",
+            data={},
+            headers={"HX-Request": "true"},
+        )
+
+    assert response.status_code == 200
+    # Toggle rendered unchecked again. Same windowed substring check
+    # as the default-off test above.
+    name_idx = response.text.index('name="enabled"')
+    preceding = response.text[max(0, name_idx - 200):name_idx]
+    assert "checked" not in preceding
+    # Prompt block hidden again.
+    assert "agentic-prompts" not in response.text
+
+    with open_connection(db_path) as conn:
+        assert queries.get_agentic_mode(conn) is False
+
+
+def test_settings_get_with_agentic_on_renders_prompts(
+    make_client: ClientFactory,
+) -> None:
+    """A page reload after enabling agentic mode shows the prompts
+    block — verifying GET /settings reads the persisted setting and
+    threads it into the template, not just the POST handler."""
+    db_path = Path(os.environ["DB_PATH"])
+    initialize_database(db_path)
+    with open_connection(db_path) as conn:
+        queries.set_agentic_mode(conn, True)
+
+    with make_client(_ollama_unreachable) as client:
+        response = client.get("/settings", headers={"HX-Request": "true"})
+
+    assert response.status_code == 200
+    assert "agentic-prompts" in response.text
+    assert "Research agent" in response.text
+
+
+# ---------------------------------------------------------------------------
 # Phase 12d: server-side tool-calling loop
 # ---------------------------------------------------------------------------
 

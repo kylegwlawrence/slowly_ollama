@@ -1057,3 +1057,68 @@ body {
   border-radius: var(--radius-sm);
   font-size: 12px;
 }
+
+/* ===== Phase 13e: agentic-mode settings ================================
+   Settings page section for the global multi-agent toggle. The label
+   wraps its native <input type="checkbox"> so the checkbox and text
+   are aligned on the same baseline; we don't restyle the checkbox
+   itself so it still looks like the system control everywhere. */
+
+.settings__section-help {
+  /* Used by the agentic section's intro paragraph; mirrors the
+     existing `.settings__subtitle` muting but sits inside a section
+     instead of the page header. */
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.agentic-mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  cursor: pointer;
+  font-size: 14px;
+  /* Pico applies a bottom margin to labels; flatten it so the prompts
+     <details> below sits at the section's normal gap rather than an
+     extra label-margin's worth of space. */
+  margin: 0;
+}
+
+.agentic-prompts {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-md);
+}
+
+.agentic-prompts > summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.agentic-prompts__group {
+  margin-top: var(--space-md);
+}
+
+.agentic-prompts__group > h3 {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin: 0 0 var(--space-xs);
+}
+
+.agentic-prompts__text {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-sm) var(--space-md);
+  max-height: 16rem;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  color: var(--text-primary);
+  margin: 0;
+}
