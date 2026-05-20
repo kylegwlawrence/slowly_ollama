@@ -392,6 +392,16 @@ def _build_history_payload(history: list) -> list[dict]:
                 "role": "tool",
                 "content": decode_tool_result(m.content).text,
             })
+        elif m.role in ("research_findings", "review_verdict"):
+            # Phase 13 internal artifacts of the agentic loop. They
+            # belong to the tool-card UI and to the orchestrator's
+            # per-iteration history (built separately in
+            # app/agents/loop.py), NOT to the wire-format history we
+            # ship to Ollama for unrelated calls like title
+            # generation. Drop them silently so a chat that used
+            # agentic mode still title-generates cleanly.
+            skip_next_result = False
+            continue
         else:
             skip_next_result = False
             out.append({"role": m.role, "content": m.content})

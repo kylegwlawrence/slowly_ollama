@@ -19,12 +19,16 @@ from app.queries import (
     count_assistant_messages,
     create_conversation,
     delete_conversation,
+    get_agentic_mode,
     get_conversation,
+    get_setting,
     list_conversations,
     list_messages,
     rename_conversation,
     replace_last_assistant_message,
+    set_agentic_mode,
     set_name_auto,
+    set_setting,
 )
 
 
@@ -331,3 +335,53 @@ def test_count_assistant_messages_zero_for_unknown_id(
 ) -> None:
     """An id with no rows returns 0 cleanly — no LookupError."""
     assert count_assistant_messages(conn, 999) == 0
+
+
+# ---------------------------------------------------------------------------
+# Phase 13a: app_settings helpers
+# ---------------------------------------------------------------------------
+
+
+def test_get_setting_returns_default_when_missing(
+    conn: sqlite3.Connection,
+) -> None:
+    """Unset keys come back as the supplied default — or None."""
+    assert (
+        get_setting(conn, "nonexistent", default="fallback") == "fallback"
+    )
+    assert get_setting(conn, "nonexistent") is None
+
+
+def test_set_setting_upserts(conn: sqlite3.Connection) -> None:
+    """Repeated set_setting calls overwrite the previous value
+    (ON CONFLICT(key) DO UPDATE)."""
+    set_setting(conn, "k", "v1")
+    assert get_setting(conn, "k") == "v1"
+    set_setting(conn, "k", "v2")
+    assert get_setting(conn, "k") == "v2"
+
+
+def test_agentic_mode_default_off(conn: sqlite3.Connection) -> None:
+    """No row → agentic mode is off. Production default before the
+    user touches /settings."""
+    assert get_agentic_mode(conn) is False
+
+
+def test_agentic_mode_round_trip(conn: sqlite3.Connection) -> None:
+    """Toggle on, toggle off, both observable on subsequent reads."""
+    set_agentic_mode(conn, True)
+    assert get_agentic_mode(conn) is True
+    set_agentic_mode(conn, False)
+    assert get_agentic_mode(conn) is False
+
+
+def test_agentic_mode_treats_non_on_values_as_off(
+    conn: sqlite3.Connection,
+) -> None:
+    """Defensive: a row whose value isn't literally "on" reads False.
+    Guards against legacy or hand-edited DBs that wrote something other
+    than the two values set_agentic_mode produces."""
+    set_setting(conn, "agentic_mode", "yes")
+    assert get_agentic_mode(conn) is False
+    set_setting(conn, "agentic_mode", "")
+    assert get_agentic_mode(conn) is False

@@ -72,15 +72,22 @@ def test_initialize_is_idempotent(initialized_db: Path) -> None:
                 "SELECT name FROM sqlite_master WHERE type = 'table';"
             )
         }
-    # Phase 12a added rag_servers; conversations + messages predate it.
-    assert tables == {"conversations", "messages", "rag_servers"}
+    # Phase 12a added rag_servers; phase 13a added app_settings;
+    # conversations + messages predate both.
+    assert tables == {
+        "conversations",
+        "messages",
+        "rag_servers",
+        "app_settings",
+    }
 
 
 def test_role_accepts_documented_roles(initialized_db: Path) -> None:
-    """The four documented roles all insert without error.
+    """All documented roles insert without error.
 
     Phase 12a dropped the SQLite CHECK so this is now a smoke test that
     the schema doesn't reject any of the Python-side `Role` values.
+    Phase 13a adds `research_findings` and `review_verdict`.
     """
     with _open(initialized_db) as conn:
         conn.execute(
@@ -88,7 +95,14 @@ def test_role_accepts_documented_roles(initialized_db: Path) -> None:
             " (id, name, model, created_at, updated_at)"
             " VALUES (1, 'c', 'llama3', '2025-01-01', '2025-01-01');"
         )
-        for role in ("user", "assistant", "tool_call", "tool_result"):
+        for role in (
+            "user",
+            "assistant",
+            "tool_call",
+            "tool_result",
+            "research_findings",
+            "review_verdict",
+        ):
             conn.execute(
                 "INSERT INTO messages"
                 " (conversation_id, role, content, created_at)"
@@ -205,3 +219,12 @@ def test_rag_servers_table_exists_after_init(initialized_db: Path) -> None:
             row[1] for row in conn.execute("PRAGMA table_info(rag_servers);")
         }
     assert cols == {"id", "name", "url", "created_at", "updated_at"}
+
+
+def test_app_settings_table_exists_after_init(initialized_db: Path) -> None:
+    """Phase 13a introduced the app_settings table (key/value store)."""
+    with _open(initialized_db) as conn:
+        cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(app_settings);")
+        }
+    assert cols == {"key", "value"}

@@ -70,6 +70,16 @@ CREATE TABLE IF NOT EXISTS rag_servers (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+-- Phase 13: global key/value app settings. One row per setting.
+-- Currently the only key is `agentic_mode` ("on" or "off"); future
+-- settings reuse the table. No schema migration needed when adding
+-- new keys — they appear/disappear via INSERT/DELETE. Purely
+-- additive on existing DBs (CREATE TABLE IF NOT EXISTS).
+CREATE TABLE IF NOT EXISTS app_settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 
