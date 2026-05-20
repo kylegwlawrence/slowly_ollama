@@ -391,6 +391,16 @@ def group_messages_for_render(messages: list[Message]) -> list[Block]:
                 pending_calls.append((pending_unpaired, m))
                 pending_unpaired = None
             # else: orphan result — silently skip (see docstring rationale)
+        elif m.role in ("research_findings", "review_verdict"):
+            # Phase 13a: these rows are persisted by the agentic
+            # orchestrator (lands in 13d) but the proper rendering —
+            # iteration headers, findings rows, verdict rows inside an
+            # AgenticToolBatchBlock — lands in 13f. Until 13f teaches
+            # this grouper to fold them into the new block type, skip
+            # them here so they don't render as standalone MessageBlocks
+            # (which would dump raw verdict JSON or unformatted findings
+            # text into the chat panel).
+            continue
         else:
             flush_batch()
             blocks.append(MessageBlock(message=m))
