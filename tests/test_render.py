@@ -15,6 +15,10 @@ from app.render import (
     dedup_sources,
     format_elapsed_mm_ss,
     group_messages_for_render,
+    render_done_card_oobs,
+    render_tool_card_initial,
+    render_tool_card_row_append,
+    render_tool_card_row_freeze,
     summary_text,
 )
 from app.tools import Source, ToolResult, encode_tool_result
@@ -605,3 +609,123 @@ def test_historic_row_view_unpaired_call_has_empty_sources() -> None:
     )
     batch = ToolBatchBlock(calls=[(call, None)], turn_id="hist-30")
     assert batch.rows[0].sources == []
+
+
+# ---------------------------------------------------------------------------
+# Tool-card OOB renders (moved from generation.py)
+# ---------------------------------------------------------------------------
+
+
+def _live_row(call_index: int = 0, label: str = 'searching arxiv: "x"') -> ToolRowView:
+    """Build a live (ticking) row view for OOB-render tests."""
+    return ToolRowView(
+        id=f"tool-card-T-row-{call_index}",
+        label=label,
+        elapsed_start_ms=1_000,
+        elapsed_final_ms=None,
+        elapsed_display="0:00",
+    )
+
+
+def test_render_tool_card_initial_emits_full_card_with_beforebegin_swap() -> None:
+    """First call in a turn: full <details> card OOB-inserted as the
+    streaming placeholder's preceding sibling. The summary reads
+    present-tense / singular because only one row exists yet."""
+    html_out = render_tool_card_initial(
+        card_id="tool-card-T",
+        list_id="tool-card-T-list",
+        summary_id="tool-card-T-summary",
+        live_row=_live_row(),
+        conversation_id=42,
+    )
+    # Card shell + the row are both present.
+    assert 'id="tool-card-T"' in html_out
+    assert 'id="tool-card-T-list"' in html_out
+    assert 'id="tool-card-T-summary"' in html_out
+    assert 'id="tool-card-T-row-0"' in html_out
+    # OOB swap is the beforebegin selector with the conversation_id.
+    assert 'hx-swap-oob="beforebegin:#assistant-stream-42"' in html_out
+    # Summary text is present tense, singular.
+    assert "using 1 tool" in html_out
+
+
+def test_render_tool_card_row_append_emits_row_plus_summary_bump() -> None:
+    """Subsequent call: row gets appended into the card's list and the
+    summary span swaps to reflect the new count (pluralized at N >= 2)."""
+    html_out = render_tool_card_row_append(
+        live_row=_live_row(call_index=1),
+        list_id="tool-card-T-list",
+        summary_id="tool-card-T-summary",
+        call_index=1,
+    )
+    # Row append into the existing list.
+    assert 'hx-swap-oob="beforeend:#tool-card-T-list"' in html_out
+    assert 'id="tool-card-T-row-1"' in html_out
+    # Summary swap to "using 2 tools…" (pluralized).
+    assert 'id="tool-card-T-summary"' in html_out
+    assert "using 2 tools" in html_out
+    # No standalone card shell — only the row + span.
+    assert "tool-card-T-list" in html_out  # appears as the swap target
+    # The shell <details id="tool-card-T"> must NOT be re-emitted —
+    # otherwise HTMX would replace the in-DOM card and clobber prior
+    # rows. The card id appears only as part of the row/summary ids.
+    assert '<details id="tool-card-T"' not in html_out
+
+
+def test_render_tool_card_row_freeze_swaps_row_in_place() -> None:
+    """Result arrival: outerHTML swap on the row by id, replacing the
+    live ticking variant with the frozen one (has data-elapsed-final,
+    no data-elapsed-start — JS tick driver skips frozen rows)."""
+    frozen = ToolRowView(
+        id="tool-card-T-row-0",
+        label='searching arxiv: "x"',
+        elapsed_start_ms=None,
+        elapsed_final_ms=8000,
+        elapsed_display="0:08",
+    )
+    html_out = render_tool_card_row_freeze(frozen)
+    assert 'hx-swap-oob="outerHTML"' in html_out
+    assert 'id="tool-card-T-row-0"' in html_out
+    assert 'data-elapsed-final="8000"' in html_out
+    assert "data-elapsed-start" not in html_out
+
+
+def test_render_done_card_oobs_zero_calls_returns_empty() -> None:
+    """A turn with no tool calls produces no card-related OOB fragments.
+    Keeps the done event's payload compact for tool-free assistant turns."""
+    assert render_done_card_oobs(0, {}, "tool-card-T-summary") == ""
+
+
+def test_render_done_card_oobs_empty_in_flight_emits_summary_only() -> None:
+    """Happy path: every call was paired in the loop, so the only
+    OOB fragment is the past-tense summary swap."""
+    html_out = render_done_card_oobs(
+        call_count=2, in_flight={}, summary_id="tool-card-T-summary"
+    )
+    assert 'id="tool-card-T-summary"' in html_out
+    assert 'hx-swap-oob="outerHTML"' in html_out
+    assert "used 2 tools" in html_out
+    # No row OOBs in the empty-in_flight branch.
+    assert "tool-row" not in html_out
+
+
+def test_render_done_card_oobs_freezes_in_flight_rows() -> None:
+    """Defensive: any row still in_flight at done time gets frozen so
+    the JS tick driver stops incrementing it after SSE close. Today's
+    _run_generation always drains in_flight, so this branch is exercised
+    only here — keeps the safety-net coverage live."""
+    in_flight = {
+        "tool-card-T-row-0": {
+            "start_ms": 1_000_000_000,
+            "name": "current_time",
+            "arguments": {"timezone": "UTC"},
+            "label": "calling current_time(timezone='UTC')",
+        },
+    }
+    html_out = render_done_card_oobs(
+        call_count=1, in_flight=in_flight, summary_id="tool-card-T-summary"
+    )
+    assert "used 1 tool" in html_out
+    assert 'id="tool-card-T-row-0"' in html_out
+    assert "data-elapsed-final=" in html_out
+    assert "calling current_time" in html_out

@@ -13,10 +13,13 @@ SQL helpers stay in `app/queries.py`; tool registry / execution stays in
 re-groups them into blocks, templates consume blocks.
 """
 
+import html
+import time
 from dataclasses import dataclass, field
 from typing import ClassVar, Union
 
 from app.queries import Message
+from app.templates import templates
 from app.tools import (
     Source,
     decode_tool_call,
@@ -395,3 +398,145 @@ def group_messages_for_render(messages: list[Message]) -> list[Block]:
     flush_batch()  # end-of-list
 
     return blocks
+
+
+# ---------------------------------------------------------------------------
+# Tool-card OOB rendering — emitted by the producer layer at each phase of
+# the tool-calling turn. Kept here (rather than in app/generation.py) so the
+# template-render dance lives next to the view dataclasses, and so phase 13's
+# agentic-loop producer can call the same helpers instead of duplicating the
+# string-building logic. The producer stays in charge of WHEN to emit; render
+# owns WHAT the OOB fragment looks like.
+# ---------------------------------------------------------------------------
+
+
+def render_tool_card_initial(
+    *,
+    card_id: str,
+    list_id: str,
+    summary_id: str,
+    live_row: ToolRowView,
+    conversation_id: int,
+) -> str:
+    """Render the first tool-call OOB: full <details> card + one row.
+
+    The first call in a turn inserts the entire card as the streaming
+    placeholder's preceding sibling via ``beforebegin:#assistant-stream-
+    {conversation_id}``. Subsequent calls hit
+    :func:`render_tool_card_row_append` instead.
+    """
+    return templates.get_template("_tool_card_shell.html").render(
+        card_id=card_id,
+        list_id=list_id,
+        summary_id=summary_id,
+        summary_text=summary_text(1, done=False),
+        rows=[live_row],
+        swap_oob=f"beforebegin:#assistant-stream-{conversation_id}",
+    )
+
+
+def render_tool_card_row_append(
+    *,
+    live_row: ToolRowView,
+    list_id: str,
+    summary_id: str,
+    call_index: int,
+) -> str:
+    """Render the Nth (N>=2) tool-call OOB: row append + summary bump.
+
+    Subsequent calls in the same turn append into the card's <ul> via
+    ``beforeend:#{list_id}`` and OOB-swap the summary span to reflect
+    the new count. The summary span swap uses ``outerHTML`` so the
+    span element itself is replaced — not just its text.
+
+    ``call_index`` is the zero-based count BEFORE this call landed, so
+    the display count is ``call_index + 1`` (the new total).
+    """
+    row_html = templates.get_template("_tool_row.html").render(
+        row=live_row,
+        swap_oob=f"beforeend:#{list_id}",
+    )
+    summary_html = (
+        f'<span id="{summary_id}" hx-swap-oob="outerHTML">'
+        f"{html.escape(summary_text(call_index + 1, done=False))}"
+        f"</span>"
+    )
+    return row_html + summary_html
+
+
+def render_tool_card_row_freeze(frozen_row: ToolRowView) -> str:
+    """Render the OOB that replaces a live ticking row with its frozen form.
+
+    Emitted on each ``tool-result`` SSE event. ``swap_oob="outerHTML"``
+    targets the row by its id, replacing the live variant (with
+    ``data-elapsed-start``) with the frozen one (with
+    ``data-elapsed-final``). The JS tick driver stops ticking the row
+    on this swap because frozen rows have no ``data-elapsed-start``.
+    """
+    return templates.get_template("_tool_row.html").render(
+        row=frozen_row,
+        swap_oob="outerHTML",
+    )
+
+
+def render_done_card_oobs(
+    call_count: int,
+    in_flight: dict[str, dict],
+    summary_id: str,
+) -> str:
+    """Build the tool-card OOB fragments that ride along with the ``done`` event.
+
+    Two things must happen when the assistant turn finishes:
+
+    1. The card summary span swaps from present-tense / ellipsis
+       ("using N tool(s)…") to past-tense ("used N tool(s)").
+    2. Any rows still missing a paired ``tool_result`` get OOB-replaced
+       with a frozen variant carrying ``data-elapsed-final``. The JS
+       tick driver only ticks rows that have ``data-elapsed-start``
+       AND no ``data-elapsed-final``; once SSE closes (on ``done``)
+       we never get another chance to freeze, so leftover live rows
+       would tick forever.
+
+    The ``in_flight`` branch is defensive — today's
+    ``_run_generation`` awaits each ``run_tool`` synchronously and
+    deletes from ``in_flight`` before the loop continues, so the dict
+    is always empty when this runs. The branch exists for future
+    failure modes where a row might be left live.
+
+    Args:
+        call_count: Number of tool invocations in the turn. ``0`` means
+            no tools were called and this helper returns ``""``.
+        in_flight: Map of row_id → info dict for any unfrozen rows.
+            See above — empty in normal flows.
+        summary_id: DOM id of the card's summary span.
+
+    Returns:
+        Concatenated OOB HTML fragments, ready to prepend to the
+        ``done`` event's primary payload (the persisted message
+        bubble's OOB swap).
+    """
+    if call_count == 0:
+        return ""
+
+    summary_html = (
+        f'<span id="{summary_id}" hx-swap-oob="outerHTML">'
+        f"{html.escape(summary_text(call_count, done=True))}"
+        f"</span>"
+    )
+
+    if not in_flight:
+        return summary_html
+
+    now_ms = int(time.time() * 1000)
+    frozen_rows_html = ""
+    for row_id, info in in_flight.items():
+        duration_ms = max(0, now_ms - info["start_ms"])
+        frozen_row = ToolRowView(
+            id=row_id,
+            label=info["label"],
+            elapsed_start_ms=None,
+            elapsed_final_ms=duration_ms,
+            elapsed_display=format_elapsed_mm_ss(duration_ms),
+        )
+        frozen_rows_html += render_tool_card_row_freeze(frozen_row)
+    return summary_html + frozen_rows_html
