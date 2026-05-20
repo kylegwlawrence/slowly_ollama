@@ -15,4 +15,7 @@
           hx-confirm="Remove RAG server '{{ server.name }}'?">
     <span class="material-symbols-outlined">delete</span>
   </button>
+  <div class="rag-server__description">
+    {{ server.description or "(no description)" }}
+  </div>
 </li>

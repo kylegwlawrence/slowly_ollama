@@ -64,11 +64,12 @@ ON messages (conversation_id, created_at);
 -- base URL up through the source prefix (e.g.
 -- "http://10.0.0.5:8002/arxiv"); the tool appends "/chunks" itself.
 CREATE TABLE IF NOT EXISTS rag_servers (
-    id         INTEGER PRIMARY KEY,
-    name       TEXT NOT NULL UNIQUE,
-    url        TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    id          INTEGER PRIMARY KEY,
+    name        TEXT NOT NULL UNIQUE,
+    url         TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
 );
 
 -- Phase 13: global key/value app settings. One row per setting.
@@ -102,6 +103,26 @@ def _ensure_name_locked_column(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE conversations"
             " ADD COLUMN name_locked INTEGER NOT NULL DEFAULT 0;"
+        )
+
+
+def _ensure_rag_servers_description_column(conn: sqlite3.Connection) -> None:
+    """Backfill the ``description`` column on rag_servers tables that pre-date this phase.
+
+    Mirrors the ``_ensure_name_locked_column`` pattern: ``PRAGMA table_info``
+    check first so the ``ALTER TABLE`` is a no-op on fresh DBs where
+    ``_SCHEMA_SQL`` already created the column.
+
+    Args:
+        conn: Open SQLite connection.
+    """
+    columns = {row[1] for row in conn.execute(
+        "PRAGMA table_info(rag_servers);"
+    )}
+    if "description" not in columns:
+        conn.execute(
+            "ALTER TABLE rag_servers"
+            " ADD COLUMN description TEXT NOT NULL DEFAULT '';"
         )
 
 
@@ -195,5 +216,8 @@ def initialize_database(path: Path | None = None) -> Path:
         # Phase 12a: drop the role CHECK on the legacy messages table
         # so tool_call / tool_result rows can be inserted.
         _migrate_messages_drop_role_check(conn)
+        # RAG source descriptions: backfill the description column on
+        # rag_servers tables created before this phase.
+        _ensure_rag_servers_description_column(conn)
 
     return target

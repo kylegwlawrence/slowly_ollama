@@ -22,13 +22,14 @@ from collections.abc import Iterator
 import pytest
 
 from app import generation, ollama
+from app.tools import TOOLS
 
 
 @pytest.fixture(autouse=True)
 def _isolate_module_state() -> Iterator[None]:
     """Snapshot/restore process-global state around every test.
 
-    Two globals matter today:
+    Three globals matter today:
 
     - ``generation.live_generations`` — dict keyed by conversation_id.
       Retains DONE generations until evicted by a new generation for
@@ -38,6 +39,10 @@ def _isolate_module_state() -> Iterator[None]:
       A test that populates the cache with hand-rolled names would
       leak into a later test that expects to drive its own mock
       transport.
+    - ``TOOLS["query_rag"]`` — ``refresh_query_rag_registration`` can
+      pop ``query_rag`` from the registry as a side effect (when 0
+      servers are configured). Without isolation, a downstream test
+      that expects the tool present would see a missing entry.
 
     Snapshot-and-restore (rather than just clear-on-teardown) means a
     test that *intentionally* pre-populates one of these globals can
@@ -46,7 +51,12 @@ def _isolate_module_state() -> Iterator[None]:
     saved_gens = dict(generation.live_generations)
     generation.live_generations.clear()
     ollama.reset_capability_cache()
+    saved_query_rag = TOOLS.get("query_rag")
     yield
     generation.live_generations.clear()
     generation.live_generations.update(saved_gens)
     ollama.reset_capability_cache()
+    if saved_query_rag is not None:
+        TOOLS["query_rag"] = saved_query_rag
+    else:
+        TOOLS.pop("query_rag", None)
