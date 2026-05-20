@@ -493,12 +493,16 @@ def get_chat_panel_endpoint(
     blocks = render.group_messages_for_render(messages)
 
     # Phase 12g: if a generation is IN PROGRESS for this conv, the
-    # trailing ToolBatchBlock (if any) belongs to the in-progress
-    # turn — exclude it from the panel render so the SSE replay can
-    # rebuild the card via OOB swaps. Setting `pending_stream_url`
-    # makes the chat-panel template render a streaming placeholder
-    # pointing at /stream, where consume_generation attaches as a
-    # fresh consumer.
+    # trailing ToolBatchBlock / AgenticToolBatchBlock (if any) belongs
+    # to the in-progress turn — exclude it from the panel render so
+    # the SSE replay can rebuild the card via OOB swaps. Setting
+    # `pending_stream_url` makes the chat-panel template render a
+    # streaming placeholder pointing at /stream, where
+    # consume_generation attaches as a fresh consumer.
+    #
+    # Phase 13f added the agentic kind; we drop it for the same
+    # reason. The replay path emits a fresh card shell + each row
+    # via SSE, so a server-side render would double up.
     #
     # `live_generations` retains DONE entries for replay-on-slow-
     # reload, so the `not done` check matters — we don't want to
@@ -507,7 +511,7 @@ def get_chat_panel_endpoint(
     pending_stream_url = None
     live = generation.live_generations.get(conversation_id)
     if live is not None and not live.done:
-        if blocks and blocks[-1].kind == "tool_batch":
+        if blocks and blocks[-1].kind in ("tool_batch", "agentic_tool_batch"):
             blocks = blocks[:-1]
         pending_stream_url = f"/chats/{conversation_id}/stream"
 

@@ -29,6 +29,12 @@
         {% set rows = block.rows %}
         {% set swap_oob = none %}
         {% include "_tool_card_shell.html" %}
+      {% elif block.kind == "agentic_tool_batch" %}
+        {# Phase 13f: agentic turns render via their own template.
+           Same outer <details> shell (so `.tool-card` styling
+           applies) plus iteration headers, findings rows, verdict
+           rows, and the max-iterations badge when applicable. #}
+        {% include "_agentic_tool_card.html" %}
       {% else %}
         {% set message = block.message %}
         {% include "_message.html" %}

@@ -14,10 +14,12 @@ re-groups them into blocks, templates consume blocks.
 """
 
 import html
+import json
 import time
 from dataclasses import dataclass, field
 from typing import ClassVar, Union
 
+from app.agents import AGENTIC_ITERATION_CAP
 from app.queries import Message
 from app.templates import templates
 from app.tools import (
@@ -332,75 +334,213 @@ class ToolBatchBlock:
         return summary_text(len(self.calls), done=True)
 
 
-Block = Union[MessageBlock, ToolBatchBlock]
+@dataclass(frozen=True)
+class AgenticIteration:
+    """One research → review iteration in a historic agentic turn.
+
+    Mirrors the live-SSE iteration grouping: research runs tool calls,
+    produces findings, review verdicts the findings. Each iteration's
+    pieces are persisted as separate `messages` rows; this dataclass
+    re-collects them for the historic-render template.
+
+    Attributes:
+        index: 1-based iteration number. Drives the
+            `data-iteration` attribute on the rendered header.
+        tool_calls: (call, result) pairs from research's tool-calling
+            inner loop. Same shape as :attr:`ToolBatchBlock.calls`.
+        findings: The `research_findings` row for this iteration, or
+            None when the iteration never produced one (defensive —
+            shouldn't happen for completed turns).
+        verdict: The `review_verdict` row, or None for the same reason
+            (e.g. process crashed between findings persist and verdict
+            persist).
+    """
+
+    index: int
+    tool_calls: list[tuple[Message, Message | None]]
+    findings: Message | None
+    verdict: Message | None
+
+    @property
+    def verdict_status(self) -> str:
+        """`"passed"` / `"failed"` / `"unknown"` (no verdict row)."""
+        if self.verdict is None:
+            return "unknown"
+        try:
+            payload = json.loads(self.verdict.content)
+        except (json.JSONDecodeError, TypeError):
+            return "unknown"
+        status = payload.get("verdict") if isinstance(payload, dict) else None
+        if status in ("passed", "failed"):
+            return status
+        return "unknown"
+
+    @property
+    def verdict_message(self) -> str:
+        """Human-readable verdict text. Empty when no verdict row or
+        when the persisted JSON is malformed."""
+        if self.verdict is None:
+            return ""
+        try:
+            payload = json.loads(self.verdict.content)
+        except (json.JSONDecodeError, TypeError):
+            return ""
+        if isinstance(payload, dict):
+            message = payload.get("message", "")
+            return str(message) if message is not None else ""
+        return ""
+
+    def row_views(self, card_id: str) -> list["ToolRowView"]:
+        """Materialize ToolRowViews for this iteration's (call, result) pairs.
+
+        Row ids embed the iteration index AND the call-within-iteration
+        index, matching the format the live SSE path uses
+        (`{card_id}-iter-{N}-row-{M}`). Same-id parity matters for a
+        mid-turn reload: the reconstructed historic DOM lines up with
+        any not-yet-consumed SSE events still arriving from the live
+        producer.
+
+        Args:
+            card_id: The owning AgenticToolBatchBlock's card_id, so
+                the row ids are scoped to the same DOM subtree.
+
+        Returns:
+            One ToolRowView per (call, result) pair, in invocation
+            order.
+        """
+        return [
+            _row_view_from_pair(
+                call, result,
+                f"{card_id}-iter-{self.index}-row-{i}",
+            )
+            for i, (call, result) in enumerate(self.tool_calls)
+        ]
+
+
+@dataclass(frozen=True)
+class AgenticToolBatchBlock:
+    """One assistant turn's full agentic loop, grouped for historic replay.
+
+    The companion to :class:`ToolBatchBlock` for the multi-agent flow.
+    The template (`_agentic_tool_card.html`) renders the same outer
+    `<details>` shell as the single-agent card but interleaves
+    iteration headers, findings rows, and verdict rows with the
+    tool-row list.
+
+    Attributes:
+        iterations: AgenticIteration entries in chronological order.
+            At least one entry; max :data:`AGENTIC_ITERATION_CAP` (the
+            orchestrator's hard cap).
+        turn_id: Stable id for DOM ids; `f"hist-{first_row_id}"` so
+            historic and live paths can produce matching card ids when
+            the same turn is re-rendered.
+        kind: Template discriminator. Class-level constant.
+    """
+
+    iterations: list[AgenticIteration] = field(default_factory=list)
+    turn_id: str = ""
+    kind: ClassVar[str] = "agentic_tool_batch"
+
+    @property
+    def max_iterations_reached(self) -> bool:
+        """True when the loop exhausted the cap without a passed verdict.
+
+        The live producer renders a "(max reached)" badge in this case
+        via :func:`render_max_iterations_badge`; the historic template
+        looks at this flag to render the same DOM shape from
+        persisted rows. The condition mirrors the orchestrator's
+        for-else branch — `AGENTIC_ITERATION_CAP` iterations elapsed
+        and the last one's verdict was not `"passed"`.
+        """
+        if len(self.iterations) < AGENTIC_ITERATION_CAP:
+            return False
+        return self.iterations[-1].verdict_status != "passed"
+
+    @property
+    def card_id(self) -> str:
+        return card_id_for(self.turn_id)
+
+    @property
+    def list_id(self) -> str:
+        return f"{self.card_id}-list"
+
+    @property
+    def summary_id(self) -> str:
+        return f"{self.card_id}-summary"
+
+    @property
+    def summary(self) -> str:
+        """Past-tense summary phrase. The "(max reached)" tag is NOT
+        included here — it lives in the sibling max-marker span on
+        the live path; historic replay surfaces it the same way via
+        the template, not by appending to this string."""
+        return agentic_summary_text(
+            len(self.iterations), done=True
+        )
+
+
+Block = Union[MessageBlock, ToolBatchBlock, AgenticToolBatchBlock]
+
+
+_AGENTIC_ROLES = frozenset(
+    {"tool_call", "tool_result", "research_findings", "review_verdict"}
+)
 
 
 def group_messages_for_render(messages: list[Message]) -> list[Block]:
-    """Walk messages, folding tool_call/tool_result runs into ToolBatchBlocks.
+    """Walk messages, folding tool-related runs into the right block type.
+
+    Each contiguous run of tool-related rows (`tool_call` / `tool_result`
+    plus phase 13's `research_findings` / `review_verdict`) is flushed
+    as either a :class:`ToolBatchBlock` (the run has only tool calls
+    and results — single-agent turn) or an :class:`AgenticToolBatchBlock`
+    (the run contains at least one findings or verdict row — agentic
+    turn). The first non-tool row (`user` / `assistant`) flushes the
+    pending run ahead of itself.
 
     Rules:
-        - `tool_call` rows accumulate; each is paired with the *next*
-          `tool_result` row that follows. A trailing unpaired call (the
-          loop bailed) is appended with `result=None`.
-        - The first non-tool row (`user` / `assistant`) flushes the batch
-          ahead of itself.
-        - End-of-list flush: if the message list ends mid-batch (no
-          following assistant row — e.g., a crash mid-turn), the batch is
-          still emitted rather than dropped.
-        - A `tool_result` arriving with no pending call is treated as an
-          orphan and skipped. The streaming loop only persists results
-          after a call, so this shouldn't happen in practice; the
-          permissive behavior keeps replay robust against any historic
-          corruption.
+        - Tool-related rows accumulate into a pending run; a non-tool
+          row triggers a flush + emits a MessageBlock.
+        - End-of-list flush handles crashed-mid-turn conversations
+          (no closing assistant row).
+        - A `tool_result` without a preceding `tool_call` is treated
+          as an orphan and skipped — the streaming loop only writes
+          results after calls, but historic DB corruption shouldn't
+          break the panel render.
 
     Args:
         messages: Rows from `queries.list_messages`, oldest-first.
 
     Returns:
-        A list of `MessageBlock` / `ToolBatchBlock` instances in display
-        order. Empty input yields empty output.
+        A list of `MessageBlock` / `ToolBatchBlock` /
+        `AgenticToolBatchBlock` instances in display order. Empty
+        input yields empty output.
     """
     blocks: list[Block] = []
-    pending_calls: list[tuple[Message, Message | None]] = []
-    pending_unpaired: Message | None = None  # most recent unmatched call
+    pending_rows: list[Message] = []
 
     def flush_batch() -> None:
-        nonlocal pending_calls, pending_unpaired
-        if pending_unpaired is not None:
-            pending_calls.append((pending_unpaired, None))
-            pending_unpaired = None
-        if pending_calls:
-            turn_id = f"hist-{pending_calls[0][0].id}"
-            blocks.append(
-                ToolBatchBlock(calls=list(pending_calls), turn_id=turn_id)
-            )
-            pending_calls = []
+        nonlocal pending_rows
+        if not pending_rows:
+            return
+        has_agentic = any(
+            r.role in ("research_findings", "review_verdict")
+            for r in pending_rows
+        )
+        if has_agentic:
+            blocks.append(_build_agentic_block(pending_rows))
+        else:
+            block = _build_classic_tool_batch(pending_rows)
+            # _build_classic_tool_batch returns None when the run
+            # contained only orphan tool_result rows — see its
+            # docstring. Drop instead of appending an empty card.
+            if block is not None:
+                blocks.append(block)
+        pending_rows = []
 
     for m in messages:
-        if m.role == "tool_call":
-            # Defensive: two consecutive tool_calls without an intervening
-            # result would mean the server batched calls without
-            # persisting paired results. In practice the loop pairs
-            # 1:1, but if we ever see this just push the previous as
-            # unpaired and continue.
-            if pending_unpaired is not None:
-                pending_calls.append((pending_unpaired, None))
-            pending_unpaired = m
-        elif m.role == "tool_result":
-            if pending_unpaired is not None:
-                pending_calls.append((pending_unpaired, m))
-                pending_unpaired = None
-            # else: orphan result — silently skip (see docstring rationale)
-        elif m.role in ("research_findings", "review_verdict"):
-            # Phase 13a: these rows are persisted by the agentic
-            # orchestrator (lands in 13d) but the proper rendering —
-            # iteration headers, findings rows, verdict rows inside an
-            # AgenticToolBatchBlock — lands in 13f. Until 13f teaches
-            # this grouper to fold them into the new block type, skip
-            # them here so they don't render as standalone MessageBlocks
-            # (which would dump raw verdict JSON or unformatted findings
-            # text into the chat panel).
-            continue
+        if m.role in _AGENTIC_ROLES:
+            pending_rows.append(m)
         else:
             flush_batch()
             blocks.append(MessageBlock(message=m))
@@ -408,6 +548,115 @@ def group_messages_for_render(messages: list[Message]) -> list[Block]:
     flush_batch()  # end-of-list
 
     return blocks
+
+
+def _build_classic_tool_batch(
+    rows: list[Message],
+) -> ToolBatchBlock | None:
+    """Pair tool_call rows with the next tool_result; emit a ToolBatchBlock.
+
+    Identical pairing semantics to the pre-13f grouping rules — just
+    factored out so :func:`group_messages_for_render` can pick the
+    block type cleanly. Returns ``None`` (rather than an empty card)
+    when the run contained only orphan tool_result rows, since the
+    pre-13f behaviour skipped those silently and we preserve it here.
+
+    Args:
+        rows: Tool-related rows in chronological order. Caller has
+            already verified there are no findings/verdict rows in
+            this run.
+    """
+    calls: list[tuple[Message, Message | None]] = []
+    pending_call: Message | None = None
+    for m in rows:
+        if m.role == "tool_call":
+            if pending_call is not None:
+                # Defensive: back-to-back calls without an intervening
+                # result mean a batched-calls codepath we don't have
+                # today. Push the previous as unpaired.
+                calls.append((pending_call, None))
+            pending_call = m
+        elif m.role == "tool_result":
+            if pending_call is not None:
+                calls.append((pending_call, m))
+                pending_call = None
+            # else: orphan result — silently skip.
+    if pending_call is not None:
+        calls.append((pending_call, None))
+    if not calls:
+        return None
+    turn_id = f"hist-{calls[0][0].id}"
+    return ToolBatchBlock(calls=calls, turn_id=turn_id)
+
+
+def _build_agentic_block(rows: list[Message]) -> AgenticToolBatchBlock:
+    """Slice rows into AgenticIteration entries.
+
+    Iteration boundaries are `review_verdict` rows: each verdict
+    closes an iteration. Tool calls / results between the previous
+    verdict (or start) and the next `research_findings` row belong to
+    that iteration's `tool_calls` list; the `research_findings` row
+    immediately following the calls becomes the iteration's
+    `findings`; the `review_verdict` row that follows becomes its
+    `verdict`.
+
+    Defensive behaviour for partial rows: if the run ends with
+    pending tool calls, findings, or both — but no closing verdict —
+    we still emit a final iteration with whatever pieces we have
+    (verdict=None). This shouldn't happen on completed turns but
+    keeps the panel rendering robust if a process died mid-loop.
+
+    Args:
+        rows: Tool-related rows in chronological order. Caller has
+            verified that at least one findings or verdict row is
+            present (otherwise this would be a classic batch).
+    """
+    iterations: list[AgenticIteration] = []
+    pending_calls: list[tuple[Message, Message | None]] = []
+    pending_call: Message | None = None
+    current_findings: Message | None = None
+
+    def commit_iteration(verdict: Message | None) -> None:
+        nonlocal pending_calls, pending_call, current_findings
+        if pending_call is not None:
+            pending_calls.append((pending_call, None))
+            pending_call = None
+        iterations.append(AgenticIteration(
+            index=len(iterations) + 1,
+            tool_calls=list(pending_calls),
+            findings=current_findings,
+            verdict=verdict,
+        ))
+        pending_calls = []
+        current_findings = None
+
+    for m in rows:
+        if m.role == "tool_call":
+            if pending_call is not None:
+                pending_calls.append((pending_call, None))
+            pending_call = m
+        elif m.role == "tool_result":
+            if pending_call is not None:
+                pending_calls.append((pending_call, m))
+                pending_call = None
+            # else: orphan result — drop silently.
+        elif m.role == "research_findings":
+            current_findings = m
+        elif m.role == "review_verdict":
+            commit_iteration(m)
+
+    # End-of-rows: if any iteration material is still pending without
+    # a closing verdict, commit it with verdict=None so the panel
+    # surfaces what work the model did before the crash.
+    if (
+        pending_call is not None
+        or pending_calls
+        or current_findings is not None
+    ):
+        commit_iteration(verdict=None)
+
+    turn_id = f"hist-{rows[0].id}"
+    return AgenticToolBatchBlock(iterations=iterations, turn_id=turn_id)
 
 
 # ---------------------------------------------------------------------------
