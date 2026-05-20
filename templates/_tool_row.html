@@ -1,7 +1,7 @@
 {# One row in a tool-usage card's expanded list.
 
-   Three mutually-exclusive states encoded in the `row` (a ToolRowView
-   from app/render.py):
+   Three mutually-exclusive elapsed states encoded in the `row` (a
+   ToolRowView from app/render.py):
 
    - **live ticking** (`elapsed_start_ms` set, `elapsed_final_ms` is None):
      the inline tick driver in _chat_panel.html updates the elapsed span
@@ -13,12 +13,44 @@
    - **historic-unpaired** (both None): the loop bailed before this
      call resolved; shows "?" for elapsed.
 
+   Phase 12h adds an orthogonal source state. When `row.deduped_sources`
+   is non-empty (currently only query_rag produces sources), the row
+   is wrapped in a nested <details> with an expand chevron and an
+   indented sources list. The outer <li> stays the swap unit — same
+   id, data-elapsed-*, and hx-swap-oob — so the SSE OOB replace and
+   the JS tick driver are unaffected. When `row.deduped_sources` is
+   empty (current_time and any future non-source tool, plus pending
+   rows whose results haven't returned yet), the row renders as the
+   original plain <li> with no chevron and no expand affordance.
+
    `swap_oob` is set ONLY when this template is the body of an SSE OOB
    fragment. Forms:
      - "beforeend:#…-list" → append into the card's list (subsequent
        live tool-call events).
      - "true" / "outerHTML" → replace the row with this one (freeze on
        tool-result, or bail-branch freeze on done). #}
+{% if row.deduped_sources %}
+<li id="{{ row.id }}" class="tool-row tool-row--expandable"
+    {%- if row.elapsed_start_ms is not none %} data-elapsed-start="{{ row.elapsed_start_ms }}"{% endif %}
+    {%- if row.elapsed_final_ms is not none %} data-elapsed-final="{{ row.elapsed_final_ms }}"{% endif %}
+    {%- if swap_oob %} hx-swap-oob="{{ swap_oob }}"{% endif %}>
+  <details class="tool-row__details">
+    <summary class="tool-row__summary">
+      <span class="tool-row__label">{{ row.label }}</span>
+      <span class="tool-row__elapsed">{{ row.elapsed_display }}</span>
+      <span class="tool-row__chevron material-symbols-outlined">expand_more</span>
+    </summary>
+    <ul class="tool-row__sources">
+      {% for src in row.deduped_sources %}
+      <li class="tool-row__source">
+        <span class="tool-row__source-title">{{ src.title }}</span>
+        {%- if src.meta %} <span class="tool-row__source-meta">{{ src.meta }}</span>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </details>
+</li>
+{% else %}
 <li id="{{ row.id }}" class="tool-row"
     {%- if row.elapsed_start_ms is not none %} data-elapsed-start="{{ row.elapsed_start_ms }}"{% endif %}
     {%- if row.elapsed_final_ms is not none %} data-elapsed-final="{{ row.elapsed_final_ms }}"{% endif %}
@@ -26,3 +58,4 @@
   <span class="tool-row__label">{{ row.label }}</span>
   <span class="tool-row__elapsed">{{ row.elapsed_display }}</span>
 </li>
+{% endif %}

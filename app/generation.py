@@ -38,7 +38,13 @@ import httpx
 
 from app import ollama, queries, render
 from app.ollama import OllamaProtocolError, OllamaUnavailable
-from app.tools import format_tool_invocation, run_tool, tool_specs_for_ollama
+from app.tools import (
+    decode_tool_result,
+    encode_tool_result,
+    format_tool_invocation,
+    run_tool,
+    tool_specs_for_ollama,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -296,7 +302,14 @@ def _build_history_payload(history: list) -> list[dict]:
             except (json.JSONDecodeError, KeyError, TypeError):
                 continue
         elif m.role == "tool_result":
-            out.append({"role": "tool", "content": m.content})
+            # Decode the JSON envelope so the model sees plain text, not
+            # the {"text": ..., "sources": [...]} structure (phase 12h).
+            # Legacy pre-12h rows are plain text already; decode_tool_result
+            # round-trips them cleanly via its fallback.
+            out.append({
+                "role": "tool",
+                "content": decode_tool_result(m.content).text,
+            })
         else:
             out.append({"role": m.role, "content": m.content})
     return out
@@ -563,7 +576,7 @@ async def _run_generation(
                     db,
                     conversation_id,
                     "tool_result",
-                    content=result,
+                    content=encode_tool_result(result),
                 )
 
                 end_ms = int(time.time() * 1000)
@@ -574,6 +587,7 @@ async def _run_generation(
                     elapsed_start_ms=None,
                     elapsed_final_ms=duration_ms,
                     elapsed_display=render.format_elapsed_mm_ss(duration_ms),
+                    sources=result.sources,
                 )
                 row_html = templates.get_template("_tool_row.html").render(
                     row=frozen_row,

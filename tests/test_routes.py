@@ -2960,3 +2960,113 @@ def test_build_history_payload_skips_malformed_tool_call_rows() -> None:
     assert len(out) == 2
     assert out[0]["role"] == "user"
     assert out[1]["role"] == "assistant"
+
+
+# ---------------------------------------------------------------------------
+# Phase 12h: historic chat panel renders expandable rows for stored RAG calls
+# ---------------------------------------------------------------------------
+
+
+def test_chat_panel_renders_expandable_row_for_persisted_rag_call(
+    make_client: ClientFactory,
+) -> None:
+    """Seed a conversation with a tool_call + JSON-envelope tool_result;
+    GET /chats/{id} renders the row in the expandable form with the
+    source title visible in the HTML.
+
+    Pins the historic-render contract: source metadata survives the
+    full storage round-trip and the resulting fragment carries the
+    `tool-row--expandable` class and the source title substring.
+    """
+    import json as _json
+    import os
+
+    from app import queries
+    from app.connection import open_connection
+    from app.tools import Source, ToolResult, encode_tool_result
+
+    with make_client(_ollama_unreachable) as client:
+        chat_id = _create_chat_db_only("ask about Transformers")
+
+        db_path = os.environ["DB_PATH"]
+        with open_connection(db_path) as conn:
+            queries.append_message(
+                conn, chat_id, "tool_call",
+                _json.dumps({
+                    "name": "query_rag",
+                    "arguments": {
+                        "source": "arxiv",
+                        "query": "attention is all you need",
+                    },
+                }),
+            )
+            queries.append_message(
+                conn, chat_id, "tool_result",
+                encode_tool_result(ToolResult(
+                    text="[1] Attention Is All You Need (§Introduction)\n    body",
+                    sources=[
+                        Source(title="Attention Is All You Need",
+                               section="Introduction"),
+                    ],
+                )),
+            )
+            queries.append_message(
+                conn, chat_id, "assistant",
+                "It's a transformer paper from 2017.",
+            )
+
+        response = client.get(f"/chats/{chat_id}")
+
+    text = response.text
+    # Aggregated card is present (phase 12e baseline) …
+    assert 'class="tool-card"' in text
+    # … and the row is in the expandable form for the RAG call.
+    assert "tool-row--expandable" in text
+    # The decoded source title makes it into the rendered HTML.
+    assert "Attention Is All You Need" in text
+    # Single chunk with section → `(§Introduction)` meta suffix.
+    assert "(§Introduction)" in text
+
+
+def test_chat_panel_renders_plain_row_for_legacy_plain_text_tool_result(
+    make_client: ClientFactory,
+) -> None:
+    """Backwards compat: a pre-12h conversation (plain-text content
+    on the tool_result row) renders with the plain non-expandable
+    row form. No chevron, no <details>. Old conversations stay
+    readable."""
+    import json as _json
+    import os
+
+    from app import queries
+    from app.connection import open_connection
+
+    with make_client(_ollama_unreachable) as client:
+        chat_id = _create_chat_db_only("legacy chat")
+
+        db_path = os.environ["DB_PATH"]
+        with open_connection(db_path) as conn:
+            queries.append_message(
+                conn, chat_id, "tool_call",
+                _json.dumps({
+                    "name": "query_rag",
+                    "arguments": {"source": "arxiv", "query": "x"},
+                }),
+            )
+            # The pre-12h shape: plain formatted citation text, no envelope.
+            queries.append_message(
+                conn, chat_id, "tool_result",
+                "[1] Old Paper (§Intro)\n    legacy body text",
+            )
+            queries.append_message(
+                conn, chat_id, "assistant", "ok",
+            )
+
+        response = client.get(f"/chats/{chat_id}")
+
+    text = response.text
+    # Card + row still render.
+    assert 'class="tool-card"' in text
+    # But NOT the expandable form — no sources were stored.
+    assert "tool-row--expandable" not in text
+    assert "tool-row__chevron" not in text

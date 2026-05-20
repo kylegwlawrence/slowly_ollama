@@ -5,7 +5,16 @@ from pathlib import Path
 import httpx
 import pytest
 
-from app.tools import TOOLS, run_tool, tool, tool_specs_for_ollama
+from app.tools import (
+    TOOLS,
+    Source,
+    ToolResult,
+    decode_tool_result,
+    encode_tool_result,
+    run_tool,
+    tool,
+    tool_specs_for_ollama,
+)
 
 
 def test_decorator_registers_with_inferred_schema() -> None:
@@ -70,18 +79,41 @@ def test_tool_specs_for_ollama_shape() -> None:
 
 @pytest.mark.asyncio
 async def test_run_tool_dispatches_sync_function() -> None:
+    """A sync tool returning a plain value is wrapped in ToolResult."""
     @tool
     def double(n: int) -> int:
         """Double n."""
         return n * 2
 
-    assert await run_tool("double", {"n": 21}) == "42"
+    result = await run_tool("double", {"n": 21})
+    assert isinstance(result, ToolResult)
+    assert result.text == "42"
+    assert result.sources == []
+
+
+@pytest.mark.asyncio
+async def test_run_tool_passes_through_tool_result_returns() -> None:
+    """A tool that already returns a ToolResult comes through verbatim,
+    sources intact."""
+    @tool
+    def with_sources() -> ToolResult:
+        """Returns a structured result."""
+        return ToolResult(
+            text="formatted",
+            sources=[Source(title="T", section="S")],
+        )
+
+    result = await run_tool("with_sources", {})
+    assert result.text == "formatted"
+    assert result.sources == [Source(title="T", section="S")]
 
 
 @pytest.mark.asyncio
 async def test_run_tool_unknown_returns_error_string() -> None:
     result = await run_tool("nonexistent", {})
-    assert "not registered" in result
+    assert isinstance(result, ToolResult)
+    assert "not registered" in result.text
+    assert result.sources == []
 
 
 @pytest.mark.asyncio
@@ -92,8 +124,26 @@ async def test_run_tool_arg_mismatch_returns_error_string() -> None:
         return x
 
     result = await run_tool("need_x", {"wrong_name": 1})
-    # Returns explanatory string, doesn't raise.
-    assert "rejected arguments" in result
+    # Returns explanatory ToolResult, doesn't raise.
+    assert "rejected arguments" in result.text
+    assert result.sources == []
+
+
+@pytest.mark.asyncio
+async def test_run_tool_internal_exception_returns_tool_result() -> None:
+    """A tool that raises mid-run produces a ToolResult with an
+    error explanation rather than letting the exception escape into
+    the SSE stream."""
+    @tool
+    def boom() -> str:
+        """Always raises."""
+        raise RuntimeError("kaboom")
+
+    result = await run_tool("boom", {})
+    assert isinstance(result, ToolResult)
+    assert "failed" in result.text
+    assert "kaboom" in result.text
+    assert result.sources == []
 
 
 @pytest.mark.asyncio
@@ -102,8 +152,79 @@ async def test_current_time_baseline() -> None:
     from app.tools import builtins  # noqa: F401 — registers current_time
     result = await run_tool("current_time", {"timezone": "UTC"})
     # ISO format starts with YYYY-
-    assert result[:4].isdigit()
-    assert result[4] == "-"
+    assert result.text[:4].isdigit()
+    assert result.text[4] == "-"
+    # current_time has no sources.
+    assert result.sources == []
+
+
+# ---------------------------------------------------------------------------
+# ToolResult round-trip encoding (phase 12h)
+# ---------------------------------------------------------------------------
+
+
+def test_encode_decode_tool_result_round_trip_empty_sources() -> None:
+    """A ToolResult with no sources round-trips through the JSON envelope."""
+    original = ToolResult(text="hello", sources=[])
+    decoded = decode_tool_result(encode_tool_result(original))
+    assert decoded.text == "hello"
+    assert decoded.sources == []
+
+
+def test_encode_decode_tool_result_round_trip_populated_sources() -> None:
+    """Title + section round-trip through encode/decode unchanged."""
+    original = ToolResult(
+        text="[1] Foo (§Intro)",
+        sources=[
+            Source(title="Foo", section="Intro"),
+            Source(title="Bar", section=None),
+        ],
+    )
+    decoded = decode_tool_result(encode_tool_result(original))
+    assert decoded == original
+
+
+def test_decode_tool_result_plain_text_backwards_compat() -> None:
+    """Pre-12h DB rows store plain text — decoding falls back to
+    ToolResult(text=content, sources=[]) so old conversations render."""
+    decoded = decode_tool_result("just some text the model wrote")
+    assert decoded.text == "just some text the model wrote"
+    assert decoded.sources == []
+
+
+def test_decode_tool_result_malformed_json_falls_back() -> None:
+    """Non-JSON content (e.g. partial brace) decodes as plain text."""
+    decoded = decode_tool_result("{not valid json")
+    assert decoded.text == "{not valid json"
+    assert decoded.sources == []
+
+
+def test_decode_tool_result_json_without_envelope_keys_falls_back() -> None:
+    """Valid JSON that isn't our envelope still decodes to plain text —
+    handles pathological legacy rows like '[1, 2, 3]'."""
+    decoded = decode_tool_result('{"unrelated": "object"}')
+    # Body is preserved verbatim as text; sources defaults to empty.
+    assert decoded.text == '{"unrelated": "object"}'
+    assert decoded.sources == []
+
+
+def test_decode_tool_result_partial_source_entries_skipped() -> None:
+    """Defensive: malformed source entries (e.g. non-dict) are skipped
+    rather than crashing the decode. Keeps render robust against
+    historical data drift."""
+    raw = '{"text": "x", "sources": [{"title": "ok", "section": null}, "garbage", null]}'
+    decoded = decode_tool_result(raw)
+    assert decoded.text == "x"
+    # Only the dict entry survives.
+    assert decoded.sources == [Source(title="ok", section=None)]
+
+
+def test_decode_tool_result_missing_title_falls_back_to_untitled() -> None:
+    """If a source dict has no title key, decode substitutes the
+    same "(untitled)" placeholder the tool would have used."""
+    raw = '{"text": "x", "sources": [{"section": "S"}]}'
+    decoded = decode_tool_result(raw)
+    assert decoded.sources == [Source(title="(untitled)", section="S")]
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +267,8 @@ async def test_query_rag_unknown_source_returns_message(
     result = await run_tool(
         "query_rag", {"source": "missing", "query": "hi"}
     )
-    assert "Unknown RAG source 'missing'" in result
+    assert "Unknown RAG source 'missing'" in result.text
+    assert result.sources == []
 
 
 @pytest.mark.asyncio
@@ -159,7 +281,8 @@ async def test_query_rag_empty_query_returns_message(
     result = await run_tool(
         "query_rag", {"source": "arxiv", "query": "   "}
     )
-    assert "cannot be empty" in result
+    assert "cannot be empty" in result.text
+    assert result.sources == []
 
 
 def test_format_chunks_renders_citation_block() -> None:
@@ -299,9 +422,106 @@ async def test_query_rag_returns_formatted_chunks_on_success(
     assert captured["url"].startswith("http://fake/arxiv/chunks")
     assert "q=what+is+x" in captured["url"]
     assert "top_k=5" in captured["url"]
-    # The body of the response made it through _format_chunks.
-    assert "[1] Doc (§1)" in result
-    assert "answer" in result
+    # The body of the response made it through _format_chunks (model-facing).
+    assert "[1] Doc (§1)" in result.text
+    assert "answer" in result.text
+    # Phase 12h: structured sources also surface alongside the text.
+    assert result.sources == [Source(title="Doc", section="1")]
+
+
+@pytest.mark.parametrize(
+    "status_code,expected_substring",
+    [
+        (503, "unavailable"),
+        (500, "failed (HTTP 500)"),
+        (502, "failed (HTTP 502)"),
+        (400, "rejected the query (HTTP 400)"),
+        (404, "rejected the query (HTTP 404)"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_query_rag_http_error_status_returns_tool_result(
+    rag_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status_code: int,
+    expected_substring: str,
+) -> None:
+    """Each HTTP error branch (503 / 5xx / 4xx) returns a ToolResult
+    with an explanatory text and no sources — pins the refactor from
+    plain-string returns to structured ToolResult."""
+    from app import rag_servers as _rs
+    from app.connection import open_connection
+    from app.tools import rag as _rag  # noqa: F401 — registers query_rag
+    from app.tools.rag import query_rag
+
+    with open_connection() as conn:
+        _rs.create_server(conn, "arxiv", "http://fake/arxiv")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code)
+
+    _real_async_client = httpx.AsyncClient
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs):
+            self._client = _real_async_client(
+                transport=httpx.MockTransport(handler)
+            )
+
+        async def __aenter__(self):
+            return self._client
+
+        async def __aexit__(self, *exc):
+            await self._client.aclose()
+
+    monkeypatch.setattr(_rag.httpx, "AsyncClient", _FakeClient)
+
+    result = await query_rag(source="arxiv", query="x")
+    assert isinstance(result, ToolResult)
+    assert expected_substring in result.text
+    assert result.sources == []
+
+
+@pytest.mark.asyncio
+async def test_query_rag_non_json_response_returns_tool_result(
+    rag_db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 200 body that isn't JSON (e.g. an HTML error page mistakenly
+    served as 200) decodes to a ToolResult — the raw body is NOT
+    surfaced into the chat."""
+    from app import rag_servers as _rs
+    from app.connection import open_connection
+    from app.tools import rag as _rag  # noqa: F401 — registers query_rag
+    from app.tools.rag import query_rag
+
+    with open_connection() as conn:
+        _rs.create_server(conn, "arxiv", "http://fake/arxiv")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"<html>not json</html>")
+
+    _real_async_client = httpx.AsyncClient
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs):
+            self._client = _real_async_client(
+                transport=httpx.MockTransport(handler)
+            )
+
+        async def __aenter__(self):
+            return self._client
+
+        async def __aexit__(self, *exc):
+            await self._client.aclose()
+
+    monkeypatch.setattr(_rag.httpx, "AsyncClient", _FakeClient)
+
+    result = await query_rag(source="arxiv", query="x")
+    assert isinstance(result, ToolResult)
+    assert "non-JSON response" in result.text
+    # The raw HTML body must not leak into the chat.
+    assert "<html>" not in result.text
+    assert result.sources == []
 
 
 @pytest.mark.asyncio
@@ -337,7 +557,8 @@ async def test_query_rag_handles_unreachable_server(
     monkeypatch.setattr(_rag.httpx, "AsyncClient", _FakeClient)
 
     result = await query_rag(source="arxiv", query="x")
-    assert "unreachable" in result
+    assert "unreachable" in result.text
+    assert result.sources == []
 
 
 def test_refresh_query_rag_source_description_injects_names(

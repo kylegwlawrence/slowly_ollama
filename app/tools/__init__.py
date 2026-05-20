@@ -16,10 +16,104 @@ named tool call to its function).
 """
 
 import inspect
+import json
 import re
 import typing
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+
+@dataclass(frozen=True)
+class Source:
+    """One retrieved chunk's UI-facing metadata.
+
+    Attributes:
+        title: Document title. The caller normalizes a missing value to
+            ``"(untitled)"`` before constructing; this field is never
+            None at the storage boundary.
+        section: Optional section heading. ``None`` when absent — the
+            UI omits the ``"(§Section)"`` suffix in that case.
+    """
+
+    title: str
+    section: str | None
+
+
+@dataclass(frozen=True)
+class ToolResult:
+    """Structured return value for tools that surface sources to the UI.
+
+    The chat model only ever sees ``.text`` — sources are a UI-only
+    concern, carried alongside so the tool card can render the
+    retrieved titles without re-parsing the formatted citation block.
+    Plain-string returns from tools are wrapped by :func:`run_tool`
+    so the rest of the system handles a single shape.
+
+    Attributes:
+        text: What the model sees as the tool's output. For
+            ``query_rag`` this is the formatted citation block.
+        sources: Zero-or-more entries used to render the expandable
+            sub-list. Empty for non-source tools (e.g. ``current_time``).
+    """
+
+    text: str
+    sources: list[Source] = field(default_factory=list)
+
+
+def encode_tool_result(result: ToolResult) -> str:
+    """Serialize a :class:`ToolResult` for storage in ``messages.content``.
+
+    The envelope is ``{"text": ..., "sources": [...]}`` — paired with
+    :func:`decode_tool_result` on the read side. Sources are emitted
+    even when empty so the on-disk shape stays uniform across rows.
+
+    Args:
+        result: The tool's return value.
+
+    Returns:
+        A JSON string suitable for the messages table's ``content``
+        column.
+    """
+    return json.dumps({
+        "text": result.text,
+        "sources": [
+            {"title": s.title, "section": s.section} for s in result.sources
+        ],
+    })
+
+
+def decode_tool_result(content: str) -> ToolResult:
+    """Inverse of :func:`encode_tool_result`, with plain-text fallback.
+
+    Pre-12h DB rows store plain text (the formatted citation block).
+    Any non-JSON content, or JSON without the envelope keys, decodes
+    to ``ToolResult(text=content, sources=[])`` so old conversations
+    still render unchanged.
+
+    Args:
+        content: The raw ``messages.content`` string for a
+            ``tool_result`` row.
+
+    Returns:
+        A ``ToolResult`` — never raises. Sources is ``[]`` for legacy
+        rows and for malformed envelopes.
+    """
+    try:
+        payload = json.loads(content)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return ToolResult(text=content, sources=[])
+    if not isinstance(payload, dict) or "text" not in payload:
+        return ToolResult(text=content, sources=[])
+    raw = payload.get("sources") or []
+    sources = [
+        Source(
+            title=s.get("title", "(untitled)"),
+            section=s.get("section"),
+        )
+        for s in raw
+        if isinstance(s, dict)
+    ]
+    return ToolResult(text=payload["text"], sources=sources)
 
 
 @dataclass(frozen=True)
@@ -204,36 +298,39 @@ def tool_specs_for_ollama() -> list[dict]:
     ]
 
 
-async def run_tool(name: str, args: dict) -> str:
+async def run_tool(name: str, args: dict) -> ToolResult:
     """Look up a tool by name and call it with the given args.
 
+    Always returns a :class:`ToolResult`. Tools that return plain
+    strings (or anything not already a ``ToolResult``) are wrapped
+    here so the caller — the generation loop — handles exactly one
+    shape regardless of the tool's signature.
+
     Args:
-        name: The tool's registered name (from `@tool`).
+        name: The tool's registered name (from ``@tool``).
         args: The argument dict the model sent in its tool_call.
 
     Returns:
-        Whatever the tool returns, stringified. Returns an
-        explanatory error string for unknown tools or argument
-        mismatches — never raises (the caller stores the result
-        verbatim as a tool_result message; raising would break
-        the SSE stream).
+        A :class:`ToolResult`. Errors (unknown tool, argument
+        mismatch, exception from inside the tool) come back as
+        ``ToolResult(text="...", sources=[])`` so the caller can
+        persist + feed the explanation back to the model without
+        special-casing. Never raises.
     """
     spec = TOOLS.get(name)
     if spec is None:
-        return f"Tool '{name}' is not registered."
+        return ToolResult(text=f"Tool '{name}' is not registered.")
     try:
         result = spec.func(**args)
-        # Unify sync + async callables: if the function returned a
-        # coroutine/awaitable, await it; otherwise use the value as-is.
         if inspect.isawaitable(result):
             result = await result
-        return str(result)
+        if isinstance(result, ToolResult):
+            return result
+        return ToolResult(text=str(result))
     except TypeError as e:
-        # Argument mismatch — the model passed wrong kwargs.
-        return f"Tool '{name}' rejected arguments: {e}"
+        return ToolResult(text=f"Tool '{name}' rejected arguments: {e}")
     except Exception as e:
-        # Tool itself raised; surface to the model but don't crash.
-        return f"Tool '{name}' failed: {e}"
+        return ToolResult(text=f"Tool '{name}' failed: {e}")
 
 
 def format_tool_invocation(name: str, arguments: dict) -> str:

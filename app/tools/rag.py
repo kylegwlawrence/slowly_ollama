@@ -19,7 +19,7 @@ import httpx
 
 from app import rag_servers as _rag_servers_module
 from app.connection import open_connection
-from app.tools import tool
+from app.tools import Source, ToolResult, tool
 
 # ---------------------------------------------------------------------------
 # Hardcoded caps — keep RAG output from blowing the model's context window.
@@ -109,7 +109,7 @@ def _format_chunks(items: list[dict], used_dense: bool) -> str:
 
 
 @tool
-async def query_rag(source: str, query: str) -> str:
+async def query_rag(source: str, query: str) -> ToolResult:
     """Retrieve passages from a configured RAG source.
 
     Args:
@@ -124,9 +124,8 @@ async def query_rag(source: str, query: str) -> str:
 
     if not query.strip():
         # Defensive: an empty query is rejected here rather than sent on
-        # to the RAG server, where it'd produce a 400 anyway. Returning
-        # a plain string keeps the run_tool contract (never raise).
-        return "Tool query_rag: 'query' cannot be empty."
+        # to the RAG server, where it'd produce a 400 anyway.
+        return ToolResult(text="Tool query_rag: 'query' cannot be empty.")
 
     # Look up the source name → URL mapping fresh on each call so a
     # newly-added server is usable immediately (no caching to stale).
@@ -138,9 +137,11 @@ async def query_rag(source: str, query: str) -> str:
         # Pass the configured names back so the model can self-correct
         # on the next tool call instead of guessing blindly.
         names = ", ".join(by_name.keys()) or "(none configured)"
-        return (
-            f"Unknown RAG source '{source}'."
-            f" Configured sources: {names}"
+        return ToolResult(
+            text=(
+                f"Unknown RAG source '{source}'."
+                f" Configured sources: {names}"
+            )
         )
 
     # The stored URL is the source-prefixed base (e.g.
@@ -157,9 +158,11 @@ async def query_rag(source: str, query: str) -> str:
         # Include the configured source list so the model can self-correct
         # on its next tool call rather than guessing a source name.
         names = ", ".join(by_name.keys()) or "(none configured)"
-        return (
-            f"RAG source '{source}' unreachable."
-            f" Configured sources: {names}"
+        return ToolResult(
+            text=(
+                f"RAG source '{source}' unreachable."
+                f" Configured sources: {names}"
+            )
         )
 
     # Status code branches: 503 is the documented "indexes not built"
@@ -167,16 +170,22 @@ async def query_rag(source: str, query: str) -> str:
     # rejection (we already validated `query` non-empty, so 400 here
     # would be a contract bug on the RAG side rather than ours).
     if response.status_code == 503:
-        return (
-            f"RAG source '{source}' unavailable"
-            f" (server reports indexes not built)."
+        return ToolResult(
+            text=(
+                f"RAG source '{source}' unavailable"
+                f" (server reports indexes not built)."
+            )
         )
     if response.status_code >= 500:
-        return f"RAG source '{source}' failed (HTTP {response.status_code})."
+        return ToolResult(
+            text=f"RAG source '{source}' failed (HTTP {response.status_code})."
+        )
     if response.status_code >= 400:
-        return (
-            f"RAG source '{source}' rejected the query"
-            f" (HTTP {response.status_code})."
+        return ToolResult(
+            text=(
+                f"RAG source '{source}' rejected the query"
+                f" (HTTP {response.status_code})."
+            )
         )
 
     try:
@@ -188,9 +197,21 @@ async def query_rag(source: str, query: str) -> str:
     except ValueError:
         # response.json() raises ValueError on a non-JSON body —
         # surface it without dumping the raw body into the chat.
-        return f"RAG source '{source}' returned non-JSON response."
+        return ToolResult(
+            text=f"RAG source '{source}' returned non-JSON response."
+        )
 
-    return _format_chunks(items, used_dense)
+    sources = [
+        Source(
+            title=item.get("title") or "(untitled)",
+            section=item.get("section"),
+        )
+        for item in items
+    ]
+    return ToolResult(
+        text=_format_chunks(items, used_dense),
+        sources=sources,
+    )
 
 
 def refresh_query_rag_source_description() -> None:
