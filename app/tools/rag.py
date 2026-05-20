@@ -15,6 +15,8 @@ This module is imported (via ``app.routes``) at app startup so the
 any code reads from the registry.
 """
 
+from contextlib import closing
+
 import httpx
 
 from app import rag_servers as _rag_servers_module
@@ -45,13 +47,15 @@ def _list_source_names() -> list[str]:
     because this helper is called from
     ``refresh_query_rag_source_description()``, which runs synchronously
     inside a route handler — it doesn't have the FastAPI request scope
-    handy, and the work is small (one SELECT). The connection is closed
-    by the ``with`` block on exit.
+    handy, and the work is small (one SELECT). ``contextlib.closing``
+    wraps ``open_connection()`` because ``sqlite3.Connection.__exit__``
+    only commits/rolls back — it does NOT close. Without ``closing``
+    the handle would leak until GC.
 
     Returns:
         Source names in stable insertion order.
     """
-    with open_connection() as conn:
+    with closing(open_connection()) as conn:
         return [s.name for s in _rag_servers_module.list_servers(conn)]
 
 
@@ -129,7 +133,9 @@ async def query_rag(source: str, query: str) -> ToolResult:
 
     # Look up the source name → URL mapping fresh on each call so a
     # newly-added server is usable immediately (no caching to stale).
-    with open_connection() as conn:
+    # ``closing`` because sqlite3.Connection's context manager only
+    # commits/rolls back — not closes. See ``_list_source_names``.
+    with closing(open_connection()) as conn:
         servers = _rag_servers_module.list_servers(conn)
     by_name = {s.name: s for s in servers}
     server = by_name.get(source)
