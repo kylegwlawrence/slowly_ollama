@@ -29,18 +29,16 @@
    `rename_chat_endpoint`, `get_chat_item_endpoint` — don't, hence the
    `|default(none)` guard to avoid a Jinja `UndefinedError`.
 
-   `oob_swap` carries the full `hx-swap-oob` value when this row is
-   piggy-backing on another response — pass it as a string so the
-   template can emit a single attribute (two conditionals on the same
-   attribute name would let the browser silently drop the second).
-   Two shapes in use today:
-   - `"afterbegin:#chats-list"` — POST /chats prepends the new row
-     into the sidebar. The explicit `<swap-style>:<selector>` form is
-     required because HTMX's bare values only target by id;
-     `afterbegin` needs us to name `#chats-list` as the target.
-   - `"true"` — phase 11d's auto-titler replaces the existing row in
-     place. Bare `hx-swap-oob="true"` is HTMX's "match-by-id +
-     outerHTML swap" mode. #}
+   `oob_swap` carries an `hx-swap-oob` value when this row is piggy-
+   backing on another response. CONTRACT: only pass outerHTML-style
+   values (`"true"`, `"outerHTML"`, `"outerHTML:#id"`). Non-outerHTML
+   modes (`afterbegin:…`, `beforeend:…`, etc.) would unwrap this <li>
+   and only insert its children — see docs/CONVENTIONS.md ("Non-
+   outerHTML OOB swaps unwrap their root"). Callers needing insert-
+   position semantics must put the attribute on a wrapper element
+   instead; see `create_chat_endpoint` in app/routes.py for that
+   pattern. The auto-titler in app/generation.py passes `"true"`
+   here (match-by-id + outerHTML swap to replace the renamed row). #}
 <li id="chat-{{ chat.id }}" class="chat-item" data-chat-id="{{ chat.id }}"
     {%- if chat.id == active_chat_id|default(none) %} aria-current="page"{% endif %}
     {%- if oob_swap is defined and oob_swap %} hx-swap-oob="{{ oob_swap }}"{% endif %}>

@@ -442,17 +442,13 @@ async def create_chat_endpoint(
         active_chat_id=chat.id,
     )
 
-    # New sidebar row, OOB-prepended to `#chats-list`. The OOB
-    # attribute lives on a wrapping <ul>, not on the <li> itself —
-    # HTMX's non-outerHTML OOB modes (afterbegin / beforeend / etc.)
-    # insert the OOB element's CHILDREN into the target rather than
-    # the OOB element itself (see He() + u() in htmx.min.js: for
-    # non-outerHTML styles, `t = p(n)` sets the source to the OOB
-    # element directly, and the swap loop then iterates `t.childNodes`).
-    # Without the <ul> wrapper, the <li class="chat-item"> would be
-    # unwrapped and only its inner <a>/<div> would land in
-    # #chats-list — the new row would render unstyled until a reload
-    # re-renders the sidebar from the server.
+    # New sidebar row, OOB-prepended to `#chats-list`. The OOB attribute
+    # lives on a wrapping <ul>, not on the <li>, because HTMX's non-
+    # outerHTML OOB modes insert the OOB element's CHILDREN into the
+    # target — a top-level <li hx-swap-oob="afterbegin:..."> would be
+    # unwrapped, only its inner <a>/<div> would land in #chats-list,
+    # and the new row would render unstyled until reload. See
+    # docs/CONVENTIONS.md ("Non-outerHTML OOB swaps unwrap their root").
     item_html = templates.get_template("_chat_item.html").render(
         chat=chat,
         active_chat_id=chat.id,
