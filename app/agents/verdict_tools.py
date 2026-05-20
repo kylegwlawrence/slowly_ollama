@@ -95,6 +95,22 @@ REVIEW_TOOL_SPECS: list[dict] = [
 ]
 
 
+def _safe_arg(call: dict, key: str) -> str:
+    """Extract a string argument from a tool call, tolerating malformed shapes.
+
+    Returns ``""`` when ``arguments`` is missing, ``None``, or not a
+    dict (e.g., a misbehaving model emits ``"arguments": ["reason",
+    "ok"]``). Otherwise returns ``str(value)`` for the named key
+    (defaults to ``""``). Coercion via ``str()`` guards against the
+    rare case where the model emits a non-string value for an
+    argument the spec declares as string-typed.
+    """
+    args = call.get("arguments")
+    if not isinstance(args, dict):
+        return ""
+    return str(args.get(key, ""))
+
+
 def parse_verdict(tool_calls: list[dict]) -> VerdictDecision:
     """Map a list of tool_calls from ``maybe_tool_call`` to a verdict.
 
@@ -116,12 +132,16 @@ def parse_verdict(tool_calls: list[dict]) -> VerdictDecision:
     """
     for call in tool_calls:
         if call.get("name") == "mark_passed":
-            reason = (call.get("arguments") or {}).get("reason", "")
-            return VerdictDecision(verdict="passed", message=str(reason))
+            return VerdictDecision(
+                verdict="passed",
+                message=_safe_arg(call, "reason"),
+            )
     for call in tool_calls:
         if call.get("name") == "request_more_research":
-            feedback = (call.get("arguments") or {}).get("feedback", "")
-            return VerdictDecision(verdict="failed", message=str(feedback))
+            return VerdictDecision(
+                verdict="failed",
+                message=_safe_arg(call, "feedback"),
+            )
     return VerdictDecision(
         verdict="failed",
         message=(
