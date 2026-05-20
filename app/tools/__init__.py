@@ -116,6 +116,60 @@ def decode_tool_result(content: str) -> ToolResult:
     return ToolResult(text=payload["text"], sources=sources)
 
 
+def encode_tool_call(name: str, arguments: dict) -> str:
+    """Serialize a tool call for storage in ``messages.content``.
+
+    Paired with :func:`decode_tool_call`. The shape is the same as the
+    JSON the chat model emits in its ``tool_calls`` list, flattened to
+    ``{"name": ..., "arguments": ...}`` (Ollama wraps each call as
+    ``{"function": {"name", "arguments"}}`` on the wire; the wrapper is
+    unwrapped at the boundary in ``ollama.maybe_tool_call``).
+
+    Args:
+        name: The tool's registered name.
+        arguments: The argument dict the model sent.
+
+    Returns:
+        A JSON string suitable for the messages table's ``content``
+        column.
+    """
+    return json.dumps({"name": name, "arguments": arguments})
+
+
+def decode_tool_call(content: str) -> tuple[str, dict] | None:
+    """Inverse of :func:`encode_tool_call`, returning ``None`` on corrupt rows.
+
+    Distinguishes "decoded successfully" from "row is corrupt" so
+    callers can pick their recovery strategy:
+
+    - ``app/generation.py:_build_history_payload`` uses ``None`` as the
+      signal to drop the row AND its paired tool_result (otherwise the
+      orphan result would 400 Ollama).
+    - ``app/render.py:_row_view_from_pair`` falls back to
+      ``("?", {})`` for display so a corrupt row still renders a
+      placeholder card.
+
+    Args:
+        content: The raw ``messages.content`` string for a
+            ``tool_call`` row.
+
+    Returns:
+        ``(name, arguments)`` tuple on success; ``None`` when the
+        content is not valid JSON, isn't a dict, or has no ``name``
+        key. Never raises.
+    """
+    try:
+        payload = json.loads(content)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict) or "name" not in payload:
+        return None
+    arguments = payload.get("arguments")
+    if not isinstance(arguments, dict):
+        arguments = {}
+    return payload["name"], arguments
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     """A registered tool's metadata + the callable that runs it.

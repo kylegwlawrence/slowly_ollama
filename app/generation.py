@@ -27,7 +27,6 @@ assistant row is still persisted before the exception resumes.
 
 import asyncio
 import html
-import json
 import logging
 import sqlite3
 import time
@@ -40,7 +39,9 @@ from app import ollama, queries, render
 from app.ollama import OllamaProtocolError, OllamaUnavailable
 from app.templates import templates
 from app.tools import (
+    decode_tool_call,
     decode_tool_result,
+    encode_tool_call,
     encode_tool_result,
     format_tool_invocation,
     run_tool,
@@ -295,22 +296,22 @@ def _build_history_payload(history: list) -> list[dict]:
     skip_next_result = False
     for m in history:
         if m.role == "tool_call":
-            try:
-                call = json.loads(m.content)
-                out.append({
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [{
-                        "function": {
-                            "name": call["name"],
-                            "arguments": call.get("arguments", {}),
-                        },
-                    }],
-                })
-                skip_next_result = False
-            except (json.JSONDecodeError, KeyError, TypeError):
+            decoded = decode_tool_call(m.content)
+            if decoded is None:
                 skip_next_result = True
                 continue
+            name, arguments = decoded
+            out.append({
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "function": {
+                        "name": name,
+                        "arguments": arguments,
+                    },
+                }],
+            })
+            skip_next_result = False
         elif m.role == "tool_result":
             if skip_next_result:
                 skip_next_result = False
@@ -524,9 +525,7 @@ async def _run_generation(
                     db,
                     conversation_id,
                     "tool_call",
-                    content=json.dumps(
-                        {"name": name, "arguments": arguments}
-                    ),
+                    content=encode_tool_call(name, arguments),
                 )
 
                 start_ms = int(time.time() * 1000)
