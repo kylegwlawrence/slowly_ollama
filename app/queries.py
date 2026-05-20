@@ -509,6 +509,16 @@ def set_agentic_mode(conn: sqlite3.Connection, enabled: bool) -> None:
 
     Args:
         conn: Open SQLite connection.
-        enabled: True for ``"on"``, False for ``"off"``.
+        enabled: True for ``"on"``, False for ``"off"``. Must be a real
+            bool — strings like ``"off"`` would be truthy and write
+            ``"on"``, silently flipping the setting the wrong way.
+
+    Raises:
+        TypeError: When ``enabled`` is not a bool. Cheap guard against
+            the foot-gun above.
     """
+    if not isinstance(enabled, bool):
+        raise TypeError(
+            f"set_agentic_mode requires a bool; got {type(enabled).__name__}"
+        )
     set_setting(conn, _AGENTIC_MODE_KEY, "on" if enabled else "off")

@@ -380,8 +380,26 @@ def test_agentic_mode_treats_non_on_values_as_off(
 ) -> None:
     """Defensive: a row whose value isn't literally "on" reads False.
     Guards against legacy or hand-edited DBs that wrote something other
-    than the two values set_agentic_mode produces."""
+    than the two values set_agentic_mode produces. Case-sensitive: the
+    comparison is against lowercase "on" exactly."""
     set_setting(conn, "agentic_mode", "yes")
     assert get_agentic_mode(conn) is False
     set_setting(conn, "agentic_mode", "")
+    assert get_agentic_mode(conn) is False
+    set_setting(conn, "agentic_mode", "ON")  # uppercase
+    assert get_agentic_mode(conn) is False
+    set_setting(conn, "agentic_mode", "On")  # title-case
+    assert get_agentic_mode(conn) is False
+
+
+def test_set_agentic_mode_rejects_non_bool(conn: sqlite3.Connection) -> None:
+    """`set_agentic_mode("off")` would silently write "on" (truthy
+    non-empty string). Guard against the foot-gun with a TypeError."""
+    with pytest.raises(TypeError):
+        set_agentic_mode(conn, "off")  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        set_agentic_mode(conn, 1)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        set_agentic_mode(conn, None)  # type: ignore[arg-type]
+    # State unchanged — no row was written by any of the failed calls.
     assert get_agentic_mode(conn) is False

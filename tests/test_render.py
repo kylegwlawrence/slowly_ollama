@@ -278,6 +278,41 @@ def test_group_messages_orphan_result_skipped() -> None:
     assert blocks[0].kind == "message"
 
 
+def test_group_messages_skips_phase13_agentic_rows_until_13f() -> None:
+    """Phase 13a persists `research_findings` and `review_verdict` rows
+    but the proper grouping (AgenticToolBatchBlock) lands in 13f. Until
+    then `group_messages_for_render` must SKIP them — rendering them as
+    standalone MessageBlocks would dump raw verdict JSON or unformatted
+    findings text into the chat panel.
+
+    Remove this test (and the elif branch in group_messages_for_render)
+    when 13f teaches the grouper to fold these rows into the new block
+    type instead of skipping them.
+    """
+    msgs = [
+        _msg(id=1, role="user", content="hi"),
+        _msg(id=2, role="research_findings", content="some research notes"),
+        _msg(
+            id=3,
+            role="review_verdict",
+            content='{"verdict": "passed", "message": "ok"}',
+        ),
+        _msg(id=4, role="assistant", content="the answer"),
+    ]
+    blocks = group_messages_for_render(msgs)
+    # Only user + assistant survive. The agentic rows produce no
+    # blocks of any kind — not a MessageBlock, not a ToolBatchBlock.
+    assert len(blocks) == 2
+    assert blocks[0].kind == "message" and blocks[0].message.id == 1
+    assert blocks[1].kind == "message" and blocks[1].message.id == 4
+    # Defensive: the verdict's raw JSON is not anywhere in the rendered
+    # block payloads.
+    rendered_contents = [
+        b.message.content for b in blocks if b.kind == "message"
+    ]
+    assert all("verdict" not in c for c in rendered_contents)
+
+
 # ---------------------------------------------------------------------------
 # ToolBatchBlock.rows / view materialization
 # ---------------------------------------------------------------------------
