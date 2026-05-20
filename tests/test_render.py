@@ -18,6 +18,7 @@ from app.render import (
     group_messages_for_render,
     render_agentic_card_shell,
     render_agentic_done_summary,
+    render_agentic_tool_row_append,
     render_done_card_oobs,
     render_findings_row,
     render_iteration_start,
@@ -865,6 +866,29 @@ def test_render_iteration_start_appends_header_and_swaps_summary() -> None:
     assert 'id="tool-card-T-summary"' in html_out
     assert 'hx-swap-oob="outerHTML"' in html_out
     assert "researching (iteration 2)" in html_out
+
+
+def test_render_agentic_tool_row_append_emits_row_only_no_summary_bump() -> None:
+    """Agentic row append is identical to the single-agent variant
+    for the row HTML itself, but MUST NOT emit a summary span swap —
+    the iteration-start event already set "researching (iteration
+    N)…" and downstream rows don't change it."""
+    row = ToolRowView(
+        id="tool-card-T-iter-1-row-0",
+        label='searching arxiv: "x"',
+        elapsed_start_ms=1_000,
+        elapsed_final_ms=None,
+        elapsed_display="0:00",
+    )
+    html_out = render_agentic_tool_row_append(
+        live_row=row, list_id="tool-card-T-list",
+    )
+    # Row append into the existing list.
+    assert 'hx-swap-oob="beforeend:#tool-card-T-list"' in html_out
+    assert 'id="tool-card-T-iter-1-row-0"' in html_out
+    # No summary swap — the agentic shell's summary stays put.
+    assert 'id="tool-card-T-summary"' not in html_out
+    assert "using" not in html_out  # no "using N tools…" text
 
 
 def test_render_findings_row_renders_markdown_inside_details() -> None:
