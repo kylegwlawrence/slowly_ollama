@@ -375,7 +375,7 @@ async def create_chat_endpoint(
     # running when the browser opens the SSE connection. A
     # brand-new chat can't have a generation in flight, so no
     # GenerationInProgress catch needed here.
-    generation.start_generation(
+    await generation.start_generation(
         client=client,
         db=db,
         conversation_id=chat.id,
@@ -621,7 +621,7 @@ async def send_message_endpoint(
     # cancel it; consume_generation just attaches a new consumer.
     history = queries.list_messages(db, conversation_id)
     try:
-        generation.start_generation(
+        await generation.start_generation(
             client=client,
             db=db,
             conversation_id=conversation_id,
@@ -721,7 +721,7 @@ async def regenerate_endpoint(
     # output in the history.
     prompt_history = history[:-1]
     try:
-        generation.start_generation(
+        await generation.start_generation(
             client=client,
             db=db,
             conversation_id=conversation_id,

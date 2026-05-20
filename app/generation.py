@@ -260,7 +260,7 @@ async def consume_finished(
     )
 
 
-def start_generation(
+async def start_generation(
     *,
     client: httpx.AsyncClient,
     db: sqlite3.Connection,
@@ -271,20 +271,60 @@ def start_generation(
 ) -> GenerationState:
     """Register a GenerationState and spawn the producer task.
 
-    Must be called from an async context — `asyncio.create_task`
-    requires a running event loop. Callers are FastAPI route
-    handlers; the three POST handlers were converted to ``async
-    def`` in phase 12g for this reason.
+    Phase 13d.3: now ``async`` so the dispatcher can await
+    ``model_supports_tools`` before deciding whether to route to
+    the agentic loop. Single-agent callers are unaffected — they
+    still get a ``GenerationState`` back, the producer task is
+    still spawned via ``asyncio.create_task``.
+
+    Producer selection:
+
+    - **agentic** (phase 13d): when the global ``agentic_mode``
+      setting is on AND the chat's model advertises ``tools``
+      capability. Routes to ``app.agents.loop._run_agentic_generation``.
+    - **single-agent**: every other case. Routes to
+      ``_run_generation`` (unchanged behavior).
+
+    The capability check is the silent-fallback path locked in the
+    plan: agentic mode is on but the chat's pinned model isn't
+    tool-capable → run single-agent instead of 400ing. The route
+    layer (phase 13e) adds an inline badge so the user sees the
+    fallback happened.
 
     Raises:
         GenerationInProgress: if a generation is already running for
-            this conversation. The route maps this to HTTP 409.
+            this conversation. Raised SYNCHRONOUSLY before the first
+            ``await``, so callers' ``except GenerationInProgress``
+            still catches it before any agentic-dispatch work fires.
+            The route maps this to HTTP 409.
     """
+    # In-flight guard must fire BEFORE the first await — callers'
+    # try/except GenerationInProgress depends on it raising
+    # synchronously. Anything after `await` is a coroutine
+    # suspension point and the exception would arrive in a
+    # different control flow shape.
     existing = live_generations.get(conversation_id)
     if existing is not None and not existing.done:
         raise GenerationInProgress(
             f"Conversation {conversation_id} already has a generation in flight"
         )
+
+    # Pick the producer. `model_supports_tools` returns False on any
+    # Ollama failure (per app.ollama), so the agentic path never
+    # fires when /api/show is unreachable — we degrade to single-
+    # agent rather than crashing. Lazy import of the agentic loop
+    # to avoid a circular import (agents/loop.py imports from
+    # generation.py).
+    use_agentic = (
+        queries.get_agentic_mode(db)
+        and await ollama.model_supports_tools(client, model)
+    )
+    if use_agentic:
+        from app.agents.loop import _run_agentic_generation
+        producer = _run_agentic_generation
+    else:
+        producer = _run_generation
+
     state = GenerationState(conversation_id=conversation_id)
     # Register BEFORE create_task so the registry is populated by
     # the time control returns to the caller. A done entry from a
@@ -296,7 +336,7 @@ def start_generation(
     # task-done.
     live_generations[conversation_id] = state
     state.task = asyncio.create_task(
-        _run_generation(
+        producer(
             state=state,
             client=client,
             db=db,

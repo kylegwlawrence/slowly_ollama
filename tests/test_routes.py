@@ -2130,7 +2130,7 @@ async def test_stream_persists_partial_assistant_on_aclose(
         chat = queries.create_conversation(db, "aclose test", "llama3")
         queries.append_message(db, chat.id, "user", "hi")
 
-        state = generation.start_generation(
+        state = await generation.start_generation(
             client=None,
             db=db,
             conversation_id=chat.id,
@@ -2205,7 +2205,7 @@ async def test_stream_persists_placeholder_when_aclosed_during_tool_execution(
         chat = queries.create_conversation(db, "tool-cancel test", "llama3")
         queries.append_message(db, chat.id, "user", "what time?")
 
-        state = generation.start_generation(
+        state = await generation.start_generation(
             client=None,
             db=db,
             conversation_id=chat.id,
@@ -2372,7 +2372,7 @@ async def test_regenerate_cancellation_preserves_original_when_no_chunks(
         # Mimic POST /regenerate: drop the last assistant from prompt
         # history, spawn with on_complete="replace".
         history = queries.list_messages(db, chat.id)
-        state = generation.start_generation(
+        state = await generation.start_generation(
             client=None,
             db=db,
             conversation_id=chat.id,
@@ -2431,7 +2431,7 @@ async def test_regenerate_cancellation_writes_partial_when_tokens_arrived(
         queries.append_message(db, chat.id, "assistant", "original")
 
         history = queries.list_messages(db, chat.id)
-        state = generation.start_generation(
+        state = await generation.start_generation(
             client=None,
             db=db,
             conversation_id=chat.id,

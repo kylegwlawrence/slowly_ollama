@@ -1,7 +1,7 @@
 {# Empty assistant bubble. Opens an SSE connection on insert and
-   handles six named events
-   (sse-swap="token,done,error,title,tool-call,tool-result"):
+   handles ten named events:
 
+   Single-agent + agentic shared:
    - `token`: each chunk's HTML-escaped text gets appended inside this
      div (`hx-swap="beforeend"`), so the response materializes as it
      streams.
@@ -23,5 +23,26 @@
      The first tool-call inserts the card via
      `beforebegin:#assistant-stream-{id}`; subsequent tool-calls
      append rows + bump the summary count; each tool-result
-     OOB-replaces its row with a frozen variant. #}
-<div id="assistant-stream-{{ conversation_id }}" class="message message--assistant message--streaming" data-role="assistant" hx-ext="sse" sse-connect="{{ stream_url }}" sse-swap="token,done,error,title,tool-call,tool-result" hx-swap="beforeend"></div>
+     OOB-replaces its row with a frozen variant. The same events
+     drive the agentic card's tool rows inside each iteration.
+
+   Agentic-only (phase 13d, fire only when agentic_mode is on AND
+   the chat's model is tool-capable — start_generation gates this):
+   - `iteration-start`: opens each research↔review iteration.
+     Payload contains both the iteration header row (appended into
+     the card's <ul>) and a summary span swap to
+     "researching (iteration N)…".
+   - `research-findings`: appends the per-iteration findings row
+     (markdown-rendered prose inside a <details>).
+   - `review-verdict`: appends the per-iteration verdict row
+     (passed/failed class modifier + icon + message).
+   - `max-iterations`: fires only when the loop cap (3 iterations)
+     is hit. Fills the sentinel `<span id="{card_id}-max-marker">`
+     with visible "(max reached)" text that survives the done-
+     event's outerHTML swap on the summary span (the marker is a
+     sibling, not a child).
+
+   Events not emitted for a given turn are silently ignored, so
+   listing all ten here is safe for both single-agent and agentic
+   flows. #}
+<div id="assistant-stream-{{ conversation_id }}" class="message message--assistant message--streaming" data-role="assistant" hx-ext="sse" sse-connect="{{ stream_url }}" sse-swap="token,done,error,title,tool-call,tool-result,iteration-start,research-findings,review-verdict,max-iterations" hx-swap="beforeend"></div>
