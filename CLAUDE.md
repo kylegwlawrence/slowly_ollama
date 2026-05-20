@@ -14,9 +14,10 @@ end-user setup and `docs/plans/PLAN.md` for the build-time roadmap.
 | Question | Read this |
 |---|---|
 | What are we building and why? | `docs/plans/PLAN.md` |
-| What's the next phase / open work? | `docs/plans/phase12-tool-calling.md` (roadmap), `docs/plans/phase12-tool-calling-detail.md` (current phase exec spec) |
-| What did we learn from prior phases? | `docs/retros/` (one file per phase, 6–11) |
+| What's the next phase / open work? | `docs/plans/phase13-agentic-loop.md` (next phase exec spec) |
+| What did we learn from prior phases? | `docs/retros/` (per-phase, 6 through 12) |
 | Accumulated conventions + gotchas | `docs/CONVENTIONS.md` |
+| Recent code reviews + cleanup notes | `docs/code_reviews/` |
 | Test strategy + how to run | `tests/README.md` |
 | End-user setup | `README.md` |
 
@@ -40,7 +41,22 @@ controlled artifacts, not workspace scratch.
   per-row sources list on the tool card, with `tool_result.content`
   now a JSON envelope `{"text": ..., "sources": [...]}` produced by
   `encode_tool_result` (legacy plain-text rows decode via fallback).
-- **297/297 tests passing** as of end of Phase 12h; coverage 97% on `app/` + `main.py`.
+- **Pre-phase-13 cleanup complete.** Extracted `app/templates.py`
+  (retired four lazy `from app.routes import templates` imports in
+  `generation.py`); fixed the connection leak in `app/tools/rag.py`
+  via `contextlib.closing`; added orphan-tool_result-skipping to
+  `_build_history_payload`; extracted producer-runtime helpers from
+  `_run_generation` (`emit_ollama_error`, `maybe_persist_partial`,
+  `signal_done`); moved tool-card OOB rendering into `app/render.py`
+  as `render_tool_card_initial` / `render_tool_card_row_append` /
+  `render_tool_card_row_freeze` / `render_done_card_oobs`; added
+  `encode_tool_call` / `decode_tool_call` to mirror the tool_result
+  envelope. Test infra: added `tests/conftest.py` consolidating
+  module-state isolation; moved misplaced `_build_history_payload`
+  tests into `test_generation.py`; hoisted function-body imports in
+  `test_routes.py`. See `docs/code_reviews/2026-05-20-*.md` for the
+  reviews that drove the cleanup.
+- **309/309 tests passing**; coverage 98% on `app/` + `main.py`.
 
 ## Working rules (override Claude defaults where they conflict)
 
@@ -105,19 +121,26 @@ app/
   db.py                  # Schema init + idempotent migrations
   queries.py             # All SQL queries; `Role` literal enforces validity
   dependencies.py        # `DB` / `OllamaClient` Annotated[..., Depends(...)] aliases
-  ollama.py              # httpx client + streaming /api/chat + /api/tags
+  ollama.py              # httpx client + streaming /api/chat + /api/tags + /api/show
   rag_servers.py         # RAG server CRUD queries (phase 12c)
-  routes.py              # Every route returns HTML or SSE-of-HTML; no JSON
+  rag_health.py          # /health probe for newly-added RAG servers (phase 12e)
+  templates.py           # Jinja2 instance + markdown filter (shared by routes/generation/render)
+  routes.py              # Thin HTTP layer — every route returns HTML or SSE-of-HTML
+  generation.py          # Background-task producer for SSE streams (phase 12g) + shared helpers (emit_ollama_error, maybe_persist_partial, signal_done)
+  render.py              # Render-shaped views + tool-card OOB HTML helpers
   tools/
-    __init__.py          # @tool decorator, ToolSpec, registry, run_tool, tool_specs_for_ollama
+    __init__.py          # @tool decorator, ToolSpec, registry, run_tool, tool_specs_for_ollama, encode/decode_tool_call, encode/decode_tool_result
     builtins.py          # current_time tool
     rag.py               # query_rag tool + RAG-server HTTP client
 templates/               # Jinja fragments — every endpoint returns one of these
 static/                  # Pico, HTMX, htmx-ext-sse, Material Symbols, style.css
-tests/                   # pytest layered per source module + one integration journey
+tests/
+  conftest.py            # Autouse module-state isolation (live_generations, capability cache)
+  test_*.py              # Per-module unit tests + one end-to-end integration journey
 docs/
-  plans/                 # PLAN.md + per-phase plans (phase8…phase12-detail)
-  retros/                # Per-phase retrospectives (phase6 through phase11)
+  plans/                 # PLAN.md + per-phase plans (phase8 through phase13)
+  retros/                # Per-phase retrospectives (phase6 through phase12)
+  code_reviews/          # Dated cleanup reviews (e.g., pre-phase-13)
   CONVENTIONS.md         # Distilled lessons — conventions, gotchas, patterns
 ```
 
@@ -142,10 +165,14 @@ and stores both on `app.state`. Routes get them via the `DB` / `OllamaClient`
 HTML fragment (HTMX swaps it in) or an SSE stream of named events
 (`token` / `tool-call` / `tool-result` / `title` / `done` / `error`) carrying
 HTML payloads. The chat-send flow is split into POST (save user message,
-return assistant placeholder) + GET (open the SSE stream); the GET handler runs
-a server-side loop that calls Ollama, executes any tool calls, persists each
-turn as its own message row (`role` is one of `user` / `assistant` /
-`tool_call` / `tool_result`), and emits events for the placeholder to consume.
+start a background `asyncio.Task` running `_run_generation` in
+`app/generation.py`, return assistant placeholder) + GET (attach as a
+consumer via `consume_generation`). The producer task is owned by the
+module-level `live_generations` dict, NOT the HTTP request — a page reload
+cancels the consumer but the producer keeps running, so reloads attach as
+fresh consumers that replay the event log from index 0. Each turn persists
+its own message row (`role` is one of `user` / `assistant` / `tool_call` /
+`tool_result`); the producer emits events for the placeholder to consume.
 Tool execution caps at 5 iterations per assistant turn.
 
 ## Key gotchas (one-liners; deep dives in `docs/CONVENTIONS.md`)
@@ -161,8 +188,12 @@ Tool execution caps at 5 iterations per assistant turn.
 - **Pico classless fights us systematically** on form elements (background,
   text color, button width, `prefers-color-scheme`). When your rule doesn't
   seem to apply, `curl /static/pico.classless.min.css | tr '}' '\n' | grep <selector>`.
-- **`with conn:`** (native sqlite3 context manager) for transactions, never
-  `with closing(conn)`. Existing queries.py helpers already follow this.
+- **`with conn:`** (native sqlite3 context manager) for transactions on
+  the SHARED `app.state.db` connection. For PRIVATE one-shot connections
+  opened via `open_connection()` (e.g. inside a tool), use
+  `with closing(open_connection()) as conn:` — `Connection.__exit__`
+  commits/rolls back but does NOT close. Without `closing`, the handle
+  leaks until GC. See `docs/CONVENTIONS.md` and `app/tools/rag.py`.
 - **Test fixtures must snapshot/restore `dependency_overrides`**, never `.clear()`
   — `.clear()` wipes overrides added by other fixtures.
 - **Tests pin contracts (`data-*` attrs, `hx-*` attrs), not implementations**

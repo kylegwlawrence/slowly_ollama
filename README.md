@@ -90,19 +90,24 @@ app/
   config.py          # Env var accessors (OLLAMA_HOST, DB_PATH)
   connection.py      # SQLite connection helper
   db.py              # Schema initialization (CREATE TABLE IF NOT EXISTS)
-  queries.py         # All SQL queries (chats, messages, settings)
+  queries.py         # SQL queries for chats and messages
+  rag_servers.py     # SQL queries for configured RAG servers
   dependencies.py    # FastAPI dependency functions (db, ollama client)
-  ollama.py          # httpx client for the Ollama /api/chat endpoint
-  routes.py          # All HTTP routes (chat CRUD, streaming, settings)
-  rag_servers.py     # RAG server CRUD queries
+  ollama.py          # httpx client for Ollama /api/chat, /api/tags, /api/show
+  rag_health.py      # /health probe for newly-added RAG servers
+  templates.py       # Jinja2 instance + markdown filter
+  routes.py          # HTTP routes (chat CRUD, streaming, settings)
+  generation.py      # Background-task producer driving the SSE stream
+  render.py          # Render-shaped views + tool-card OOB HTML helpers
   tools/             # Tool-calling system
     builtins.py      # Built-in tools (current_time, etc.)
     rag.py           # RAG query tool
 templates/           # Jinja2/HTMX HTML templates
 static/              # Vendored CSS + JS (Pico, HTMX, Material Symbols)
-tests/               # pytest test suite
+tests/               # pytest test suite (+ conftest.py for shared fixtures)
 docs/plans/          # Design and phase plans
 docs/retros/         # Post-phase retrospectives
+docs/code_reviews/   # Dated code reviews
 ```
 
 ---
@@ -110,9 +115,9 @@ docs/retros/         # Post-phase retrospectives
 ## Features
 
 - **Persistent conversations** — chats and messages stored in SQLite, survive restarts
-- **Per-chat model selection** — pick any model available in your local Ollama instance
-- **Global settings** — temperature and context size configurable from the UI
+- **Per-chat model selection** — pick any tool-capable model available in your local Ollama instance
 - **Streaming responses** — assistant replies stream token-by-token via SSE
+- **Reload-safe generation** — a page reload during a reply attaches a new consumer to the in-flight stream instead of cancelling it
 - **Tool calling** — extensible tool system; built-in `current_time` tool included
-- **RAG support** — connect external retrieval servers and query them from chat
+- **RAG support** — register external retrieval servers from `/settings` and let the model query them via the `query_rag` tool
 - **Fully local** — no telemetry, no cloud API calls, works offline
