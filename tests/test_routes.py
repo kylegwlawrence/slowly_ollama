@@ -2970,6 +2970,113 @@ def test_build_history_payload_skips_malformed_tool_call_rows() -> None:
     assert out[1]["role"] == "assistant"
 
 
+def test_build_history_payload_skips_orphan_result_after_corrupt_call() -> None:
+    """A corrupt tool_call also drops its paired tool_result. Otherwise
+    the result would land as role='tool' with no preceding assistant
+    +tool_calls — Ollama rejects that shape with a 400 and the whole
+    chat becomes unusable. Pins the pairing rule that's documented in
+    _build_history_payload's skip_next_result logic."""
+    from datetime import datetime, timezone
+
+    from app.generation import _build_history_payload
+    from app.queries import Message
+
+    now = datetime.now(timezone.utc)
+    history = [
+        Message(
+            id=1, conversation_id=1, role="user",
+            content="hi", created_at=now,
+        ),
+        # Corrupt: must be dropped.
+        Message(
+            id=2, conversation_id=1, role="tool_call",
+            content="not json", created_at=now,
+        ),
+        # Paired result: must ALSO be dropped (orphan otherwise).
+        Message(
+            id=3, conversation_id=1, role="tool_result",
+            content="2024-01-01T00:00:00+00:00", created_at=now,
+        ),
+        Message(
+            id=4, conversation_id=1, role="assistant",
+            content="ok", created_at=now,
+        ),
+    ]
+    out = _build_history_payload(history)
+    # Only user + assistant survive; the corrupt call AND its paired
+    # result are both gone.
+    assert len(out) == 2
+    assert out[0]["role"] == "user"
+    assert out[1]["role"] == "assistant"
+    # Defensive: no role="tool" anywhere in the output.
+    assert all(m["role"] != "tool" for m in out)
+
+
+def test_build_history_payload_skip_flag_does_not_leak_past_unrelated_rows() -> None:
+    """A corrupt tool_call followed by a NON-result row (e.g., the
+    model emitted a stray assistant message) resets the skip flag, so
+    a later valid call/result pair still renders into Ollama's wire
+    format. Without the reset, the next legitimate tool_result anywhere
+    in the conversation would silently vanish."""
+    import json as _json
+    from datetime import datetime, timezone
+
+    from app.generation import _build_history_payload
+    from app.queries import Message
+
+    now = datetime.now(timezone.utc)
+    history = [
+        Message(
+            id=1, conversation_id=1, role="user",
+            content="hi", created_at=now,
+        ),
+        # Corrupt call sets the skip flag.
+        Message(
+            id=2, conversation_id=1, role="tool_call",
+            content="not json", created_at=now,
+        ),
+        # Assistant row resets the flag — the corrupt call's paired
+        # result never appeared (real-world: writer crashed mid-turn).
+        Message(
+            id=3, conversation_id=1, role="assistant",
+            content="interim text", created_at=now,
+        ),
+        # Fresh, well-formed call/result pair must pass through.
+        Message(
+            id=4, conversation_id=1, role="tool_call",
+            content=_json.dumps(
+                {"name": "current_time", "arguments": {"timezone": "UTC"}}
+            ),
+            created_at=now,
+        ),
+        Message(
+            id=5, conversation_id=1, role="tool_result",
+            content="2024-01-01T00:00:00+00:00", created_at=now,
+        ),
+        Message(
+            id=6, conversation_id=1, role="assistant",
+            content="done", created_at=now,
+        ),
+    ]
+    out = _build_history_payload(history)
+    # Corrupt call dropped; everything else through. user + interim
+    # assistant + (valid call as assistant+tool_calls) + tool_result +
+    # final assistant = 5.
+    assert len(out) == 5
+    assert out[0]["role"] == "user"
+    assert out[1] == {"role": "assistant", "content": "interim text"}
+    # The valid call survives the flag-reset and produces its
+    # assistant+tool_calls pair.
+    assert out[2]["role"] == "assistant"
+    assert out[2]["tool_calls"][0]["function"]["name"] == "current_time"
+    # And its paired result lands as role=tool.
+    assert out[3] == {
+        "role": "tool",
+        "content": "2024-01-01T00:00:00+00:00",
+    }
+    assert out[4] == {"role": "assistant", "content": "done"}
+
+
 # ---------------------------------------------------------------------------
 # Phase 12h: historic chat panel renders expandable rows for stored RAG calls
 # ---------------------------------------------------------------------------
