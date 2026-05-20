@@ -6,7 +6,10 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.queries import Message
+from app.agents import AGENTIC_ITERATION_CAP
 from app.render import (
+    AgenticIteration,
+    AgenticToolBatchBlock,
     DedupedSource,
     MessageBlock,
     ToolBatchBlock,
@@ -286,39 +289,410 @@ def test_group_messages_orphan_result_skipped() -> None:
     assert blocks[0].kind == "message"
 
 
-def test_group_messages_skips_phase13_agentic_rows_until_13f() -> None:
-    """Phase 13a persists `research_findings` and `review_verdict` rows
-    but the proper grouping (AgenticToolBatchBlock) lands in 13f. Until
-    then `group_messages_for_render` must SKIP them — rendering them as
-    standalone MessageBlocks would dump raw verdict JSON or unformatted
-    findings text into the chat panel.
+# ---------------------------------------------------------------------------
+# Phase 13f: AgenticToolBatchBlock grouping
+# ---------------------------------------------------------------------------
 
-    Remove this test (and the elif branch in group_messages_for_render)
-    when 13f teaches the grouper to fold these rows into the new block
-    type instead of skipping them.
-    """
+
+def _verdict_json(status: str, message: str = "") -> str:
+    """Helper: build a review_verdict row's persisted JSON payload."""
+    return json.dumps({"verdict": status, "message": message})
+
+
+def test_group_messages_single_iteration_agentic_block() -> None:
+    """One iteration that passed: tool_call + tool_result +
+    research_findings + review_verdict(passed) collapses into a single
+    AgenticToolBatchBlock with one AgenticIteration."""
     msgs = [
-        _msg(id=1, role="user", content="hi"),
-        _msg(id=2, role="research_findings", content="some research notes"),
+        _msg(id=1, role="user", content="research X"),
         _msg(
-            id=3,
-            role="review_verdict",
-            content='{"verdict": "passed", "message": "ok"}',
+            id=2,
+            role="tool_call",
+            content=json.dumps({"name": "current_time", "arguments": {}}),
         ),
-        _msg(id=4, role="assistant", content="the answer"),
+        _msg(id=3, role="tool_result", content="..."),
+        _msg(id=4, role="research_findings", content="some notes"),
+        _msg(id=5, role="review_verdict", content=_verdict_json("passed", "lgtm")),
+        _msg(id=6, role="assistant", content="the answer"),
     ]
     blocks = group_messages_for_render(msgs)
-    # Only user + assistant survive. The agentic rows produce no
-    # blocks of any kind — not a MessageBlock, not a ToolBatchBlock.
-    assert len(blocks) == 2
+
+    # user, agentic batch, assistant.
+    assert len(blocks) == 3
     assert blocks[0].kind == "message" and blocks[0].message.id == 1
-    assert blocks[1].kind == "message" and blocks[1].message.id == 4
-    # Defensive: the verdict's raw JSON is not anywhere in the rendered
-    # block payloads.
-    rendered_contents = [
-        b.message.content for b in blocks if b.kind == "message"
+    assert blocks[1].kind == "agentic_tool_batch"
+    assert blocks[2].kind == "message" and blocks[2].message.id == 6
+
+    batch = blocks[1]
+    assert isinstance(batch, AgenticToolBatchBlock)
+    assert len(batch.iterations) == 1
+    it = batch.iterations[0]
+    assert it.index == 1
+    assert len(it.tool_calls) == 1
+    call, result = it.tool_calls[0]
+    assert call.id == 2 and result is not None and result.id == 3
+    assert it.findings is not None and it.findings.id == 4
+    assert it.verdict is not None and it.verdict.id == 5
+    assert it.verdict_status == "passed"
+    assert it.verdict_message == "lgtm"
+    # turn_id derives from the FIRST row in the run (the tool_call,
+    # id=2), matching the classic block's convention.
+    assert batch.turn_id == "hist-2"
+    assert batch.card_id == "tool-card-hist-2"
+
+
+def test_group_messages_multi_iteration_agentic_block() -> None:
+    """Two failed iterations followed by a passing one collapse into
+    a single AgenticToolBatchBlock with three iterations carrying
+    the right verdict statuses."""
+    msgs = [
+        _msg(id=1, role="user", content="hard question"),
+        # Iteration 1: tool call → findings → failed
+        _msg(
+            id=2,
+            role="tool_call",
+            content=json.dumps({"name": "current_time", "arguments": {}}),
+        ),
+        _msg(id=3, role="tool_result", content="r1"),
+        _msg(id=4, role="research_findings", content="round 1"),
+        _msg(id=5, role="review_verdict", content=_verdict_json("failed", "needs more")),
+        # Iteration 2: same shape, also failed
+        _msg(
+            id=6,
+            role="tool_call",
+            content=json.dumps({"name": "current_time", "arguments": {}}),
+        ),
+        _msg(id=7, role="tool_result", content="r2"),
+        _msg(id=8, role="research_findings", content="round 2"),
+        _msg(id=9, role="review_verdict", content=_verdict_json("failed", "still")),
+        # Iteration 3: passes
+        _msg(id=10, role="research_findings", content="round 3"),
+        _msg(id=11, role="review_verdict", content=_verdict_json("passed", "ok")),
+        _msg(id=12, role="assistant", content="the answer"),
     ]
-    assert all("verdict" not in c for c in rendered_contents)
+    blocks = group_messages_for_render(msgs)
+
+    assert len(blocks) == 3
+    batch = blocks[1]
+    assert isinstance(batch, AgenticToolBatchBlock)
+    assert [it.index for it in batch.iterations] == [1, 2, 3]
+    assert [it.verdict_status for it in batch.iterations] == [
+        "failed",
+        "failed",
+        "passed",
+    ]
+    # Iteration 3 has findings but no tool calls — that branch must
+    # not produce an empty iteration.
+    assert batch.iterations[2].tool_calls == []
+    assert batch.iterations[2].findings is not None
+    # Last verdict was passed → max_iterations_reached is False even
+    # though we ran the full cap.
+    assert batch.max_iterations_reached is False
+
+
+def test_group_messages_max_iterations_reached_block() -> None:
+    """All three iterations failed → max_iterations_reached flags True.
+
+    The live producer renders a "(max reached)" badge in this state;
+    historic replay surfaces the same signal via this flag.
+    """
+    assert AGENTIC_ITERATION_CAP == 3  # guard: tweak this test if cap moves
+    msgs: list[Message] = []
+    next_id = 1
+    for round_num in range(3):
+        msgs.append(_msg(id=next_id, role="research_findings", content=f"r{round_num}"))
+        msgs.append(
+            _msg(
+                id=next_id + 1,
+                role="review_verdict",
+                content=_verdict_json("failed", f"round {round_num} feedback"),
+            )
+        )
+        next_id += 2
+    msgs.append(_msg(id=next_id, role="assistant", content="forced answer"))
+
+    blocks = group_messages_for_render(msgs)
+
+    # agentic batch + assistant.
+    assert len(blocks) == 2
+    batch = blocks[0]
+    assert isinstance(batch, AgenticToolBatchBlock)
+    assert len(batch.iterations) == 3
+    assert all(it.verdict_status == "failed" for it in batch.iterations)
+    assert batch.max_iterations_reached is True
+    # Iterations have no tool calls (this test exercises the
+    # findings-only path) — they must still show up.
+    assert all(it.tool_calls == [] for it in batch.iterations)
+
+
+def test_group_messages_classic_batch_unchanged_by_phase13f() -> None:
+    """Regression guard: a turn with ONLY tool_call/tool_result rows
+    still emits a ToolBatchBlock, not an AgenticToolBatchBlock. Phase
+    13f only changes grouping when findings/verdict rows are present.
+    """
+    msgs = [
+        _msg(
+            id=1,
+            role="tool_call",
+            content=json.dumps({"name": "current_time", "arguments": {}}),
+        ),
+        _msg(id=2, role="tool_result", content="ok"),
+        _msg(id=3, role="assistant", content="answered"),
+    ]
+    blocks = group_messages_for_render(msgs)
+
+    assert len(blocks) == 2
+    assert isinstance(blocks[0], ToolBatchBlock)
+    assert blocks[0].kind == "tool_batch"
+
+
+def test_group_messages_trailing_findings_without_verdict_still_commits() -> None:
+    """Defensive: if a process crashed between persisting findings
+    and persisting the verdict, the iteration still surfaces (with
+    verdict=None) instead of getting silently dropped."""
+    msgs = [
+        _msg(id=1, role="research_findings", content="partial"),
+        # No verdict row — process died here.
+    ]
+    blocks = group_messages_for_render(msgs)
+
+    assert len(blocks) == 1
+    batch = blocks[0]
+    assert isinstance(batch, AgenticToolBatchBlock)
+    assert len(batch.iterations) == 1
+    it = batch.iterations[0]
+    assert it.findings is not None and it.findings.id == 1
+    assert it.verdict is None
+    assert it.verdict_status == "unknown"
+    assert it.verdict_message == ""
+
+
+def test_agentic_iteration_pairs_calls_with_results_within_iteration() -> None:
+    """Two tool calls inside one iteration → both pair with their
+    respective results inside the same AgenticIteration.tool_calls."""
+    msgs = [
+        _msg(
+            id=1,
+            role="tool_call",
+            content=json.dumps({"name": "current_time", "arguments": {}}),
+        ),
+        _msg(id=2, role="tool_result", content="r1"),
+        _msg(
+            id=3,
+            role="tool_call",
+            content=json.dumps(
+                {"name": "query_rag", "arguments": {"source": "arxiv", "query": "x"}}
+            ),
+        ),
+        _msg(id=4, role="tool_result", content="r2"),
+        _msg(id=5, role="research_findings", content="combined"),
+        _msg(id=6, role="review_verdict", content=_verdict_json("passed")),
+    ]
+    blocks = group_messages_for_render(msgs)
+
+    batch = blocks[0]
+    assert isinstance(batch, AgenticToolBatchBlock)
+    assert len(batch.iterations) == 1
+    it = batch.iterations[0]
+    assert len(it.tool_calls) == 2
+    # First call paired with first result; second with second.
+    assert it.tool_calls[0][0].id == 1 and it.tool_calls[0][1].id == 2
+    assert it.tool_calls[1][0].id == 3 and it.tool_calls[1][1].id == 4
+
+
+def test_agentic_iteration_row_views_use_iteration_scoped_ids() -> None:
+    """Row ids embed both the iteration index and the within-iteration
+    call index, matching the live SSE path's `{card_id}-iter-N-row-M`
+    format. Same-id parity matters for mid-turn reloads."""
+    msgs = [
+        # Iteration 1: two tool calls
+        _msg(
+            id=1,
+            role="tool_call",
+            content=json.dumps({"name": "current_time", "arguments": {}}),
+        ),
+        _msg(id=2, role="tool_result", content="ok"),
+        _msg(
+            id=3,
+            role="tool_call",
+            content=json.dumps({"name": "current_time", "arguments": {}}),
+        ),
+        _msg(id=4, role="tool_result", content="ok"),
+        _msg(id=5, role="research_findings", content="notes"),
+        _msg(id=6, role="review_verdict", content=_verdict_json("failed")),
+        # Iteration 2: one tool call
+        _msg(
+            id=7,
+            role="tool_call",
+            content=json.dumps({"name": "current_time", "arguments": {}}),
+        ),
+        _msg(id=8, role="tool_result", content="ok"),
+        _msg(id=9, role="research_findings", content="notes 2"),
+        _msg(id=10, role="review_verdict", content=_verdict_json("passed")),
+    ]
+    blocks = group_messages_for_render(msgs)
+    batch = blocks[0]
+    assert isinstance(batch, AgenticToolBatchBlock)
+
+    iter1_rows = batch.iterations[0].row_views(batch.card_id)
+    iter2_rows = batch.iterations[1].row_views(batch.card_id)
+    assert [r.id for r in iter1_rows] == [
+        f"{batch.card_id}-iter-1-row-0",
+        f"{batch.card_id}-iter-1-row-1",
+    ]
+    assert [r.id for r in iter2_rows] == [
+        f"{batch.card_id}-iter-2-row-0",
+    ]
+
+
+def test_agentic_block_summary_is_past_tense_iterations_phrase() -> None:
+    """The summary span text reads `ran N iterations` (or singular at
+    N==1), regardless of whether the cap was hit. The "(max reached)"
+    badge lives in the sibling max-marker span, not the summary."""
+    batch = AgenticToolBatchBlock(
+        iterations=[
+            AgenticIteration(index=1, tool_calls=[], findings=None, verdict=None)
+        ],
+        turn_id="hist-1",
+    )
+    assert batch.summary == "ran 1 iteration"
+
+    batch3 = AgenticToolBatchBlock(
+        iterations=[
+            AgenticIteration(index=i, tool_calls=[], findings=None, verdict=None)
+            for i in (1, 2, 3)
+        ],
+        turn_id="hist-1",
+    )
+    assert batch3.summary == "ran 3 iterations"
+
+
+def test_agentic_iteration_verdict_status_handles_malformed_json() -> None:
+    """A `review_verdict` row with corrupt JSON should fall back to
+    `unknown` rather than crashing the whole panel render."""
+    bad_verdict = _msg(id=9, role="review_verdict", content="{not json")
+    it = AgenticIteration(
+        index=1, tool_calls=[], findings=None, verdict=bad_verdict
+    )
+    assert it.verdict_status == "unknown"
+    assert it.verdict_message == ""
+
+
+def test_agentic_iteration_verdict_unrecognized_status_falls_back() -> None:
+    """An unexpected `verdict` value (e.g. `"maybe"`) maps to `unknown`
+    so the CSS selector for verdict colouring doesn't blow up on
+    drift between the model and our schema."""
+    weird = _msg(
+        id=9,
+        role="review_verdict",
+        content=_verdict_json("maybe", "huh"),
+    )
+    it = AgenticIteration(
+        index=1, tool_calls=[], findings=None, verdict=weird
+    )
+    assert it.verdict_status == "unknown"
+    # The message field is still surfaced — only the status falls back.
+    assert it.verdict_message == "huh"
+
+
+def test_agentic_iteration_verdict_message_from_non_dict_payload() -> None:
+    """A `review_verdict` row whose JSON parses to a non-dict (e.g.,
+    a bare list) falls back to an empty message — same fail-soft
+    behaviour as malformed JSON."""
+    bare_list = _msg(id=9, role="review_verdict", content="[1, 2, 3]")
+    it = AgenticIteration(
+        index=1, tool_calls=[], findings=None, verdict=bare_list
+    )
+    assert it.verdict_status == "unknown"
+    assert it.verdict_message == ""
+
+
+def test_agentic_block_max_iterations_false_when_below_cap() -> None:
+    """A passing iteration short of the cap never trips the
+    max-iterations flag — the badge must NOT show for those turns."""
+    batch = AgenticToolBatchBlock(
+        iterations=[
+            AgenticIteration(
+                index=1,
+                tool_calls=[],
+                findings=None,
+                verdict=_msg(
+                    id=1,
+                    role="review_verdict",
+                    content=_verdict_json("passed"),
+                ),
+            ),
+        ],
+        turn_id="hist-1",
+    )
+    assert batch.max_iterations_reached is False
+
+
+def test_agentic_block_list_and_summary_ids_match_card_id() -> None:
+    """Live SSE and historic templates target rows by `{card_id}-list`
+    and `{card_id}-summary`. The block accessors stay consistent with
+    that convention so a mid-stream reload doesn't break OOB swaps."""
+    batch = AgenticToolBatchBlock(iterations=[], turn_id="hist-7")
+    assert batch.card_id == "tool-card-hist-7"
+    assert batch.list_id == "tool-card-hist-7-list"
+    assert batch.summary_id == "tool-card-hist-7-summary"
+
+
+def test_agentic_block_iteration_with_unpaired_tool_call() -> None:
+    """An iteration that ends with a tool_call but no tool_result
+    (process died mid-call) still commits — the dangling call lands
+    in `tool_calls` with `result=None` so historic rendering shows
+    `?` for its elapsed time."""
+    msgs = [
+        _msg(
+            id=1,
+            role="tool_call",
+            content=json.dumps({"name": "current_time", "arguments": {}}),
+        ),
+        # No tool_result — research moved straight to findings.
+        _msg(id=2, role="research_findings", content="partial"),
+        _msg(id=3, role="review_verdict", content=_verdict_json("passed")),
+    ]
+    blocks = group_messages_for_render(msgs)
+
+    batch = blocks[0]
+    assert isinstance(batch, AgenticToolBatchBlock)
+    assert len(batch.iterations) == 1
+    it = batch.iterations[0]
+    assert len(it.tool_calls) == 1
+    assert it.tool_calls[0][0].id == 1
+    assert it.tool_calls[0][1] is None
+
+
+def test_agentic_block_back_to_back_tool_calls_within_iteration() -> None:
+    """Two consecutive `tool_call` rows with no intervening result
+    (defensive — shouldn't happen with today's loop) both land in
+    the iteration: the first as unpaired, the second paired with
+    the following result."""
+    msgs = [
+        _msg(
+            id=1,
+            role="tool_call",
+            content=json.dumps({"name": "current_time", "arguments": {}}),
+        ),
+        _msg(
+            id=2,
+            role="tool_call",
+            content=json.dumps({"name": "current_time", "arguments": {}}),
+        ),
+        _msg(id=3, role="tool_result", content="ok"),
+        _msg(id=4, role="research_findings", content="combined"),
+        _msg(id=5, role="review_verdict", content=_verdict_json("passed")),
+    ]
+    blocks = group_messages_for_render(msgs)
+
+    batch = blocks[0]
+    assert isinstance(batch, AgenticToolBatchBlock)
+    it = batch.iterations[0]
+    assert len(it.tool_calls) == 2
+    assert it.tool_calls[0][1] is None  # first call orphaned
+    assert it.tool_calls[1][1] is not None
+    assert it.tool_calls[1][1].id == 3
 
 
 # ---------------------------------------------------------------------------

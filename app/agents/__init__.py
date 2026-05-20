@@ -24,6 +24,20 @@ from app.agents.prompts import (
     REVIEW_SYSTEM_PROMPT,
 )
 
+# Phase 13f: the iteration cap is shared by the live orchestrator
+# (`app.agents.loop`) and the historic-render path (`app.render`).
+# Both modules need to agree on "did this turn hit the cap?" — the
+# orchestrator decides when to render the max-iterations badge live,
+# and historic render derives the same flag from the persisted
+# iteration count.
+#
+# Lives in this package's __init__ rather than in `loop.py` because
+# `loop.py` already imports `app.render`; if render imported from
+# loop the import graph would cycle. The __init__ is dependency-free
+# (only pulls in `prompts`, which is pure constants) and is the
+# natural shared surface for the agents package.
+AGENTIC_ITERATION_CAP = 3
+
 # NOTE: `app.agents.verdict_tools` is deliberately NOT re-exported
 # from this package's __init__. The commit order in
 # docs/plans/phase13-agentic-loop.md lets 13b (this module + prompts)
@@ -34,6 +48,7 @@ from app.agents.prompts import (
 #     from app.agents.verdict_tools import REVIEW_TOOL_SPECS, parse_verdict
 
 __all__ = [
+    "AGENTIC_ITERATION_CAP",
     "GENERATION_SYSTEM_PROMPT",
     "RESEARCH_SYSTEM_PROMPT",
     "REVIEW_SYSTEM_PROMPT",

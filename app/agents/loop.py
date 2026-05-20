@@ -52,6 +52,7 @@ from typing import Literal
 import httpx
 
 from app import ollama, queries, render
+from app.agents import AGENTIC_ITERATION_CAP
 from app.agents.prompts import (
     GENERATION_SYSTEM_PROMPT,
     RESEARCH_SYSTEM_PROMPT,
@@ -79,8 +80,12 @@ from app.tools import (
 logger = logging.getLogger(__name__)
 
 
-# Per-turn iteration cap on research↔review. After this many failed
-# reviews we force-generate with whatever findings exist.
+# Module-private alias for the package-level cap so existing in-file
+# references stay terse. The shared value lives in
+# ``app/agents/__init__.py`` because phase 13f's historic-render path
+# (``app/render.py``) also needs to read it — putting it in loop.py
+# would cycle (loop imports render). See the comment over
+# ``AGENTIC_ITERATION_CAP`` in ``app/agents/__init__.py``.
 #
 # Deliberately NOT aliased to single-agent's ``_TOOL_ITERATION_CAP``
 # in ``app/generation.py`` — that one is the per-turn cap for the
@@ -89,7 +94,7 @@ logger = logging.getLogger(__name__)
 # concepts. Aliasing would couple future changes: raising
 # single-agent to 8 would silently make agentic 8 iterations ×
 # 5 tool calls each = 40 tool calls per turn.
-_AGENTIC_ITERATION_CAP = 3
+_AGENTIC_ITERATION_CAP = AGENTIC_ITERATION_CAP
 
 # Per-iteration cap on research tool calls. Hit means we hand off to
 # review with whatever findings the model produced last (or a
