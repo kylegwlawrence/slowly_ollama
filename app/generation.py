@@ -284,6 +284,15 @@ def _build_history_payload(history: list) -> list[dict]:
         A list of dicts in Ollama's ``/api/chat`` ``messages`` shape.
     """
     out: list[dict] = []
+    # When we drop a corrupt tool_call row, we must ALSO drop the
+    # paired tool_result that follows it — otherwise Ollama sees a
+    # role="tool" message with no preceding assistant+tool_calls and
+    # rejects the whole chat with a 400. `_run_generation` writes
+    # call/result rows strictly interleaved (one result immediately
+    # after each call), so "skip the next tool_result" is the right
+    # pairing rule. A non-result row resets the flag so we never
+    # wrongly skip a future unrelated result.
+    skip_next_result = False
     for m in history:
         if m.role == "tool_call":
             try:
@@ -298,9 +307,14 @@ def _build_history_payload(history: list) -> list[dict]:
                         },
                     }],
                 })
+                skip_next_result = False
             except (json.JSONDecodeError, KeyError, TypeError):
+                skip_next_result = True
                 continue
         elif m.role == "tool_result":
+            if skip_next_result:
+                skip_next_result = False
+                continue
             # Decode the JSON envelope so the model sees plain text, not
             # the {"text": ..., "sources": [...]} structure (phase 12h).
             # Legacy pre-12h rows are plain text already; decode_tool_result
@@ -310,6 +324,7 @@ def _build_history_payload(history: list) -> list[dict]:
                 "content": decode_tool_result(m.content).text,
             })
         else:
+            skip_next_result = False
             out.append({"role": m.role, "content": m.content})
     return out
 
