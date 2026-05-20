@@ -442,18 +442,26 @@ async def create_chat_endpoint(
         active_chat_id=chat.id,
     )
 
-    # New sidebar row, marked OOB with selector syntax so HTMX prepends
-    # it to the existing `#chats-list` <ul>. The bare `hx-swap-oob`
-    # values (`true`, `outerHTML`, `innerHTML`) only target an element
-    # by matching id; for `afterbegin` we need the explicit selector
-    # form `<swap-style>:<selector>` (HTMX docs §"Out of Band Swaps").
+    # New sidebar row, OOB-prepended to `#chats-list`. The OOB
+    # attribute lives on a wrapping <ul>, not on the <li> itself —
+    # HTMX's non-outerHTML OOB modes (afterbegin / beforeend / etc.)
+    # insert the OOB element's CHILDREN into the target rather than
+    # the OOB element itself (see He() + u() in htmx.min.js: for
+    # non-outerHTML styles, `t = p(n)` sets the source to the OOB
+    # element directly, and the swap loop then iterates `t.childNodes`).
+    # Without the <ul> wrapper, the <li class="chat-item"> would be
+    # unwrapped and only its inner <a>/<div> would land in
+    # #chats-list — the new row would render unstyled until a reload
+    # re-renders the sidebar from the server.
     item_html = templates.get_template("_chat_item.html").render(
         chat=chat,
         active_chat_id=chat.id,
-        oob_swap="afterbegin:#chats-list",
+    )
+    oob_sidebar_row = (
+        f'<ul hx-swap-oob="afterbegin:#chats-list">{item_html}</ul>'
     )
 
-    body = panel_html + item_html
+    body = panel_html + oob_sidebar_row
     response = HTMLResponse(content=body, status_code=status.HTTP_201_CREATED)
     response.headers["HX-Push-Url"] = f"/chats/{chat.id}"
     return response

@@ -379,10 +379,18 @@ def test_create_chat_returns_201_with_panel_and_oob_row(
     assert 'data-role="user"' in response.text
     assert 'data-role="assistant"' in response.text
     assert "sse-connect=" in response.text
-    # OOB sidebar row: marked for the chats-list with the selector
-    # form. The bare hx-swap-oob="true" wouldn't work because we
-    # need afterbegin against a parent <ul>.
-    assert 'hx-swap-oob="afterbegin:#chats-list"' in response.text
+    # OOB sidebar row: the hx-swap-oob attribute lives on a wrapping
+    # <ul>, NOT on the <li> directly. HTMX's non-outerHTML OOB modes
+    # (afterbegin / beforeend / etc.) insert the OOB element's CHILDREN
+    # into the target rather than the OOB element itself, so a top-level
+    # <li hx-swap-oob="afterbegin:#chats-list"> would be unwrapped and
+    # only its inner <a>/<div> would land in #chats-list — the new row
+    # would render unstyled until reload. The <ul> wrapper preserves the
+    # <li class="chat-item">.
+    assert (
+        '<ul hx-swap-oob="afterbegin:#chats-list">' in response.text
+    ), "OOB attribute must wrap the <li>, not sit on it directly"
+    assert 'class="chat-item"' in response.text
     assert 'data-chat-id=' in response.text
     # URL push so reload restores the new chat's view.
     assert response.headers["HX-Push-Url"].startswith("/chats/")
