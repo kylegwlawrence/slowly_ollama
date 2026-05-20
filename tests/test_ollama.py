@@ -7,7 +7,7 @@ response — no network, no subprocess, no fixture infrastructure.
 """
 
 import json
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 
 import httpx
 import pytest
@@ -23,24 +23,8 @@ from app.ollama import (
     list_tool_capable_models,
     maybe_tool_call,
     model_supports_tools,
-    reset_capability_cache,
     stream_chat,
 )
-
-
-@pytest.fixture(autouse=True)
-def _reset_capability_cache() -> Iterator[None]:
-    """Drop the module-level capability cache around every test.
-
-    Phase 12f's ``list_tool_capable_models`` memoises results in a
-    process-global dict so the dropdown's /api/show fan-out only pays
-    its cost once per minute. That state would leak between tests
-    otherwise — one test populating it could make a later test see
-    cached names instead of hitting its own mock transport.
-    """
-    reset_capability_cache()
-    yield
-    reset_capability_cache()
 
 
 def _client_with(

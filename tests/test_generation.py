@@ -12,31 +12,6 @@ from app.connection import open_connection
 from app.db import initialize_database
 
 
-@pytest.fixture(autouse=True)
-def _clear_live_generations():
-    """Reset the module-level registry between tests so a residual
-    state from a previous test can't influence this one."""
-    saved = dict(generation.live_generations)
-    generation.live_generations.clear()
-    yield
-    generation.live_generations.clear()
-    generation.live_generations.update(saved)
-
-
-@pytest.fixture(autouse=True)
-def _reset_capability_cache():
-    """Drop phase 12f's process-global tool-capability cache.
-
-    Same kind of module-level state as ``live_generations`` above —
-    if another file's test populates it first, our ``_run_generation``
-    calls would consult stale names instead of going through the
-    monkeypatched ``model_supports_tools`` stub.
-    """
-    ollama.reset_capability_cache()
-    yield
-    ollama.reset_capability_cache()
-
-
 def _setup_chat(db_path: Path, name: str = "test") -> int:
     """Create a chat + one user message in a fresh DB. Returns the conv id."""
     initialize_database(db_path)
