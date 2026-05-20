@@ -9,10 +9,19 @@ has been violated and we learned the cost, the cost is named.
 
 ## Database, schemas, queries
 
-- **Use `with conn:` for transactions** (native sqlite3 context manager).
-  Never `with closing(conn)` — the shared connection is opened once at
+- **Use `with conn:` for transactions** (native sqlite3 context manager)
+  on the SHARED connection from `app.state.db`. Never
+  `with closing(shared_conn)` — the shared connection is opened once at
   startup in `main.py`'s lifespan; `closing()` would close it after one
   query and break every subsequent call.
+- **Use `with closing(open_connection()) as conn:` for private one-shot
+  connections.** `sqlite3.Connection.__exit__` only commits/rolls back;
+  it does NOT close. Without `closing`, the handle leaks until GC —
+  that's the source of the "unclosed SQLite connection" warnings.
+  See `app/tools/rag.py` for the call sites; tools open private
+  connections today because they can't see the shared one (a future
+  `RunContext` could change that — see
+  `docs/code_reviews/2026-05-20-backend-pre-phase-13.md` item 7).
 - **Schema CHECKs in SQL are a one-way street.** SQLite has no
   `ALTER TABLE ... DROP CONSTRAINT`. If we add a CHECK and later need to
   relax it (as in 12a, expanding `role` from `('user','assistant')` to
