@@ -564,30 +564,27 @@ def render_done_card_oobs(
 # ---------------------------------------------------------------------------
 
 
-def agentic_summary_text(
-    iterations_run: int,
-    *,
-    done: bool,
-    max_iterations_reached: bool = False,
-) -> str:
+def agentic_summary_text(iterations_run: int, *, done: bool) -> str:
     """Render the agentic-card summary phrase.
 
-    Three states, mutually exclusive:
+    Two states:
 
-    - **initial / per-iteration** (done=False, iterations_run==0 OR
-      mid-iteration): ``"researching…"`` for the empty shell;
-      ``"researching (iteration N)…"`` once an iteration starts.
-    - **done, passed**: ``"ran N iteration(s)"``.
-    - **done, max-iterations-reached**: ``"ran N iteration(s) (max reached)"``.
+    - **live** (done=False): ``"researching…"`` for the empty shell
+      (iterations_run==0); ``"researching (iteration N)…"`` once an
+      iteration starts.
+    - **done**: ``"ran N iteration(s)"`` — plural beyond 1.
+
+    The max-iterations-reached signal is NOT part of the summary text;
+    it lives in the sibling ``<span id="…-max-marker">`` so the
+    visible "(max reached)" badge appears at cap-hit time (before
+    generation streams) and survives the done-event's outerHTML swap
+    on the summary span (the marker is a sibling, not a child).
 
     Args:
         iterations_run: Count for the past-tense phrasing. Pass 0 for
             the initial shell render (yields ``"researching…"``).
         done: False during the live loop; True for the final summary
             swap that rides along with the ``done`` SSE event.
-        max_iterations_reached: True only when the loop hit
-            ``_AGENTIC_ITERATION_CAP`` without a "passed" verdict.
-            Ignored when ``done`` is False.
 
     Returns:
         Plain text for the ``<span id="…-summary">`` element. Callers
@@ -598,8 +595,7 @@ def agentic_summary_text(
             return "researching…"
         return f"researching (iteration {iterations_run})…"
     plural = "iteration" if iterations_run == 1 else "iterations"
-    suffix = " (max reached)" if max_iterations_reached else ""
-    return f"ran {iterations_run} {plural}{suffix}"
+    return f"ran {iterations_run} {plural}"
 
 
 def render_agentic_card_shell(
@@ -708,7 +704,7 @@ def render_verdict_row(
 
 
 def render_max_iterations_badge(card_id: str) -> str:
-    """Fill the max-iterations sentinel span when the loop hits its cap.
+    """Fill the max-iterations sentinel span with visible badge text.
 
     Emitted only when ``_run_agentic_generation`` exhausted its
     iteration cap without a "passed" verdict. Targets the
@@ -717,15 +713,22 @@ def render_max_iterations_badge(card_id: str) -> str:
     avoiding a full ``<details>`` re-render that would clobber the
     rows already in the DOM.
 
-    Also sets ``data-max-iterations="true"`` on the marker so CSS
-    can style sibling elements off it (the actual "(max reached)"
-    badge text is appended as the summary's done-state swap; this
-    marker is purely a hook).
+    The marker is a SIBLING of ``#{card_id}-summary``, not a child,
+    so the done-event's outerHTML swap on the summary span leaves
+    the badge intact. That's how the "(max reached)" text stays
+    visible from cap-hit through generation streaming into the
+    final done state — without any double-rendering and without the
+    summary text itself needing to know about max-iterations.
+
+    ``data-max-iterations="true"`` doubles as a CSS hook for
+    colouring the badge (added in 13f).
     """
     return (
         f'<span id="{card_id}-max-marker"'
         f' hx-swap-oob="outerHTML"'
-        f' data-max-iterations="true"></span>'
+        f' data-max-iterations="true">'
+        f' (max reached)'
+        f'</span>'
     )
 
 
@@ -733,7 +736,6 @@ def render_agentic_done_summary(
     *,
     summary_id: str,
     iterations_run: int,
-    max_iterations_reached: bool,
 ) -> str:
     """OuterHTML swap on the summary span for the agentic ``done`` event.
 
@@ -743,9 +745,15 @@ def render_agentic_done_summary(
     there are no in-flight rows to freeze (research_findings and
     review_verdict rows are emitted with their final shape and
     don't need a freeze pass).
+
+    The max-iterations-reached signal lives in the sibling
+    ``#{card_id}-max-marker`` span, populated by
+    :func:`render_max_iterations_badge` at cap-hit time. This swap
+    targets the summary span only, so the marker (if present) stays
+    visible alongside the past-tense summary.
     """
     return (
         f'<span id="{summary_id}" hx-swap-oob="outerHTML">'
-        f'{html.escape(agentic_summary_text(iterations_run, done=True, max_iterations_reached=max_iterations_reached))}'
+        f'{html.escape(agentic_summary_text(iterations_run, done=True))}'
         f'</span>'
     )

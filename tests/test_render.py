@@ -802,18 +802,15 @@ def test_agentic_summary_text_done_singular_and_plural() -> None:
     assert agentic_summary_text(3, done=True) == "ran 3 iterations"
 
 
-def test_agentic_summary_text_done_max_iterations_badge() -> None:
-    """Cap-hit suffix is " (max reached)" appended after the count."""
-    assert (
-        agentic_summary_text(3, done=True, max_iterations_reached=True)
-        == "ran 3 iterations (max reached)"
-    )
-    # Singular cap-hit (shouldn't happen with the 3-iteration cap but
-    # the helper handles it consistently).
-    assert (
-        agentic_summary_text(1, done=True, max_iterations_reached=True)
-        == "ran 1 iteration (max reached)"
-    )
+def test_agentic_summary_text_done_does_not_carry_max_reached_signal() -> None:
+    """The summary text is identical whether max-iterations fired or
+    not — the "(max reached)" badge lives in the sibling marker span
+    (see render_max_iterations_badge). The summary swap on done only
+    cares about the iteration count."""
+    # No way to ask the summary about max-iterations any more — the
+    # function signature dropped that parameter. The phrasing is the
+    # same regardless of how the loop terminated.
+    assert agentic_summary_text(3, done=True) == "ran 3 iterations"
 
 
 def test_render_agentic_card_shell_has_agentic_modifier() -> None:
@@ -945,37 +942,65 @@ def test_render_verdict_row_escapes_message_html() -> None:
     assert "&lt;script&gt;" in html_out
 
 
-def test_render_max_iterations_badge_targets_marker_span() -> None:
+def test_render_max_iterations_badge_fills_marker_with_visible_text() -> None:
     """The badge is a tiny outerHTML swap on the sentinel marker span
     that render_agentic_card_shell planted in the summary. Avoids
-    re-rendering the whole <details>."""
+    re-rendering the whole <details>. Crucially the swap inserts
+    VISIBLE badge text so the user sees the cap-hit signal between
+    the iteration-3 failure and the final done event — not just a
+    data attribute that's invisible until 13f's CSS kicks in."""
     html_out = render_max_iterations_badge("tool-card-T")
     assert 'id="tool-card-T-max-marker"' in html_out
     assert 'hx-swap-oob="outerHTML"' in html_out
     assert 'data-max-iterations="true"' in html_out
+    # Visible content: the user sees this even with no CSS applied.
+    assert "(max reached)" in html_out
 
 
-def test_render_agentic_done_summary_passed_path() -> None:
-    """Final summary swap on done — past tense, plural at N>1, no
-    max-reached suffix when the loop terminated via "passed"."""
+def test_render_agentic_done_summary_phrasing() -> None:
+    """Final summary swap on done — past tense, plural at N>1. The
+    summary phrasing is identical regardless of whether the loop
+    terminated via 'passed' or max-iterations; the cap-hit signal
+    rides in the sibling marker span (see render_max_iterations_badge),
+    not in the summary text."""
     html_out = render_agentic_done_summary(
         summary_id="tool-card-T-summary",
         iterations_run=2,
-        max_iterations_reached=False,
     )
     assert 'id="tool-card-T-summary"' in html_out
     assert 'hx-swap-oob="outerHTML"' in html_out
     assert "ran 2 iterations" in html_out
+    # Summary never carries the max-reached suffix — that's the
+    # marker's job, and it's a sibling not a child of #summary, so
+    # this outerHTML swap leaves it intact.
     assert "max reached" not in html_out
 
 
-def test_render_agentic_done_summary_max_reached_path() -> None:
-    """max_iterations_reached=True appends the " (max reached)" badge
-    so the user knows the answer is force-generated from the last
-    failed iteration's findings."""
+def test_render_agentic_done_summary_singular_at_one_iteration() -> None:
+    """Pluralization matches summary_text() conventions for the
+    single-agent tool-card."""
     html_out = render_agentic_done_summary(
         summary_id="tool-card-T-summary",
-        iterations_run=3,
-        max_iterations_reached=True,
+        iterations_run=1,
     )
-    assert "ran 3 iterations (max reached)" in html_out
+    assert "ran 1 iteration" in html_out
+    assert "iterations" not in html_out
+
+
+def test_marker_and_done_summary_are_independent_swap_targets() -> None:
+    """The done-event's outerHTML on #{summary_id} replaces only the
+    summary span. The marker span is a sibling (see the shell
+    template) so it survives the swap — the "(max reached)" badge
+    stays visible alongside the past-tense summary at done time.
+
+    Pins the structural contract: marker id and summary id are
+    distinct so HTMX targets them independently."""
+    badge = render_max_iterations_badge("tool-card-T")
+    summary = render_agentic_done_summary(
+        summary_id="tool-card-T-summary", iterations_run=3,
+    )
+    # Two different swap targets; one swap doesn't touch the other.
+    assert 'id="tool-card-T-max-marker"' in badge
+    assert 'id="tool-card-T-summary"' in summary
+    assert "max-marker" not in summary
+    assert "-summary" not in badge.replace("tool-card-T-max-marker", "")
