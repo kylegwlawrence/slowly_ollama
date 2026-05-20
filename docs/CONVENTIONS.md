@@ -89,6 +89,16 @@ has been violated and we learned the cost, the cost is named.
   response, two DOM regions: the response body is the new chat panel for
   `#main`, plus an OOB-swapped sidebar row, plus an `HX-Push-Url` header
   to update the URL. No follow-up GET needed.
+- **Non-outerHTML OOB swaps unwrap their root.** Anything other than
+  `hx-swap-oob="true"` / `"outerHTML"` / `"outerHTML:#id"` (so:
+  `afterbegin:…`, `beforeend:…`, `beforebegin:…`, `afterend:…`,
+  `innerHTML:…`, `delete`) inserts the OOB element's CHILDREN into the
+  target — the OOB element itself is discarded. Put the `hx-swap-oob`
+  attribute on a throwaway wrapper, not on the styled element you
+  want preserved. Bug surfaced in the new-chat sidebar row: a top-
+  level `<li class="chat-item" hx-swap-oob="afterbegin:#chats-list">`
+  silently lost its `<li>` wrapper, leaving the row unstyled until
+  reload. Fix: `<ul hx-swap-oob="…"><li class="chat-item">…</li></ul>`.
 - **Two-step POST-then-GET for SSE streaming.** `htmx-ext-sse` opens
   EventSource connections only via GET. So POST `/chats/{id}/messages`
   persists the user message and returns an SSE placeholder element; the
