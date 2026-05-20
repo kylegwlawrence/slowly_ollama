@@ -128,6 +128,74 @@ async def _emit(state: GenerationState, event: str, payload: str) -> None:
         state.cond.notify_all()
 
 
+async def emit_ollama_error(
+    state: GenerationState,
+    exc: OllamaUnavailable | OllamaProtocolError,
+) -> None:
+    """Emit an SSE ``error`` event describing an Ollama-layer failure.
+
+    Replaces four near-identical ``except`` blocks across
+    ``_run_generation``. Pulled out as a top-level (no leading
+    underscore) because phase 13's agentic-loop producer in
+    ``app/agents/loop.py`` will need the same error-emission shape
+    and importing a private name would be a footgun.
+    """
+    label = (
+        "Ollama unavailable"
+        if isinstance(exc, OllamaUnavailable)
+        else "Ollama protocol error"
+    )
+    await _emit(
+        state,
+        "error",
+        f'<div class="error">{label}: {html.escape(str(exc))}</div>',
+    )
+
+
+def maybe_persist_partial(
+    db: sqlite3.Connection,
+    conversation_id: int,
+    on_complete: Literal["append", "replace"],
+    chunks: list[str],
+    persisted_or_errored: bool,
+) -> None:
+    """Write a partial assistant row if the normal-path write didn't fire.
+
+    Phase 12e.1 safety net. The producer's outer ``finally`` calls
+    this exactly once on every exit path. When ``persisted_or_errored``
+    is True (normal completion OR an Ollama error already wrote/emitted)
+    this is a no-op. Otherwise we drop a ``(response interrupted)``
+    bubble — or the partial token buffer if any tokens streamed —
+    so the chat panel has *something* to render after a reload.
+
+    Pulled out for the same reason as ``emit_ollama_error``: phase 13's
+    agentic producer needs the same safety-net shape and a duplicate
+    finally-body would drift the moment one side is touched.
+    """
+    if persisted_or_errored:
+        return
+    partial = "".join(chunks) if chunks else "(response interrupted)"
+    if on_complete == "append":
+        queries.append_message(db, conversation_id, "assistant", partial)
+    elif chunks:
+        queries.replace_last_assistant_message(
+            db, conversation_id, partial
+        )
+
+
+async def signal_done(state: GenerationState) -> None:
+    """Mark the state done and wake every pending consumer.
+
+    Producer's last act on every exit path. ``notify_all`` is safe
+    when there are zero consumers; a future consumer that attaches
+    after this point still sees ``state.done`` and exits its drain
+    loop without waiting on the condition.
+    """
+    async with state.cond:
+        state.done = True
+        state.cond.notify_all()
+
+
 async def consume_generation(
     state: GenerationState,
 ) -> AsyncIterator[str]:
@@ -499,19 +567,12 @@ async def _run_generation(
                     _build_history_payload(working_history),
                     tools=tools_payload,
                 )
-            except OllamaUnavailable as e:
+            except (OllamaUnavailable, OllamaProtocolError) as e:
+                # Set BEFORE the await — await is a cancellation point;
+                # the outer finally must see the flag if cancellation
+                # lands inside emit_ollama_error.
                 persisted_or_errored = True
-                await _emit(
-                    state, "error",
-                    f'<div class="error">Ollama unavailable: {html.escape(str(e))}</div>',
-                )
-                return
-            except OllamaProtocolError as e:
-                persisted_or_errored = True
-                await _emit(
-                    state, "error",
-                    f'<div class="error">Ollama protocol error: {html.escape(str(e))}</div>',
-                )
+                await emit_ollama_error(state, e)
                 return
 
             if not tool_calls:
@@ -635,19 +696,10 @@ async def _run_generation(
                     await _emit(state, "token", html.escape(chunk.content))
                 if chunk.done:
                     break
-        except OllamaUnavailable as e:
+        except (OllamaUnavailable, OllamaProtocolError) as e:
+            # Flag-before-await mirrors the probe-loop branch above.
             persisted_or_errored = True
-            await _emit(
-                state, "error",
-                f'<div class="error">Ollama unavailable: {html.escape(str(e))}</div>',
-            )
-            return
-        except OllamaProtocolError as e:
-            persisted_or_errored = True
-            await _emit(
-                state, "error",
-                f'<div class="error">Ollama protocol error: {html.escape(str(e))}</div>',
-            )
+            await emit_ollama_error(state, e)
             return
 
         full_text = "".join(chunks)
@@ -682,24 +734,13 @@ async def _run_generation(
         )
         await _emit(state, "done", done_card_oobs + final_html)
     finally:
-        # Phase 12e.1 safety net. Fires on any non-normal exit
-        # (CancelledError, GeneratorExit, unhandled exception) at
-        # ANY phase above. Normal completion + Ollama errors both
-        # set the flag and skip. SQLite writes are synchronous so
-        # the row lands before any propagating exception resumes.
-        if not persisted_or_errored:
-            partial = "".join(chunks) if chunks else "(response interrupted)"
-            if on_complete == "append":
-                queries.append_message(
-                    db, conversation_id, "assistant", partial
-                )
-            elif chunks:
-                queries.replace_last_assistant_message(
-                    db, conversation_id, partial
-                )
-        # Mark done and wake any pending consumers so they exit
-        # their loop instead of waiting forever on a task that's
-        # gone. notify_all is safe even if there are no consumers.
-        async with state.cond:
-            state.done = True
-            state.cond.notify_all()
+        # Phase 12e.1 safety net. The helpers fire on every exit path —
+        # CancelledError, GeneratorExit, unhandled exception, normal
+        # completion, OR Ollama errors. `maybe_persist_partial` no-ops
+        # when `persisted_or_errored` is True; `signal_done` always
+        # wakes pending consumers so they exit their drain loop instead
+        # of waiting forever on a task that's gone.
+        maybe_persist_partial(
+            db, conversation_id, on_complete, chunks, persisted_or_errored
+        )
+        await signal_done(state)
