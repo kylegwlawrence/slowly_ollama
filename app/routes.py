@@ -42,6 +42,7 @@ import html
 import sqlite3
 from typing import Annotated
 
+import httpx
 from fastapi import APIRouter, Form, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, StreamingResponse
 
@@ -435,6 +436,10 @@ async def create_chat_endpoint(
         on_complete="append",
     )
 
+    agentic_skipped = await _compute_agentic_skipped(
+        db=db, client=client, model=chat.model
+    )
+
     # Panel includes the just-saved user bubble AND an inline assistant
     # placeholder that opens the SSE stream on insert. Inlining the
     # placeholder (via `pending_stream_url`) avoids an OOB-vs-main
@@ -445,6 +450,7 @@ async def create_chat_endpoint(
         blocks=blocks,
         pending_stream_url=f"/chats/{chat.id}/stream",
         active_chat_id=chat.id,
+        agentic_skipped=agentic_skipped,
     )
 
     # New sidebar row, OOB-prepended to `#chats-list`. The OOB attribute
@@ -468,9 +474,35 @@ async def create_chat_endpoint(
     return response
 
 
+async def _compute_agentic_skipped(
+    *,
+    db: sqlite3.Connection,
+    client: httpx.AsyncClient,
+    model: str,
+) -> bool:
+    """Return True when agentic mode is on but ``model`` lacks tools.
+
+    Phase 13g surface for the no-tools-fallback signal: the dispatcher
+    in ``app/generation.py`` silently picks single-agent when this
+    condition holds; the chat panel renders a banner above #messages
+    so the user understands why they aren't seeing the agentic loop.
+
+    Cheap by design — when agentic mode is off, we short-circuit and
+    never call ``model_supports_tools``. With agentic mode on the
+    capability lookup is cached for ~60s, so reload spam doesn't
+    storm /api/tags.
+    """
+    if not queries.get_agentic_mode(db):
+        return False
+    return not await ollama.model_supports_tools(client, model)
+
+
 @router.get("/chats/{conversation_id}", response_class=HTMLResponse)
-def get_chat_panel_endpoint(
-    request: Request, conversation_id: int, db: DB
+async def get_chat_panel_endpoint(
+    request: Request,
+    conversation_id: int,
+    db: DB,
+    client: OllamaClient,
 ) -> Response:
     """Return the chat panel — as a fragment for HTMX, or the full page
     on a direct browser hit.
@@ -515,6 +547,10 @@ def get_chat_panel_endpoint(
             blocks = blocks[:-1]
         pending_stream_url = f"/chats/{conversation_id}/stream"
 
+    agentic_skipped = await _compute_agentic_skipped(
+        db=db, client=client, model=conversation.model
+    )
+
     if request.headers.get("HX-Request"):
         return templates.TemplateResponse(
             request=request,
@@ -523,6 +559,7 @@ def get_chat_panel_endpoint(
                 "conversation": conversation,
                 "blocks": blocks,
                 "pending_stream_url": pending_stream_url,
+                "agentic_skipped": agentic_skipped,
             },
         )
     return templates.TemplateResponse(
@@ -533,6 +570,7 @@ def get_chat_panel_endpoint(
             "conversation": conversation,
             "blocks": blocks,
             "pending_stream_url": pending_stream_url,
+            "agentic_skipped": agentic_skipped,
             # The active row highlight lives in the sidebar; pass the
             # id so `_chat_item.html` can set `aria-current="page"`.
             "active_chat_id": conversation.id,
