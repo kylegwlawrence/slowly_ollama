@@ -59,7 +59,7 @@ async def test_start_generation_registers_state_and_spawns_task(tmp_path):
     )
 
     with open_connection(db_path) as db:
-        state = generation.start_generation(
+        state = await generation.start_generation(
             client=client,
             db=db,
             conversation_id=conv_id,
@@ -92,7 +92,7 @@ async def test_start_generation_rejects_in_flight_duplicate(tmp_path):
     generation.live_generations[conv_id] = state
 
     with pytest.raises(generation.GenerationInProgress):
-        generation.start_generation(
+        await generation.start_generation(
             client=None,
             db=None,
             conversation_id=conv_id,
@@ -120,7 +120,7 @@ async def test_start_generation_evicts_done_state(tmp_path):
     generation.live_generations[conv_id] = prev
 
     with open_connection(db_path) as db:
-        new_state = generation.start_generation(
+        new_state = await generation.start_generation(
             client=client,
             db=db,
             conversation_id=conv_id,
@@ -150,7 +150,7 @@ async def test_consume_generation_drains_then_exits(tmp_path):
     )
 
     with open_connection(db_path) as db:
-        state = generation.start_generation(
+        state = await generation.start_generation(
             client=client,
             db=db,
             conversation_id=conv_id,
@@ -180,7 +180,7 @@ async def test_late_consumer_replays_full_history(tmp_path):
     )
 
     with open_connection(db_path) as db:
-        state = generation.start_generation(
+        state = await generation.start_generation(
             client=client,
             db=db,
             conversation_id=conv_id,
@@ -210,7 +210,7 @@ async def test_two_consumers_see_same_events(tmp_path):
     )
 
     with open_connection(db_path) as db:
-        state = generation.start_generation(
+        state = await generation.start_generation(
             client=client,
             db=db,
             conversation_id=conv_id,
@@ -383,7 +383,7 @@ async def test_generation_omits_tools_when_model_not_tool_capable(
     monkeypatch.setattr(ollama, "model_supports_tools", _not_capable)
 
     with open_connection(db_path) as db:
-        state = generation.start_generation(
+        state = await generation.start_generation(
             client=client,
             db=db,
             conversation_id=conv_id,
@@ -539,7 +539,7 @@ async def test_tool_result_persisted_as_json_envelope_with_sources(
     monkeypatch.setattr(ollama, "model_supports_tools", _capable)
 
     with open_connection(db_path) as db:
-        state = generation.start_generation(
+        state = await generation.start_generation(
             client=client,
             db=db,
             conversation_id=conv_id,
@@ -620,7 +620,7 @@ async def test_tool_result_persisted_as_json_envelope_for_text_only_tool(
     )
 
     with open_connection(db_path) as db:
-        state = generation.start_generation(
+        state = await generation.start_generation(
             client=client,
             db=db,
             conversation_id=conv_id,
@@ -953,7 +953,7 @@ async def test_frozen_row_after_tool_result_carries_sources_in_oob_payload(
     monkeypatch.setattr(ollama, "model_supports_tools", _capable)
 
     with open_connection(db_path) as db:
-        state = generation.start_generation(
+        state = await generation.start_generation(
             client=client,
             db=db,
             conversation_id=conv_id,
@@ -977,3 +977,184 @@ async def test_frozen_row_after_tool_result_carries_sources_in_oob_payload(
     li_prefix, _, details_part = payload.partition("<details")
     assert 'hx-swap-oob="outerHTML"' in li_prefix
     assert "hx-swap-oob" not in details_part
+
+
+# ---------------------------------------------------------------------------
+# Phase 13d.3: dispatcher branching in start_generation
+#
+# The dispatcher picks between _run_generation (single-agent) and
+# app.agents.loop._run_agentic_generation based on the agentic_mode
+# setting AND the chat's model tool-capability. These tests stub both
+# producers so the test only cares about which one start_generation
+# picked — the producer bodies themselves are exercised in
+# test_agentic_loop.py and the rest of this file.
+# ---------------------------------------------------------------------------
+
+
+def _capture_producer_calls(monkeypatch):
+    """Stub both producers; return dicts that record invocation counts.
+
+    Each stub immediately signals done so the test's task cleanup
+    works the same as a real run.
+    """
+    from app.agents import loop as agentic_loop
+
+    agentic_calls = {"count": 0, "last_kwargs": None}
+    single_calls = {"count": 0, "last_kwargs": None}
+
+    async def fake_agentic(**kwargs):
+        agentic_calls["count"] += 1
+        agentic_calls["last_kwargs"] = kwargs
+        await generation.signal_done(kwargs["state"])
+
+    async def fake_single(**kwargs):
+        single_calls["count"] += 1
+        single_calls["last_kwargs"] = kwargs
+        await generation.signal_done(kwargs["state"])
+
+    monkeypatch.setattr(
+        agentic_loop, "_run_agentic_generation", fake_agentic,
+    )
+    monkeypatch.setattr(generation, "_run_generation", fake_single)
+
+    return agentic_calls, single_calls
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_routes_to_agentic_when_enabled_and_tool_capable(
+    tmp_path, monkeypatch,
+):
+    """agentic_mode on + model_supports_tools True → agentic producer."""
+    db_path = tmp_path / "chats.db"
+    conv_id = _setup_chat(db_path)
+
+    # Enable agentic mode in the DB.
+    with open_connection(db_path) as conn:
+        queries.set_agentic_mode(conn, True)
+
+    # Model is tool-capable.
+    async def _capable(_client, _name):
+        return True
+    monkeypatch.setattr(ollama, "model_supports_tools", _capable)
+
+    agentic_calls, single_calls = _capture_producer_calls(monkeypatch)
+
+    with open_connection(db_path) as db:
+        state = await generation.start_generation(
+            client=None, db=db,
+            conversation_id=conv_id, model="llama3",
+            history=queries.list_messages(db, conv_id),
+            on_complete="append",
+        )
+        await state.task
+
+    assert agentic_calls["count"] == 1
+    assert single_calls["count"] == 0
+    # The kwargs reach the producer unchanged.
+    assert agentic_calls["last_kwargs"]["conversation_id"] == conv_id
+    assert agentic_calls["last_kwargs"]["on_complete"] == "append"
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_falls_back_to_single_agent_when_model_lacks_tools(
+    tmp_path, monkeypatch,
+):
+    """agentic_mode on + model_supports_tools False → single-agent.
+
+    Silent fallback per the locked decision. The route layer (13e)
+    is responsible for surfacing a "agentic mode skipped" badge to
+    the user; the dispatcher itself just routes."""
+    db_path = tmp_path / "chats.db"
+    conv_id = _setup_chat(db_path)
+
+    with open_connection(db_path) as conn:
+        queries.set_agentic_mode(conn, True)
+
+    # Model is NOT tool-capable.
+    async def _not_capable(_client, _name):
+        return False
+    monkeypatch.setattr(ollama, "model_supports_tools", _not_capable)
+
+    agentic_calls, single_calls = _capture_producer_calls(monkeypatch)
+
+    with open_connection(db_path) as db:
+        state = await generation.start_generation(
+            client=None, db=db,
+            conversation_id=conv_id, model="llama3",
+            history=queries.list_messages(db, conv_id),
+            on_complete="append",
+        )
+        await state.task
+
+    assert agentic_calls["count"] == 0
+    assert single_calls["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_routes_to_single_agent_when_agentic_off(
+    tmp_path, monkeypatch,
+):
+    """agentic_mode off → single-agent regardless of tool capability.
+
+    The default state — agentic_mode defaults to off and existing
+    chats are unaffected by phase 13's machinery."""
+    db_path = tmp_path / "chats.db"
+    conv_id = _setup_chat(db_path)
+
+    # agentic_mode left at default (off).
+
+    # Tool-capable model — should NOT matter; the dispatcher gates
+    # on the toggle first.
+    async def _capable(_client, _name):
+        return True
+    monkeypatch.setattr(ollama, "model_supports_tools", _capable)
+
+    agentic_calls, single_calls = _capture_producer_calls(monkeypatch)
+
+    with open_connection(db_path) as db:
+        state = await generation.start_generation(
+            client=None, db=db,
+            conversation_id=conv_id, model="llama3",
+            history=queries.list_messages(db, conv_id),
+            on_complete="append",
+        )
+        await state.task
+
+    assert agentic_calls["count"] == 0
+    assert single_calls["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_in_flight_guard_fires_before_first_await(
+    tmp_path, monkeypatch,
+):
+    """GenerationInProgress raises SYNCHRONOUSLY before the agentic-
+    dispatch await. Pins that callers' `except GenerationInProgress`
+    still catches the exception even after start_generation became
+    async (the async change shouldn't reshape exception delivery to
+    upstream try/except blocks)."""
+    db_path = tmp_path / "chats.db"
+    conv_id = _setup_chat(db_path)
+
+    # Plant an in-flight sentinel state — same pattern as the
+    # existing test_start_generation_rejects_in_flight_duplicate.
+    sentinel = generation.GenerationState(conversation_id=conv_id)
+    # Don't set done — leave it "in flight" so the guard fires.
+    generation.live_generations[conv_id] = sentinel
+
+    # Make model_supports_tools raise if reached — pins that the
+    # guard truly fires BEFORE the dispatcher await.
+    async def _should_not_be_called(*args, **kwargs):
+        raise AssertionError(
+            "model_supports_tools called despite in-flight guard"
+        )
+    monkeypatch.setattr(ollama, "model_supports_tools", _should_not_be_called)
+
+    with open_connection(db_path) as db:
+        with pytest.raises(generation.GenerationInProgress):
+            await generation.start_generation(
+                client=None, db=db,
+                conversation_id=conv_id, model="llama3",
+                history=[],
+                on_complete="append",
+            )
