@@ -550,3 +550,202 @@ def render_done_card_oobs(
         )
         frozen_rows_html += render_tool_card_row_freeze(frozen_row)
     return summary_html + frozen_rows_html
+
+
+# ---------------------------------------------------------------------------
+# Agentic-mode render helpers (phase 13d)
+#
+# Companion to the single-agent tool-card helpers above. The agentic
+# orchestrator emits one card per assistant turn with the same outer
+# <details> shell but with iteration headers, findings rows, and
+# verdict rows inside instead of a flat tool-row list. The historic
+# replay path lands in 13f (AgenticToolBatchBlock + its template);
+# these helpers cover the live SSE path.
+# ---------------------------------------------------------------------------
+
+
+def agentic_summary_text(
+    iterations_run: int,
+    *,
+    done: bool,
+    max_iterations_reached: bool = False,
+) -> str:
+    """Render the agentic-card summary phrase.
+
+    Three states, mutually exclusive:
+
+    - **initial / per-iteration** (done=False, iterations_run==0 OR
+      mid-iteration): ``"researching…"`` for the empty shell;
+      ``"researching (iteration N)…"`` once an iteration starts.
+    - **done, passed**: ``"ran N iteration(s)"``.
+    - **done, max-iterations-reached**: ``"ran N iteration(s) (max reached)"``.
+
+    Args:
+        iterations_run: Count for the past-tense phrasing. Pass 0 for
+            the initial shell render (yields ``"researching…"``).
+        done: False during the live loop; True for the final summary
+            swap that rides along with the ``done`` SSE event.
+        max_iterations_reached: True only when the loop hit
+            ``_AGENTIC_ITERATION_CAP`` without a "passed" verdict.
+            Ignored when ``done`` is False.
+
+    Returns:
+        Plain text for the ``<span id="…-summary">`` element. Callers
+        wrap it in the outerHTML OOB swap; HTML-escape at the boundary.
+    """
+    if not done:
+        if iterations_run == 0:
+            return "researching…"
+        return f"researching (iteration {iterations_run})…"
+    plural = "iteration" if iterations_run == 1 else "iterations"
+    suffix = " (max reached)" if max_iterations_reached else ""
+    return f"ran {iterations_run} {plural}{suffix}"
+
+
+def render_agentic_card_shell(
+    *,
+    card_id: str,
+    list_id: str,
+    summary_id: str,
+    conversation_id: int,
+) -> str:
+    """Render the empty agentic card shell — emitted once per turn.
+
+    Subsequent iteration-start / tool-call / findings / verdict
+    events OOB-append into ``#{list_id}`` and OOB-swap the summary
+    span and the max-marker span. The shell is the swap unit only on
+    first emission (``beforebegin:#assistant-stream-…``); after that
+    the card lives in the DOM and downstream events target its
+    children.
+    """
+    return templates.get_template("_tool_card_shell.html").render(
+        card_id=card_id,
+        list_id=list_id,
+        summary_id=summary_id,
+        summary_text=agentic_summary_text(0, done=False),
+        rows=[],
+        agentic=True,
+        swap_oob=f"beforebegin:#assistant-stream-{conversation_id}",
+    )
+
+
+def render_iteration_start(
+    *,
+    iteration_index: int,
+    list_id: str,
+    summary_id: str,
+) -> str:
+    """Render the iteration-start OOB: header row + summary update.
+
+    Two OOB fragments concatenated:
+
+    - ``<li class="tool-card__iteration-header">`` appended to the
+      card's <ul> via ``beforeend:#{list_id}``. The header is purely
+      decorative; CSS hides the bullet via ``list-style: none``.
+    - ``<span id="{summary_id}">`` replaces the current summary span
+      with one reading ``"researching (iteration N)…"``.
+
+    Built inline (no template) because each fragment is one element
+    and the OOB attributes are the whole payload — a template would
+    be more noise than signal.
+    """
+    header_html = (
+        f'<li hx-swap-oob="beforeend:#{list_id}"'
+        f' class="tool-card__iteration-header"'
+        f' data-iteration="{iteration_index}">'
+        f'Iteration {iteration_index}'
+        f'</li>'
+    )
+    summary_html = (
+        f'<span id="{summary_id}" hx-swap-oob="outerHTML">'
+        f'{html.escape(agentic_summary_text(iteration_index, done=False))}'
+        f'</span>'
+    )
+    return header_html + summary_html
+
+
+def render_findings_row(
+    *,
+    findings: str,
+    iteration_index: int,
+    list_id: str,
+) -> str:
+    """Render the research-findings OOB for one iteration.
+
+    OOB-appends a ``<li class="tool-card__findings">`` to the card's
+    <ul>. The text is markdown-rendered via the Jinja filter so the
+    model's natural prose comes out formatted; the historic-replay
+    template (sub-phase 13f) renders the same shape from the
+    persisted ``research_findings`` row.
+    """
+    return templates.get_template("_findings_row.html").render(
+        findings=findings,
+        iteration_index=iteration_index,
+        swap_oob=f"beforeend:#{list_id}",
+    )
+
+
+def render_verdict_row(
+    *,
+    verdict_status: str,
+    verdict_message: str,
+    iteration_index: int,
+    list_id: str,
+) -> str:
+    """Render the review-verdict OOB for one iteration.
+
+    OOB-appends a ``<li class="tool-card__verdict tool-card__verdict--{status}">``
+    to the card's <ul>. ``verdict_status`` is ``"passed"`` or
+    ``"failed"`` — the class modifier drives the border + background
+    colour in CSS (added in 13f).
+    """
+    return templates.get_template("_verdict_row.html").render(
+        verdict_status=verdict_status,
+        verdict_message=verdict_message,
+        iteration_index=iteration_index,
+        swap_oob=f"beforeend:#{list_id}",
+    )
+
+
+def render_max_iterations_badge(card_id: str) -> str:
+    """Fill the max-iterations sentinel span when the loop hits its cap.
+
+    Emitted only when ``_run_agentic_generation`` exhausted its
+    iteration cap without a "passed" verdict. Targets the
+    ``<span id="{card_id}-max-marker">`` placeholder
+    ``render_agentic_card_shell`` planted inside the summary —
+    avoiding a full ``<details>`` re-render that would clobber the
+    rows already in the DOM.
+
+    Also sets ``data-max-iterations="true"`` on the marker so CSS
+    can style sibling elements off it (the actual "(max reached)"
+    badge text is appended as the summary's done-state swap; this
+    marker is purely a hook).
+    """
+    return (
+        f'<span id="{card_id}-max-marker"'
+        f' hx-swap-oob="outerHTML"'
+        f' data-max-iterations="true"></span>'
+    )
+
+
+def render_agentic_done_summary(
+    *,
+    summary_id: str,
+    iterations_run: int,
+    max_iterations_reached: bool,
+) -> str:
+    """OuterHTML swap on the summary span for the agentic ``done`` event.
+
+    Flips ``"researching (iteration N)…"`` to past tense. Mirrors
+    ``render_done_card_oobs`` for the single-agent flow but the
+    summary phrasing is different (iterations vs. tool count) and
+    there are no in-flight rows to freeze (research_findings and
+    review_verdict rows are emitted with their final shape and
+    don't need a freeze pass).
+    """
+    return (
+        f'<span id="{summary_id}" hx-swap-oob="outerHTML">'
+        f'{html.escape(agentic_summary_text(iterations_run, done=True, max_iterations_reached=max_iterations_reached))}'
+        f'</span>'
+    )

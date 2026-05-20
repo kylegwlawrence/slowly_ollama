@@ -1,0 +1,29 @@
+{# Phase 13d: one research-findings row inside an agentic tool card.
+
+   Rendered both live (OOB-appended via SSE) and historic (inside the
+   AgenticToolBatchBlock template, see 13f). When `swap_oob` is set,
+   the outer <li> is the swap unit; the nested <details> just rides
+   along as inner content.
+
+   Context vars:
+     findings: str — the research agent's free-form prose summary
+     iteration_index: int — 1-based iteration number for the
+       data-iteration attribute (CSS + DOM-id hooks)
+     swap_oob: str | None — `hx-swap-oob` value when this is the body
+       of an SSE OOB fragment; absent for in-shell renders #}
+<li class="tool-card__findings"
+    data-iteration="{{ iteration_index }}"
+    {%- if swap_oob %} hx-swap-oob="{{ swap_oob }}"{% endif %}>
+  <details>
+    <summary class="tool-card__findings-summary">
+      <span class="material-symbols-outlined">description</span>
+      Research findings
+      <span class="tool-card__chevron material-symbols-outlined">expand_more</span>
+    </summary>
+    {# Markdown filter is wired in app/templates.py; `safe` is required
+       because the filter emits HTML. Findings are model-generated; for
+       a local trusted model this is fine (same posture as
+       _message.html for assistant messages). #}
+    <div class="tool-card__findings-text">{{ findings | markdown | safe }}</div>
+  </details>
+</li>

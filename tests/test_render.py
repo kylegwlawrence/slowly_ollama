@@ -11,14 +11,21 @@ from app.render import (
     MessageBlock,
     ToolBatchBlock,
     ToolRowView,
+    agentic_summary_text,
     card_id_for,
     dedup_sources,
     format_elapsed_mm_ss,
     group_messages_for_render,
+    render_agentic_card_shell,
+    render_agentic_done_summary,
     render_done_card_oobs,
+    render_findings_row,
+    render_iteration_start,
+    render_max_iterations_badge,
     render_tool_card_initial,
     render_tool_card_row_append,
     render_tool_card_row_freeze,
+    render_verdict_row,
     summary_text,
 )
 from app.tools import Source, ToolResult, encode_tool_result
@@ -764,3 +771,211 @@ def test_render_done_card_oobs_freezes_in_flight_rows() -> None:
     assert 'id="tool-card-T-row-0"' in html_out
     assert "data-elapsed-final=" in html_out
     assert "calling current_time" in html_out
+
+
+# ---------------------------------------------------------------------------
+# Agentic-mode render helpers (phase 13d)
+# ---------------------------------------------------------------------------
+
+
+def test_agentic_summary_text_initial_state() -> None:
+    """iterations_run=0 + not-done → just "researching…", no iteration
+    number. Used by the empty card shell on first emission."""
+    assert agentic_summary_text(0, done=False) == "researching…"
+
+
+def test_agentic_summary_text_mid_iteration() -> None:
+    """iterations_run>0 + not-done → "researching (iteration N)…"."""
+    assert (
+        agentic_summary_text(1, done=False) == "researching (iteration 1)…"
+    )
+    assert (
+        agentic_summary_text(3, done=False) == "researching (iteration 3)…"
+    )
+
+
+def test_agentic_summary_text_done_singular_and_plural() -> None:
+    """Past tense: singular at 1, plural elsewhere — same convention
+    as summary_text() for tool counts."""
+    assert agentic_summary_text(1, done=True) == "ran 1 iteration"
+    assert agentic_summary_text(2, done=True) == "ran 2 iterations"
+    assert agentic_summary_text(3, done=True) == "ran 3 iterations"
+
+
+def test_agentic_summary_text_done_max_iterations_badge() -> None:
+    """Cap-hit suffix is " (max reached)" appended after the count."""
+    assert (
+        agentic_summary_text(3, done=True, max_iterations_reached=True)
+        == "ran 3 iterations (max reached)"
+    )
+    # Singular cap-hit (shouldn't happen with the 3-iteration cap but
+    # the helper handles it consistently).
+    assert (
+        agentic_summary_text(1, done=True, max_iterations_reached=True)
+        == "ran 1 iteration (max reached)"
+    )
+
+
+def test_render_agentic_card_shell_has_agentic_modifier() -> None:
+    """The shell carries the `tool-card--agentic` modifier class so
+    CSS can target iteration headers / verdicts / findings rows
+    without affecting single-agent cards."""
+    html_out = render_agentic_card_shell(
+        card_id="tool-card-T",
+        list_id="tool-card-T-list",
+        summary_id="tool-card-T-summary",
+        conversation_id=42,
+    )
+    assert 'class="tool-card tool-card--agentic"' in html_out
+    # OOB swap targets the streaming placeholder, same as the
+    # single-agent first-call path.
+    assert 'hx-swap-oob="beforebegin:#assistant-stream-42"' in html_out
+    # Summary reads the initial "researching…" — no iteration count yet.
+    assert "researching…" in html_out
+    # The empty <ul> is present and addressable.
+    assert 'id="tool-card-T-list"' in html_out
+
+
+def test_render_agentic_card_shell_plants_max_marker_span() -> None:
+    """The sentinel `<span id="…-max-marker">` is rendered empty into
+    the summary. The orchestrator's max-iterations branch fills it
+    via an outerHTML OOB swap — avoiding a full <details> re-render
+    that would clobber rows already in the DOM."""
+    html_out = render_agentic_card_shell(
+        card_id="tool-card-T",
+        list_id="tool-card-T-list",
+        summary_id="tool-card-T-summary",
+        conversation_id=42,
+    )
+    assert 'id="tool-card-T-max-marker"' in html_out
+
+
+def test_render_iteration_start_appends_header_and_swaps_summary() -> None:
+    """iteration-start carries TWO OOB fragments: a header <li>
+    appended to the card's <ul>, and a summary span outerHTML swap
+    reading "researching (iteration N)…"."""
+    html_out = render_iteration_start(
+        iteration_index=2,
+        list_id="tool-card-T-list",
+        summary_id="tool-card-T-summary",
+    )
+    # Header row: append + iteration-data attribute.
+    assert 'hx-swap-oob="beforeend:#tool-card-T-list"' in html_out
+    assert 'class="tool-card__iteration-header"' in html_out
+    assert 'data-iteration="2"' in html_out
+    assert "Iteration 2" in html_out
+    # Summary span swap: outerHTML on the right id.
+    assert 'id="tool-card-T-summary"' in html_out
+    assert 'hx-swap-oob="outerHTML"' in html_out
+    assert "researching (iteration 2)" in html_out
+
+
+def test_render_findings_row_renders_markdown_inside_details() -> None:
+    """Findings text passes through the markdown filter so the
+    model's natural prose renders formatted (bullets, bold, code).
+    The outer <li> is the swap unit; the <details> just rides along."""
+    html_out = render_findings_row(
+        findings="**Key finding**: ozone enhances gas transfer by 12%.",
+        iteration_index=1,
+        list_id="tool-card-T-list",
+    )
+    assert 'class="tool-card__findings"' in html_out
+    assert 'data-iteration="1"' in html_out
+    assert 'hx-swap-oob="beforeend:#tool-card-T-list"' in html_out
+    assert "<details" in html_out
+    # Markdown's **bold** rendered as <strong>.
+    assert "<strong>Key finding</strong>" in html_out
+    assert "ozone enhances gas transfer by 12%" in html_out
+
+
+def test_render_findings_row_swap_oob_on_outer_li() -> None:
+    """hx-swap-oob sits on the outer <li> (the swap unit), not on
+    the inner <details>. Mirrors the same OOB-unit contract as
+    _tool_row.html."""
+    html_out = render_findings_row(
+        findings="x", iteration_index=1, list_id="L",
+    )
+    li_prefix, _, details_part = html_out.partition("<details")
+    assert "hx-swap-oob" in li_prefix
+    assert "hx-swap-oob" not in details_part
+
+
+def test_render_verdict_row_passed_uses_check_glyph() -> None:
+    """Passed verdict gets the check_circle Material Symbols glyph,
+    `--passed` class modifier, and the "Passed:" label."""
+    html_out = render_verdict_row(
+        verdict_status="passed",
+        verdict_message="findings cover the question",
+        iteration_index=1,
+        list_id="tool-card-T-list",
+    )
+    assert "tool-card__verdict--passed" in html_out
+    assert "check_circle" in html_out
+    assert "Passed:" in html_out
+    assert "findings cover the question" in html_out
+    assert 'hx-swap-oob="beforeend:#tool-card-T-list"' in html_out
+
+
+def test_render_verdict_row_failed_uses_cancel_glyph() -> None:
+    """Failed verdict gets the cancel Material Symbols glyph,
+    `--failed` class modifier, and the "Failed:" label."""
+    html_out = render_verdict_row(
+        verdict_status="failed",
+        verdict_message="missing source citations",
+        iteration_index=2,
+        list_id="tool-card-T-list",
+    )
+    assert "tool-card__verdict--failed" in html_out
+    assert "cancel" in html_out
+    assert "Failed:" in html_out
+    assert "missing source citations" in html_out
+
+
+def test_render_verdict_row_escapes_message_html() -> None:
+    """Verdict message comes from the model; Jinja autoescape must
+    keep model-injected HTML from rendering as live markup."""
+    html_out = render_verdict_row(
+        verdict_status="failed",
+        verdict_message="<script>alert(1)</script>",
+        iteration_index=1,
+        list_id="L",
+    )
+    # The literal <script> tag is escaped to entities, not rendered.
+    assert "<script>" not in html_out
+    assert "&lt;script&gt;" in html_out
+
+
+def test_render_max_iterations_badge_targets_marker_span() -> None:
+    """The badge is a tiny outerHTML swap on the sentinel marker span
+    that render_agentic_card_shell planted in the summary. Avoids
+    re-rendering the whole <details>."""
+    html_out = render_max_iterations_badge("tool-card-T")
+    assert 'id="tool-card-T-max-marker"' in html_out
+    assert 'hx-swap-oob="outerHTML"' in html_out
+    assert 'data-max-iterations="true"' in html_out
+
+
+def test_render_agentic_done_summary_passed_path() -> None:
+    """Final summary swap on done — past tense, plural at N>1, no
+    max-reached suffix when the loop terminated via "passed"."""
+    html_out = render_agentic_done_summary(
+        summary_id="tool-card-T-summary",
+        iterations_run=2,
+        max_iterations_reached=False,
+    )
+    assert 'id="tool-card-T-summary"' in html_out
+    assert 'hx-swap-oob="outerHTML"' in html_out
+    assert "ran 2 iterations" in html_out
+    assert "max reached" not in html_out
+
+
+def test_render_agentic_done_summary_max_reached_path() -> None:
+    """max_iterations_reached=True appends the " (max reached)" badge
+    so the user knows the answer is force-generated from the last
+    failed iteration's findings."""
+    html_out = render_agentic_done_summary(
+        summary_id="tool-card-T-summary",
+        iterations_run=3,
+        max_iterations_reached=True,
+    )
+    assert "ran 3 iterations (max reached)" in html_out
