@@ -124,3 +124,29 @@ def test_parse_verdict_non_string_argument_coerced() -> None:
     )
     assert d.verdict == "passed"
     assert d.message == "42"
+
+
+def test_parse_verdict_non_dict_arguments_safe() -> None:
+    """A misbehaving model that emits `arguments` as a list (or any
+    non-dict) must NOT crash the loop. The verdict is still
+    recognized; message defaults to empty. Without this guard the
+    inline `.get("reason", "")` would AttributeError on a list."""
+    # arguments is a list — the kind of garbage a poorly-tuned model
+    # might emit if it interpreted the schema sloppily.
+    d = verdict_tools.parse_verdict(
+        [{"name": "mark_passed", "arguments": ["reason", "looks good"]}]
+    )
+    assert d.verdict == "passed"
+    assert d.message == ""
+    # arguments is a string.
+    d2 = verdict_tools.parse_verdict(
+        [{"name": "request_more_research", "arguments": "missing source"}]
+    )
+    assert d2.verdict == "failed"
+    assert d2.message == ""
+    # arguments is an int.
+    d3 = verdict_tools.parse_verdict(
+        [{"name": "mark_passed", "arguments": 42}]
+    )
+    assert d3.verdict == "passed"
+    assert d3.message == ""
