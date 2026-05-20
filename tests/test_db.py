@@ -218,7 +218,7 @@ def test_rag_servers_table_exists_after_init(initialized_db: Path) -> None:
         cols = {
             row[1] for row in conn.execute("PRAGMA table_info(rag_servers);")
         }
-    assert cols == {"id", "name", "url", "created_at", "updated_at"}
+    assert cols == {"id", "name", "url", "description", "created_at", "updated_at"}
 
 
 def test_app_settings_table_exists_after_init(initialized_db: Path) -> None:

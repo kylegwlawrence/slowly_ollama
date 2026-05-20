@@ -37,17 +37,30 @@ def test_list_empty(conn: sqlite3.Connection) -> None:
 
 
 def test_create_returns_populated_row(conn: sqlite3.Connection) -> None:
-    """create_server returns a RagServer with id, name, url, and UTC timestamps."""
-    server = create_server(conn, "arxiv", "http://example/arxiv")
+    """create_server returns a RagServer with id, name, url, description, and UTC timestamps."""
+    server = create_server(conn, "arxiv", "http://example/arxiv", description="Papers on CS/ML")
 
     assert isinstance(server, RagServer)
     assert server.id > 0
     assert server.name == "arxiv"
     assert server.url == "http://example/arxiv"
+    assert server.description == "Papers on CS/ML"
     # ISO 8601 UTC round-trip — naive datetimes would mean we lost the
     # timezone marker somewhere in the read path.
     assert server.created_at.tzinfo is not None
     assert server.updated_at == server.created_at
+
+
+def test_create_server_defaults_description_to_empty_string(
+    conn: sqlite3.Connection,
+) -> None:
+    """create_server omitting description stores an empty string.
+
+    The default keeps existing callers (tests, REPL) working without
+    changes; the route handler always passes description explicitly.
+    """
+    server = create_server(conn, "arxiv", "http://example/arxiv")
+    assert server.description == ""
 
 
 def test_create_and_list_in_insertion_order(conn: sqlite3.Connection) -> None:

@@ -52,6 +52,11 @@
         <input type="url" name="url" required
                placeholder="http://host1:8002/arxiv_rag">
       </label>
+      <label class="rag-server-form__description">
+        Description
+        <textarea name="description" required maxlength="200" rows="2"
+                  placeholder="What's in this RAG server? e.g. 'PubMed abstracts on cardiology, 2020-2024'"></textarea>
+      </label>
       <button type="submit">Add server</button>
       {# Health-check result indicator. Populated by app.js's
          setHealthIcon helper after each submit — empty until then,

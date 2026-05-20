@@ -23,9 +23,9 @@ from app.routes import router
 # Importing app.routes (above) transitively imports app.tools.rag, which
 # registers the `query_rag` tool. We re-import the refresh helper here
 # explicitly so the startup hook below is obvious in the lifespan — the
-# alternative (digging through `routes.refresh_query_rag_source_description`)
+# alternative (digging through `routes.refresh_query_rag_registration`)
 # would hide a side effect inside an HTTP module.
-from app.tools.rag import refresh_query_rag_source_description
+from app.tools.rag import refresh_query_rag_registration
 
 # Static assets live alongside `main.py` at the project root. Resolving
 # the path relative to this file (rather than CWD) keeps the mount
@@ -44,15 +44,13 @@ async def lifespan(app: FastAPI):
     # initialize_database is idempotent; safe to call on every boot.
     initialize_database()
 
-    # Phase 12d: prime the `query_rag` tool's `source` schema with the
-    # currently-configured RAG server names. Without this hook the
-    # description text stays at the static fallback baked into the
-    # decorator at import time until the user POSTs/DELETEs a server —
-    # so chat turns on a freshly-booted app with pre-existing servers
-    # would advertise an empty source list to the model. Runs AFTER
-    # initialize_database so the rag_servers table is guaranteed to
-    # exist before we SELECT from it.
-    refresh_query_rag_source_description()
+    # Sync query_rag's registry entry to the current rag_servers state.
+    # With 0 servers the tool is removed entirely (model shouldn't call
+    # a tool that can't succeed); with ≥1 server it's re-added/updated
+    # with per-source descriptions so the model can pick intelligently.
+    # Runs AFTER initialize_database so the rag_servers table is
+    # guaranteed to exist before we SELECT from it.
+    refresh_query_rag_registration()
 
     db = open_connection()
     ollama_client = create_client()

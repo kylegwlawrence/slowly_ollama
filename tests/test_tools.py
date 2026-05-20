@@ -617,33 +617,86 @@ async def test_query_rag_handles_unreachable_server(
     assert result.sources == []
 
 
-def test_refresh_query_rag_source_description_injects_names(
+def test_refresh_query_rag_registration_includes_descriptions(
     rag_db: Path,
 ) -> None:
-    """After CRUD, the tool's source-arg description lists the current names."""
+    """After adding servers, the source-arg hint contains name + description."""
     from app import rag_servers as _rs
     from app.connection import open_connection
     from app.tools import TOOLS
     from app.tools import rag as _rag  # noqa: F401 — registers query_rag
-    from app.tools.rag import refresh_query_rag_source_description
+    from app.tools.rag import refresh_query_rag_registration
 
-    # Start: no servers → "(none configured)" in the hint.
-    refresh_query_rag_source_description()
-    desc = TOOLS["query_rag"].parameters_schema["properties"]["source"][
-        "description"
-    ]
-    assert "(none configured)" in desc
-
-    # Add some, refresh, hint reflects them.
     with open_connection() as conn:
-        _rs.create_server(conn, "arxiv", "http://x/arxiv")
-        _rs.create_server(conn, "wikipedia", "http://x/wiki")
-    refresh_query_rag_source_description()
+        _rs.create_server(conn, "arxiv", "http://x/arxiv", description="Papers on CS/ML")
+        _rs.create_server(conn, "wikipedia", "http://x/wiki", description="Wikipedia summaries")
+    refresh_query_rag_registration()
     desc = TOOLS["query_rag"].parameters_schema["properties"]["source"][
         "description"
     ]
     assert "arxiv" in desc
+    assert "Papers on CS/ML" in desc
     assert "wikipedia" in desc
+    assert "Wikipedia summaries" in desc
+
+
+def test_refresh_query_rag_registration_uses_no_description_fallback(
+    rag_db: Path,
+) -> None:
+    """A server with empty description renders as '(no description)' in the hint."""
+    from app import rag_servers as _rs
+    from app.connection import open_connection
+    from app.tools import TOOLS
+    from app.tools import rag as _rag  # noqa: F401 — registers query_rag
+    from app.tools.rag import refresh_query_rag_registration
+
+    with open_connection() as conn:
+        _rs.create_server(conn, "arxiv", "http://x/arxiv")  # description=""
+    refresh_query_rag_registration()
+    desc = TOOLS["query_rag"].parameters_schema["properties"]["source"][
+        "description"
+    ]
+    assert "arxiv" in desc
+    assert "(no description)" in desc
+
+
+def test_refresh_query_rag_registration_removes_tool_when_no_servers(
+    rag_db: Path,
+) -> None:
+    """With 0 servers, query_rag is removed from TOOLS entirely."""
+    from app.tools import TOOLS
+    from app.tools import rag as _rag  # noqa: F401 — registers query_rag
+    from app.tools.rag import refresh_query_rag_registration
+
+    assert "query_rag" in TOOLS
+    refresh_query_rag_registration()
+    assert "query_rag" not in TOOLS
+
+
+def test_refresh_query_rag_registration_readds_tool_when_server_added(
+    rag_db: Path,
+) -> None:
+    """After a pop, adding a server and refreshing restores the tool."""
+    from app import rag_servers as _rs
+    from app.connection import open_connection
+    from app.tools import TOOLS
+    from app.tools import rag as _rag  # noqa: F401 — registers query_rag
+    from app.tools.rag import refresh_query_rag_registration
+
+    # Simulate 0-server state (tool was previously popped).
+    TOOLS.pop("query_rag", None)
+    assert "query_rag" not in TOOLS
+
+    with open_connection() as conn:
+        _rs.create_server(conn, "arxiv", "http://x/arxiv", description="CS papers")
+    refresh_query_rag_registration()
+
+    assert "query_rag" in TOOLS
+    desc = TOOLS["query_rag"].parameters_schema["properties"]["source"][
+        "description"
+    ]
+    assert "arxiv" in desc
+    assert "CS papers" in desc
 
 
 # ---------------------------------------------------------------------------

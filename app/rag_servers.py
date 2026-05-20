@@ -33,6 +33,12 @@ class RagServer:
         updated_at: When the row was last touched (UTC). Currently bumped
             only at insert; included for symmetry with the conversations
             table in case a future phase adds in-place edits.
+        description: User-supplied text describing the source contents,
+            e.g. ``"PubMed abstracts 2020–2024"``. Folded into the
+            ``query_rag`` tool's ``source`` parameter hint so the model
+            can pick the right source intelligently. Empty string for
+            legacy rows; rendered as ``(no description)`` in the UI and
+            in the tool spec.
     """
 
     id: int
@@ -40,6 +46,7 @@ class RagServer:
     url: str
     created_at: datetime
     updated_at: datetime
+    description: str
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +71,7 @@ def _row_to_server(row: sqlite3.Row) -> RagServer:
         url=row["url"],
         created_at=datetime.fromisoformat(row["created_at"]),
         updated_at=datetime.fromisoformat(row["updated_at"]),
+        description=row["description"],
     )
 
 
@@ -86,14 +94,14 @@ def list_servers(conn: sqlite3.Connection) -> list[RagServer]:
         RagServer rows, oldest insert first.
     """
     rows = conn.execute(
-        "SELECT id, name, url, created_at, updated_at FROM rag_servers"
+        "SELECT id, name, url, description, created_at, updated_at FROM rag_servers"
         " ORDER BY id ASC;"
     ).fetchall()
     return [_row_to_server(r) for r in rows]
 
 
 def create_server(
-    conn: sqlite3.Connection, name: str, url: str
+    conn: sqlite3.Connection, name: str, url: str, description: str = ""
 ) -> RagServer:
     """Insert a new RAG server row.
 
@@ -102,6 +110,9 @@ def create_server(
         name: Unique source identifier (e.g. ``"arxiv"``). The model
             uses this string as the ``source`` arg to ``query_rag``.
         url: Full base URL up through the source prefix.
+        description: Human-readable summary of the source's contents.
+            Defaults to ``""`` so existing callers (tests, REPL) that
+            omit it keep working without changes.
 
     Returns:
         The newly created RagServer, populated with its assigned id
@@ -117,10 +128,10 @@ def create_server(
         # RETURNING (SQLite 3.35+) saves a follow-up SELECT for the
         # auto-assigned id and the timestamps we just wrote.
         row = conn.execute(
-            "INSERT INTO rag_servers (name, url, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?)"
-            " RETURNING id, name, url, created_at, updated_at;",
-            (name, url, now, now),
+            "INSERT INTO rag_servers (name, url, description, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?)"
+            " RETURNING id, name, url, description, created_at, updated_at;",
+            (name, url, description, now, now),
         ).fetchone()
     return _row_to_server(row)
 

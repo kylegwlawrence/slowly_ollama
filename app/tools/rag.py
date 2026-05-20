@@ -4,11 +4,14 @@ Hits a configured RAG server's ``/chunks`` endpoint and returns retrieved
 passages formatted as a readable citation block the chat model can quote
 back at the user.
 
-The list of valid ``source`` names is discovered at runtime from the
-``rag_servers`` table (see ``app.rag_servers``); the settings route
-handlers call ``refresh_query_rag_source_description()`` after each CRUD
-write so the model sees an up-to-date list on the next chat turn — no
-restart required.
+The list of valid ``source`` names — with per-source descriptions — is
+discovered at runtime from the ``rag_servers`` table (see
+``app.rag_servers``); the settings route handlers call
+``refresh_query_rag_registration()`` after each CRUD write so the model
+sees an up-to-date list on the next chat turn — no restart required.
+When zero servers are configured, ``query_rag`` is removed from the
+registry entirely so the model is never tempted to call a tool that
+cannot possibly succeed.
 
 This module is imported (via ``app.routes``) at app startup so the
 ``@tool`` decorator registers ``query_rag`` in ``app.tools.TOOLS`` before
@@ -21,6 +24,7 @@ import httpx
 
 from app import rag_servers as _rag_servers_module
 from app.connection import open_connection
+from app.rag_servers import RagServer
 from app.tools import Source, ToolResult, tool
 
 # ---------------------------------------------------------------------------
@@ -40,12 +44,12 @@ _TOTAL_OUTPUT_CAP = 4000
 _RAG_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
 
 
-def _list_source_names() -> list[str]:
-    """Walk the rag_servers table for the current set of source names.
+def _list_sources() -> list[RagServer]:
+    """Walk the rag_servers table for the current set of configured sources.
 
     Opens a private connection rather than reusing the app's shared one
     because this helper is called from
-    ``refresh_query_rag_source_description()``, which runs synchronously
+    ``refresh_query_rag_registration()``, which runs synchronously
     inside a route handler — it doesn't have the FastAPI request scope
     handy, and the work is small (one SELECT). ``contextlib.closing``
     wraps ``open_connection()`` because ``sqlite3.Connection.__exit__``
@@ -53,10 +57,10 @@ def _list_source_names() -> list[str]:
     the handle would leak until GC.
 
     Returns:
-        Source names in stable insertion order.
+        RagServer rows in stable insertion order.
     """
     with closing(open_connection()) as conn:
-        return [s.name for s in _rag_servers_module.list_servers(conn)]
+        return _rag_servers_module.list_servers(conn)
 
 
 def _format_chunks(items: list[dict], used_dense: bool) -> str:
@@ -122,9 +126,10 @@ async def query_rag(source: str, query: str) -> ToolResult:
             (see /settings).
         query: Natural-language query string.
     """
-    # The Args:source description above is the static fallback; the
-    # live source list is injected by refresh_query_rag_source_description()
-    # so the model sees an up-to-date "Valid values are: ..." list.
+    # The Args:source description above is the static fallback; the live
+    # source list (with descriptions) is injected by
+    # refresh_query_rag_registration() so the model sees an up-to-date
+    # "Available sources: ..." list on every chat turn.
 
     if not query.strip():
         # Defensive: an empty query is rejected here rather than sent on
@@ -134,7 +139,7 @@ async def query_rag(source: str, query: str) -> ToolResult:
     # Look up the source name → URL mapping fresh on each call so a
     # newly-added server is usable immediately (no caching to stale).
     # ``closing`` because sqlite3.Connection's context manager only
-    # commits/rolls back — not closes. See ``_list_source_names``.
+    # commits/rolls back — not closes. See ``_list_sources``.
     with closing(open_connection()) as conn:
         servers = _rag_servers_module.list_servers(conn)
     by_name = {s.name: s for s in servers}
@@ -220,33 +225,48 @@ async def query_rag(source: str, query: str) -> ToolResult:
     )
 
 
-def refresh_query_rag_source_description() -> None:
-    """Re-inject the current source list into ``query_rag``'s schema.
+# Snapshot the ToolSpec the @tool decorator built above so we can
+# re-register query_rag after a pop (see refresh_query_rag_registration).
+# parameters_schema stays shared by design — the refresh function mutates
+# it in place to reflect the current source list.
+from app.tools import TOOLS as _TOOLS  # noqa: E402
+_QUERY_RAG_SPEC = _TOOLS["query_rag"]
 
-    Called by the settings route handlers after CRUD operations so the
-    next ``tool_specs_for_ollama()`` call reflects the updated list. We
-    can't update the docstring after-the-fact — the description is
-    cached in the ToolSpec at registration time — so we mutate the
-    schema dict in place. ``ToolSpec`` itself is ``frozen=True`` but
-    ``parameters_schema`` is a plain ``dict`` field, so this mutation
-    works and the cached spec picks up the new value on next read.
 
-    No-op if the tool isn't registered yet (e.g. unit tests that
-    import ``app.rag_servers`` without importing the tool module).
+def refresh_query_rag_registration() -> None:
+    """Sync ``query_rag``'s TOOLS entry to the current rag_servers state.
+
+    Removes the tool entirely when no servers are configured, so the
+    chat model isn't tempted to call a tool that can't possibly succeed.
+    Re-adds and re-describes it when at least one server exists, folding
+    each server's description into the ``source`` parameter hint so the
+    model can pick intelligently.
+
+    Called by the settings route handlers after CRUD operations and by
+    the lifespan startup hook so the registry stays in sync without
+    requiring a restart.
     """
-    # Imported lazily so this module can be imported (for unit tests
-    # that just want _format_chunks etc.) without forcing the registry
-    # to exist already. The decorator above already registered the
-    # tool when this module was imported normally; this lookup just
-    # finds it.
+    # Imported lazily at module level above (_TOOLS), but we re-import
+    # locally so tests that patch app.tools.TOOLS see the right object.
     from app.tools import TOOLS
 
-    spec = TOOLS.get("query_rag")
-    if spec is None:
+    servers = _list_sources()
+    if not servers:
+        # No sources configured → remove the tool so the model never
+        # sees a tool it cannot successfully invoke.
+        TOOLS.pop("query_rag", None)
         return
-    names = _list_source_names()
-    sources_hint = (
-        "Name of the configured RAG server to query."
-        f" Valid values are: {', '.join(names) if names else '(none configured)'}"
+
+    # Re-add after a prior pop (or on first call). The spec object is
+    # the same one the @tool decorator built — name/description/func stay intact.
+    if "query_rag" not in TOOLS:
+        TOOLS["query_rag"] = _QUERY_RAG_SPEC
+
+    spec = TOOLS["query_rag"]
+    lines = ["Name of the RAG source to query. Available sources:"]
+    for s in servers:
+        desc = s.description.strip() or "(no description)"
+        lines.append(f"- {s.name}: {desc}")
+    spec.parameters_schema["properties"]["source"]["description"] = (
+        "\n".join(lines)
     )
-    spec.parameters_schema["properties"]["source"]["description"] = sources_hint

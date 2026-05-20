@@ -958,9 +958,10 @@ body {
 
 .rag-server {
   display: grid;
+  /* Row 1: name, url, delete button. Row 2: description spanning cols 1–2. */
   grid-template-columns: 1fr auto auto;
   align-items: center;
-  gap: var(--space-md);
+  gap: var(--space-sm) var(--space-md);
   padding: var(--space-sm) var(--space-md);
   background: var(--bg);
   border: 1px solid var(--border);
@@ -991,6 +992,16 @@ body {
 
 .rag-server__delete:hover { background: var(--surface-hover); color: var(--danger); }
 
+/* Description sits on row 2, spanning the name + url columns so the
+   delete button stays visually anchored to row 1. */
+.rag-server__description {
+  grid-column: 1 / span 2;
+  grid-row: 2;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
 /* The "add new server" form. Four-column grid: name input, url input,
    submit button, health-check icon. Inputs wrap their own labels so
    the form compresses gracefully on narrow viewports. */
@@ -1018,7 +1029,8 @@ body {
   margin: 0;
 }
 
-.rag-server-form input {
+.rag-server-form input,
+.rag-server-form textarea {
   font-size: 14px;
   padding: var(--space-xs) var(--space-sm);
   border: 1px solid var(--border);
@@ -1029,6 +1041,13 @@ body {
      so the inputs match the compact settings-page baseline. */
   height: auto;
   margin: 0;
+}
+
+/* Description textarea spans all 4 columns on row 2, keeping the button
+   and health icon on row 1 via CSS grid auto-placement. */
+.rag-server-form__description {
+  grid-column: 1 / -1;
+  grid-row: 2;
 }
 
 .rag-server-form button {

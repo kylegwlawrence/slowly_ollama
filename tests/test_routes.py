@@ -1636,7 +1636,7 @@ def test_settings_add_server_returns_row(
     with make_client(_ollama_unreachable) as client:
         response = client.post(
             "/settings/servers",
-            data={"name": "arxiv", "url": "http://x/arxiv"},
+            data={"name": "arxiv", "url": "http://x/arxiv", "description": "CS papers"},
         )
 
     assert response.status_code == 200
@@ -1662,13 +1662,13 @@ def test_settings_add_server_duplicate_name_returns_409(
     with make_client(_ollama_unreachable) as client:
         first = client.post(
             "/settings/servers",
-            data={"name": "x", "url": "http://x/"},
+            data={"name": "x", "url": "http://x/", "description": "first"},
         )
         assert first.status_code == 200
 
         response = client.post(
             "/settings/servers",
-            data={"name": "x", "url": "http://y/"},
+            data={"name": "x", "url": "http://y/", "description": "second"},
         )
 
     assert response.status_code == 409
@@ -1695,7 +1695,7 @@ def test_settings_add_server_health_fail_returns_502(
     with make_client(_ollama_unreachable) as client:
         response = client.post(
             "/settings/servers",
-            data={"name": "arxiv_rag", "url": "http://host1:8002/arxiv_rag"},
+            data={"name": "arxiv_rag", "url": "http://host1:8002/arxiv_rag", "description": "test"},
         )
         # No row inserted — the rendered list has no `rag-server-<id>`
         # entries. Use the row-id marker rather than a name substring
@@ -1727,7 +1727,7 @@ def test_settings_add_server_health_unreachable_returns_502(
     with make_client(_ollama_unreachable) as client:
         response = client.post(
             "/settings/servers",
-            data={"name": "arxiv_rag", "url": "http://host1:8002/arxiv_rag"},
+            data={"name": "arxiv_rag", "url": "http://host1:8002/arxiv_rag", "description": "test"},
         )
 
     assert response.status_code == 502
@@ -1756,7 +1756,7 @@ def test_settings_add_server_health_unknown_name_returns_502(
     with make_client(_ollama_unreachable) as client:
         response = client.post(
             "/settings/servers",
-            data={"name": "bogus_rag", "url": "http://host1:8002/bogus_rag"},
+            data={"name": "bogus_rag", "url": "http://host1:8002/bogus_rag", "description": "test"},
         )
 
     assert response.status_code == 502
@@ -1791,6 +1791,7 @@ def test_settings_add_server_health_probe_invoked_with_typed_values(
             data={
                 "name": "  arxiv_rag  ",
                 "url": "  http://host1:8002/arxiv_rag  ",
+                "description": "test",
             },
         )
 
@@ -1799,6 +1800,73 @@ def test_settings_add_server_health_probe_invoked_with_typed_values(
         "name": "arxiv_rag",
         "url": "http://host1:8002/arxiv_rag",
     }
+
+
+def test_settings_add_server_persists_description(
+    make_client: ClientFactory,
+) -> None:
+    """POST /settings/servers stores the description; the row template renders it."""
+    with make_client(_ollama_unreachable) as client:
+        response = client.post(
+            "/settings/servers",
+            data={
+                "name": "arxiv",
+                "url": "http://x/arxiv",
+                "description": "Papers on CS and ML",
+            },
+        )
+
+    assert response.status_code == 200
+    assert "Papers on CS and ML" in response.text
+
+
+def test_settings_add_server_truncates_description_at_200_chars(
+    make_client: ClientFactory,
+) -> None:
+    """The route silently truncates descriptions longer than 200 chars."""
+    long_desc = "x" * 250
+    with make_client(_ollama_unreachable) as client:
+        response = client.post(
+            "/settings/servers",
+            data={"name": "arxiv", "url": "http://x/arxiv", "description": long_desc},
+        )
+
+    assert response.status_code == 200
+    # Exactly 200 'x' chars — not 250, not 201.
+    assert "x" * 200 in response.text
+    assert "x" * 201 not in response.text
+
+
+def test_settings_add_server_strips_description_whitespace(
+    make_client: ClientFactory,
+) -> None:
+    """Leading/trailing whitespace is stripped from the description before storage."""
+    with make_client(_ollama_unreachable) as client:
+        response = client.post(
+            "/settings/servers",
+            data={
+                "name": "arxiv",
+                "url": "http://x/arxiv",
+                "description": "  Papers on CS  ",
+            },
+        )
+
+    assert response.status_code == 200
+    assert "Papers on CS" in response.text
+    # Stored value must not have surrounding spaces.
+    assert "  Papers on CS  " not in response.text
+
+
+def test_settings_get_renders_description_field(
+    make_client: ClientFactory,
+) -> None:
+    """The settings form contains a required description textarea."""
+    with make_client(_ollama_unreachable) as client:
+        response = client.get("/settings", headers={"HX-Request": "true"})
+
+    assert response.status_code == 200
+    assert '<textarea name="description"' in response.text
+    assert "required" in response.text
 
 
 def test_settings_renders_form_error_region(
@@ -2913,10 +2981,9 @@ def test_stream_passes_tools_payload_to_ollama(
     assert isinstance(advertised, list)
     assert advertised, "tools list was empty"
     names = {t["function"]["name"] for t in advertised}
-    # current_time is registered by app.tools.builtins (the import 12d
-    # added to routes); query_rag is registered by app.tools.rag (12c).
+    # current_time is always registered. query_rag is only registered
+    # when ≥1 RAG server is configured — absent here by design.
     assert "current_time" in names
-    assert "query_rag" in names
 
 
 # ---------------------------------------------------------------------------

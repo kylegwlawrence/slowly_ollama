@@ -69,7 +69,7 @@ from app.templates import templates
 # effect.
 from app.tools import builtins as _builtins  # noqa: F401
 from app.tools import rag as _rag_tool  # noqa: F401
-from app.tools.rag import refresh_query_rag_source_description
+from app.tools.rag import refresh_query_rag_registration
 
 router = APIRouter()
 
@@ -176,6 +176,7 @@ async def add_server_endpoint(
     db: DB,
     name: Annotated[str, Form()],
     url: Annotated[str, Form()],
+    description: Annotated[str, Form()] = "",
 ) -> Response:
     """Add a RAG server; return the new row for ``hx-swap="beforeend"``.
 
@@ -192,11 +193,14 @@ async def add_server_endpoint(
     user's typed values (its `after-request` reset is guarded on
     ``event.detail.successful``).
 
-    On success we call ``refresh_query_rag_source_description`` so the
-    next chat turn's tool spec reflects the newly-added source name.
+    On success we call ``refresh_query_rag_registration`` so the next
+    chat turn's tool spec reflects the newly-added source.
     """
     name_clean = name.strip()
     url_clean = url.strip()
+    # 200-char cap: maxlength="200" on the textarea is a client-side
+    # hint only; silently truncate here as belt-and-suspenders.
+    description_clean = description.strip()[:200]
 
     healthy, reason = await probe_rag_health(name_clean, url_clean)
     if not healthy:
@@ -207,14 +211,14 @@ async def add_server_endpoint(
 
     try:
         server = _rag_servers_module.create_server(
-            db, name=name_clean, url=url_clean
+            db, name=name_clean, url=url_clean, description=description_clean
         )
     except sqlite3.IntegrityError:
         return HTMLResponse(
             f"Server name '{html.escape(name_clean)}' already in use.",
             status_code=status.HTTP_409_CONFLICT,
         )
-    refresh_query_rag_source_description()
+    refresh_query_rag_registration()
     return templates.TemplateResponse(
         request=request,
         name="_rag_server_row.html",
@@ -236,7 +240,7 @@ def delete_server_endpoint(server_id: int, db: DB) -> Response:
     schema in sync with the (now-shrunk) set of source names.
     """
     _rag_servers_module.delete_server(db, server_id)
-    refresh_query_rag_source_description()
+    refresh_query_rag_registration()
     return Response(content="", status_code=status.HTTP_200_OK)
 
 
