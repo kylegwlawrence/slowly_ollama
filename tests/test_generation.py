@@ -855,6 +855,78 @@ def test_build_history_payload_skip_flag_does_not_leak_past_unrelated_rows() -> 
     assert out[4] == {"role": "assistant", "content": "done"}
 
 
+def test_build_history_payload_drops_phase13_agentic_rows() -> None:
+    """`research_findings` and `review_verdict` rows are agentic-loop
+    internal artifacts. They MUST NOT appear in the wire-format payload
+    we ship to Ollama for unrelated calls — `_maybe_emit_title`
+    rebuilds the same history via `_build_history_payload`, and Ollama
+    would reject the unfamiliar role names. The orchestrator builds
+    its own per-agent payloads separately."""
+    now = datetime.now(timezone.utc)
+    history = [
+        Message(
+            id=1, conversation_id=1, role="user",
+            content="hi", created_at=now,
+        ),
+        Message(
+            id=2, conversation_id=1, role="research_findings",
+            content="research notes the model produced", created_at=now,
+        ),
+        Message(
+            id=3, conversation_id=1, role="review_verdict",
+            content='{"verdict": "passed", "message": "looks good"}',
+            created_at=now,
+        ),
+        Message(
+            id=4, conversation_id=1, role="assistant",
+            content="the answer", created_at=now,
+        ),
+    ]
+    out = _build_history_payload(history)
+    # Only user + assistant survive.
+    assert len(out) == 2
+    assert out[0] == {"role": "user", "content": "hi"}
+    assert out[1] == {"role": "assistant", "content": "the answer"}
+    # Defensive: neither agentic role surfaces under any name.
+    roles = {m["role"] for m in out}
+    assert "research_findings" not in roles
+    assert "review_verdict" not in roles
+
+
+def test_build_history_payload_agentic_row_does_not_swallow_following_tool_result() -> None:
+    """A `research_findings` row is NOT a tool_call — it must not
+    arm the skip-next-tool_result flag. Otherwise a later legitimate
+    tool_result anywhere in the conversation would silently vanish.
+    Mirrors the skip-flag-reset rule for assistant rows."""
+    now = datetime.now(timezone.utc)
+    history = [
+        Message(
+            id=1, conversation_id=1, role="research_findings",
+            content="prior turn's findings", created_at=now,
+        ),
+        Message(
+            id=2, conversation_id=1, role="tool_call",
+            content=json.dumps(
+                {"name": "current_time", "arguments": {"timezone": "UTC"}}
+            ),
+            created_at=now,
+        ),
+        Message(
+            id=3, conversation_id=1, role="tool_result",
+            content="2024-01-01T00:00:00+00:00", created_at=now,
+        ),
+    ]
+    out = _build_history_payload(history)
+    # Findings dropped; valid call + result both survive.
+    assert len(out) == 2
+    assert out[0]["role"] == "assistant"
+    assert out[0]["tool_calls"][0]["function"]["name"] == "current_time"
+    assert out[1] == {
+        "role": "tool",
+        "content": "2024-01-01T00:00:00+00:00",
+    }
+
+
 @pytest.mark.asyncio
 async def test_frozen_row_after_tool_result_carries_sources_in_oob_payload(
     tmp_path, monkeypatch

@@ -17,11 +17,19 @@ from typing import Literal
 
 # Role values are constrained at the type level here. The schema-level
 # CHECK was dropped in phase 12a — the role set grows over time (12a
-# adds tool_call/tool_result; future phases may add system) and SQLite
-# can't ALTER CHECK constraints, so we enforce here in Python instead.
-# The Literal alias documents intent and lets a type checker catch
-# wrong-role bugs before they hit SQLite.
-Role = Literal["user", "assistant", "tool_call", "tool_result"]
+# adds tool_call/tool_result; 13a adds research_findings/review_verdict
+# for the agentic loop's internal artifacts) and SQLite can't ALTER
+# CHECK constraints, so we enforce here in Python instead. The Literal
+# alias documents intent and lets a type checker catch wrong-role bugs
+# before they hit SQLite.
+Role = Literal[
+    "user",
+    "assistant",
+    "tool_call",
+    "tool_result",
+    "research_findings",  # phase 13: research agent's per-iteration synthesis
+    "review_verdict",     # phase 13: review agent's pass/fail verdict (JSON)
+]
 
 
 @dataclass(frozen=True)
@@ -434,3 +442,73 @@ def count_assistant_messages(
         (conversation_id,),
     ).fetchone()
     return row[0]
+
+
+# ---------------------------------------------------------------------------
+# Settings (phase 13)
+# ---------------------------------------------------------------------------
+
+
+def get_setting(
+    conn: sqlite3.Connection, key: str, default: str | None = None
+) -> str | None:
+    """Read a single app_settings row by key.
+
+    Args:
+        conn: Open SQLite connection.
+        key: Setting key (e.g. ``"agentic_mode"``).
+        default: Returned when no row exists for the key.
+
+    Returns:
+        The stored value as a string, or ``default`` when the key
+        hasn't been set.
+    """
+    row = conn.execute(
+        "SELECT value FROM app_settings WHERE key = ?;", (key,)
+    ).fetchone()
+    return row["value"] if row is not None else default
+
+
+def set_setting(
+    conn: sqlite3.Connection, key: str, value: str
+) -> None:
+    """Upsert one app_settings row.
+
+    Wraps the write in ``with conn:`` so the upsert lands atomically.
+
+    Args:
+        conn: Open SQLite connection.
+        key: Setting key.
+        value: Setting value as a string.
+    """
+    with conn:
+        conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?, ?)"
+            " ON CONFLICT(key) DO UPDATE SET value = excluded.value;",
+            (key, value),
+        )
+
+
+_AGENTIC_MODE_KEY = "agentic_mode"
+
+
+def get_agentic_mode(conn: sqlite3.Connection) -> bool:
+    """Return True when the multi-agent loop is enabled globally.
+
+    Default (no row): False. Any value other than the literal string
+    ``"on"`` also returns False, defensively.
+
+    Args:
+        conn: Open SQLite connection.
+    """
+    return get_setting(conn, _AGENTIC_MODE_KEY, default="off") == "on"
+
+
+def set_agentic_mode(conn: sqlite3.Connection, enabled: bool) -> None:
+    """Toggle the global agentic-mode setting.
+
+    Args:
+        conn: Open SQLite connection.
+        enabled: True for ``"on"``, False for ``"off"``.
+    """
+    set_setting(conn, _AGENTIC_MODE_KEY, "on" if enabled else "off")
