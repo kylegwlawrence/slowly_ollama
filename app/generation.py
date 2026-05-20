@@ -38,6 +38,7 @@ import httpx
 
 from app import ollama, queries, render
 from app.ollama import OllamaProtocolError, OllamaUnavailable
+from app.templates import templates
 from app.tools import (
     decode_tool_result,
     encode_tool_result,
@@ -171,8 +172,6 @@ async def consume_finished(
     OOB-swap payload — same shape as the live happy-path done event,
     so HTMX swaps the placeholder out to the persisted bubble.
     """
-    from app.routes import templates  # avoid circular import at module load
-
     messages = queries.list_messages(db, conversation_id)
     for m in reversed(messages):
         if m.role == "assistant":
@@ -337,8 +336,6 @@ def _build_done_card_oobs(
        never get another chance to freeze, so leftover live rows
        would tick forever.
     """
-    from app.routes import templates  # avoid circular import
-
     if call_count == 0:
         return ""
 
@@ -386,8 +383,6 @@ async def _maybe_emit_title(
       - Any Ollama failure (down, malformed reply, timeout).
       - The model returns empty text after stripping.
     """
-    from app.routes import templates
-
     conversation = queries.get_conversation(db, conversation_id)
     if conversation.name_locked:
         return
@@ -450,8 +445,6 @@ async def _run_generation(
     See the original docstring at `app/routes.py:878` (commit
     `319dd40`) for loop semantics — they're unchanged.
     """
-    from app.routes import templates  # avoid circular import
-
     working_history = list(history)
     # Phase 12f: gate `tools=` on Ollama-reported capability for this
     # specific model. The dropdown filter is the primary defense, but

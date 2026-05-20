@@ -8,7 +8,7 @@ non-meaningful template tweaks (whitespace, attribute reordering).
 import pytest
 
 from app.render import ToolRowView
-from app.routes import templates
+from app.templates import templates
 from app.tools import Source
 
 
