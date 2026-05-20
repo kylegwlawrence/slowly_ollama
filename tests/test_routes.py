@@ -2081,6 +2081,17 @@ def _non_tool_capable_handler(
     )
 
 
+async def _model_not_capable(_client: object, _name: str) -> bool:
+    """Stub for ``ollama.model_supports_tools`` that always returns False.
+
+    The route-test autouse fixture (``_default_tool_capable``) defaults
+    the same callable to True; tests that need the False branch
+    monkeypatch this in instead. Module-level so the two banner-on
+    tests share one definition.
+    """
+    return False
+
+
 def test_chat_panel_no_banner_when_agentic_mode_off(
     make_client: ClientFactory,
 ) -> None:
@@ -2100,19 +2111,17 @@ def test_chat_panel_no_banner_when_agentic_mode_off(
 
 def test_chat_panel_no_banner_when_model_supports_tools(
     make_client: ClientFactory,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Agentic mode on + tool-capable model → loop will run normally,
-    so no fallback banner. Worth testing because this is the common
-    case once a user enables the feature."""
+    so no fallback banner. Relies on the route-test autouse fixture
+    ``_default_tool_capable`` which stubs ``model_supports_tools`` to
+    True; this test exercises the banner-suppression branch through
+    that stub.
+    """
     db_path = Path(os.environ["DB_PATH"])
     initialize_database(db_path)
     with open_connection(db_path) as conn:
         queries.set_agentic_mode(conn, True)
-    # Test fleet's `_default_tool_capable` autouse fixture stubs
-    # `ollama.model_supports_tools` to True; this test exercises the
-    # banner-suppression branch through that stub. Override removed
-    # only by tests that explicitly want a non-tool-capable model.
 
     with make_client(_tool_capable_handler) as client:
         chat_id = _create_chat_db_only()
@@ -2141,12 +2150,7 @@ def test_chat_panel_shows_banner_when_agentic_on_but_model_lacks_tools(
         )
         queries.append_message(conn, chat.id, "user", "hi")
 
-    # The route-test autouse fixture defaults model_supports_tools to
-    # True; override here so this test exercises the False branch.
-    async def _not_capable(_client: object, _name: str) -> bool:
-        return False
-
-    monkeypatch.setattr(ollama, "model_supports_tools", _not_capable)
+    monkeypatch.setattr(ollama, "model_supports_tools", _model_not_capable)
 
     with make_client(_non_tool_capable_handler) as client:
         response = client.get(
@@ -2175,10 +2179,7 @@ def test_chat_panel_banner_also_shows_on_direct_hit(
         )
         queries.append_message(conn, chat.id, "user", "hi")
 
-    async def _not_capable(_client: object, _name: str) -> bool:
-        return False
-
-    monkeypatch.setattr(ollama, "model_supports_tools", _not_capable)
+    monkeypatch.setattr(ollama, "model_supports_tools", _model_not_capable)
 
     with make_client(_non_tool_capable_handler) as client:
         response = client.get(f"/chats/{chat.id}")
