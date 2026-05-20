@@ -119,29 +119,10 @@ def make_client(
 
 
 @pytest.fixture(autouse=True)
-def _isolate_live_generations() -> Iterator[None]:
-    """Snapshot + clear `generation.live_generations` around every test.
-
-    Phase 12g retains done states in the registry so slow-reload
-    replays still work, which means a finished gen from a previous
-    test would otherwise sit in the dict and confuse a same-id
-    conversation in the next test. Autouse so cancellation tests
-    that bypass `make_client` (driving start_generation directly)
-    also benefit — no per-test manual `.pop()` needed.
-    """
-    from app import generation as _generation
-    saved = dict(_generation.live_generations)
-    _generation.live_generations.clear()
-    yield
-    _generation.live_generations.clear()
-    _generation.live_generations.update(saved)
-
-
-@pytest.fixture(autouse=True)
-def _isolate_tool_capability(
+def _default_tool_capable(
     monkeypatch: pytest.MonkeyPatch,
-) -> Iterator[None]:
-    """Reset the capability cache and default ``model_supports_tools`` to True.
+) -> None:
+    """Default ``model_supports_tools`` → True for every route test.
 
     Phase 12f gates ``tools=`` on Ollama's reported capability for the
     chat's model. Route tests that exercise the streaming or
@@ -159,16 +140,18 @@ def _isolate_tool_capability(
       (``tools_payload = None`` when the model isn't capable)
       re-patch ``model_supports_tools`` themselves with their own
       monkeypatch.
+
+    The cache reset + live-generations isolation that used to live
+    here moved to ``tests/conftest.py`` — see the comment in that
+    file. This fixture keeps only the route-test-specific default
+    monkeypatch.
     """
     from app import ollama as _ollama
-    _ollama.reset_capability_cache()
 
     async def _capable(_client: object, _name: str) -> bool:
         return True
 
     monkeypatch.setattr(_ollama, "model_supports_tools", _capable)
-    yield
-    _ollama.reset_capability_cache()
 
 
 # ---------------------------------------------------------------------------
