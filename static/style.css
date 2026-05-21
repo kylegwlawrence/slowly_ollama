@@ -226,6 +226,37 @@ body {
   margin: 0;
 }
 
+/* Temperature chip — same visual as .tool-chip--on but contains a
+   number input instead of a toggle label. The input is stripped of
+   its box model so it blends into the chip; browser spinner arrows
+   are intentionally preserved. */
+.temp-chip {
+  cursor: default;
+}
+
+/* Two classes raise specificity to (0,2,0) so these win over Pico's
+   `input:not([type=submit],…)` reset (0,1,1), which otherwise forces a
+   ~15px vertical padding and 100% width onto the input — that was making
+   the chip ~88px tall instead of matching the 18px tool chips. */
+.temp-chip .temp-chip__input {
+  /* Collapse to exactly the chip's text height. */
+  height: 1em;
+  min-height: 0;
+  line-height: 1;
+  /* Tight enough for "2.0" + native spinner arrows. */
+  width: 2.6rem;
+  background: none;
+  border: none;
+  outline: none;
+  box-shadow: none;
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  font-family: inherit;
+  padding: 0;
+  margin: 0;
+}
+
 /* ===== Chats list ======================================================== */
 
 .chats-list {
@@ -421,6 +452,18 @@ body {
   border-radius: var(--radius-pill);
   font-size: 12px;
   font-weight: 500;
+}
+
+/* Wrapper form for the per-chat temperature chip in the header. Flex
+   (not the default block) so the inline-flex chip is centered and the
+   form collapses to the chip's height — a block wrapper instead builds a
+   line box from the inherited line-height, leaving the chip 3px low and
+   misaligned with the model badge and tool chips. */
+.chat-panel__temperature {
+  display: flex;
+  align-items: center;
+  margin: 0;
+  padding: 0;
 }
 
 /* Phase 13g: silent-fallback banner. Shown above #messages when

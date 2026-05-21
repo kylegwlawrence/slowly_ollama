@@ -257,6 +257,7 @@ async def _run_agentic_generation(
     db: sqlite3.Connection,
     conversation_id: int,
     model: str,
+    temperature: float = 0.8,
     history: list,
     on_complete: Literal["append", "replace"],
     review_enabled: bool = True,
@@ -338,6 +339,7 @@ async def _run_agentic_generation(
                 try:
                     tool_calls, content = await ollama.maybe_tool_call(
                         client, model, payload, tools=tool_specs,
+                        temperature=temperature,
                     )
                 except (OllamaUnavailable, OllamaProtocolError) as e:
                     persisted_or_errored = True
@@ -453,6 +455,7 @@ async def _run_agentic_generation(
                 try:
                     verdict_calls, _ = await ollama.maybe_tool_call(
                         client, model, review_payload, tools=REVIEW_TOOL_SPECS,
+                        temperature=temperature,
                     )
                 except (OllamaUnavailable, OllamaProtocolError) as e:
                     persisted_or_errored = True
@@ -523,6 +526,7 @@ async def _run_agentic_generation(
             try:
                 async for chunk in ollama.stream_chat(
                     client, model, generation_payload,
+                    temperature=temperature,
                 ):
                     if chunk.content:
                         chunks.append(chunk.content)

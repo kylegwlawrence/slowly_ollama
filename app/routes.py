@@ -532,6 +532,7 @@ async def create_chat_endpoint(
     client: OllamaClient,
     model: Annotated[str, Form()],
     content: Annotated[str, Form()],
+    temperature: Annotated[float, Form()] = 0.8,
 ) -> Response:
     """Create a conversation AND save the first message in one request.
 
@@ -555,8 +556,9 @@ async def create_chat_endpoint(
     phase 11d's auto-titler may overwrite it with a model-generated
     title after the first assistant response completes.
     """
+    temperature = max(0.0, min(2.0, temperature))
     chat = queries.create_conversation(
-        db, name=_placeholder_name(content), model=model
+        db, name=_placeholder_name(content), model=model, temperature=temperature
     )
     queries.append_message(db, chat.id, "user", content)
 
@@ -597,6 +599,7 @@ async def create_chat_endpoint(
         db=db,
         conversation_id=chat.id,
         model=chat.model,
+        temperature=chat.temperature,
         history=messages,
         on_complete="append",
     )
@@ -900,6 +903,7 @@ async def send_message_endpoint(
             db=db,
             conversation_id=conversation_id,
             model=conversation.model,
+            temperature=conversation.temperature,
             history=history,
             on_complete="append",
         )
@@ -1000,6 +1004,7 @@ async def regenerate_endpoint(
             db=db,
             conversation_id=conversation_id,
             model=conversation.model,
+            temperature=conversation.temperature,
             history=prompt_history,
             on_complete="replace",
         )
@@ -1109,3 +1114,37 @@ async def toggle_chat_rag_server_endpoint(
             "is_composer": False,
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-chat temperature
+# ---------------------------------------------------------------------------
+
+
+@router.patch(
+    "/chats/{conversation_id}/temperature",
+    response_class=Response,
+)
+async def set_chat_temperature_endpoint(
+    conversation_id: int,
+    db: DB,
+    temperature: Annotated[float, Form()],
+) -> Response:
+    """Persist the sampling temperature for a conversation.
+
+    Called by the temperature ``<input>`` in ``_chat_panel.html`` via
+    ``hx-patch`` on the ``change`` event. Clamps to [0.0, 2.0] server-side
+    so a hand-crafted request can't push Ollama out of range.
+
+    Returns 204 No Content — the browser input already shows the typed
+    value, so no swap is needed.
+
+    Raises:
+        HTTPException 404: When the conversation doesn't exist.
+    """
+    temperature = max(0.0, min(2.0, temperature))
+    try:
+        queries.set_conversation_temperature(db, conversation_id, temperature)
+    except LookupError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

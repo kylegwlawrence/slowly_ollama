@@ -6,6 +6,19 @@
   <header class="chat-panel__header">
     <h2 class="chat-panel__name">{{ conversation.name }}</h2>
     <span class="chat-panel__model">{{ conversation.model }}</span>
+    <form class="chat-panel__temperature"
+          hx-patch="/chats/{{ conversation.id }}/temperature"
+          hx-trigger="change"
+          hx-swap="none">
+      <div class="tool-chip tool-chip--on temp-chip">
+        <span class="tool-chip__label">Temp</span>
+        <input id="temperature-{{ conversation.id }}"
+               type="number" name="temperature"
+               value="{{ conversation.temperature }}"
+               min="0" max="2" step="0.1"
+               class="temp-chip__input">
+      </div>
+    </form>
     {# Phase 15: per-chat tool chips. Only rendered when the model
        supports tools; hidden entirely for non-tool-capable models.
        Phase 15b: rag_server_states adds per-server RAG chips alongside

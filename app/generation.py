@@ -270,6 +270,7 @@ async def start_generation(
     db: sqlite3.Connection,
     conversation_id: int,
     model: str,
+    temperature: float = 0.8,
     history: list,
     on_complete: Literal["append", "replace"],
 ) -> GenerationState:
@@ -334,6 +335,7 @@ async def start_generation(
             db=db,
             conversation_id=conversation_id,
             model=model,
+            temperature=temperature,
             history=history,
             on_complete=on_complete,
         )
@@ -501,6 +503,7 @@ async def _run_generation(
     db: sqlite3.Connection,
     conversation_id: int,
     model: str,
+    temperature: float = 0.8,
     history: list,
     on_complete: Literal["append", "replace"],
 ) -> None:
@@ -585,6 +588,7 @@ async def _run_generation(
                     model,
                     _build_history_payload(working_history),
                     tools=tools_payload,
+                    temperature=temperature,
                 )
             except (OllamaUnavailable, OllamaProtocolError) as e:
                 # Set BEFORE the await — await is a cancellation point;
@@ -696,7 +700,8 @@ async def _run_generation(
         # Streaming phase.
         try:
             async for chunk in ollama.stream_chat(
-                client, model, _build_history_payload(working_history)
+                client, model, _build_history_payload(working_history),
+                temperature=temperature,
             ):
                 if chunk.content:
                     chunks.append(chunk.content)
