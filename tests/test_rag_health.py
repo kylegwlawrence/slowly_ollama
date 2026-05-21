@@ -100,16 +100,16 @@ async def test_probe_returns_true_on_healthy_match(
 async def test_probe_fails_when_name_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Name that ends in _rag but isn't in /health → lists available _rag dbs."""
+    """Name that isn't in /health → error lists every available database."""
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
             json={
                 "ok": True,
                 "databases": {
-                    "arxiv": "ok",      # non-rag sibling — should NOT appear
+                    "arxiv": "ok",
                     "arxiv_rag": "ok",
-                    "factbook_rag": "ok",
+                    "factbook": "ok",
                 },
             },
         )
@@ -117,44 +117,40 @@ async def test_probe_fails_when_name_missing(
     _install_transport(monkeypatch, handler)
 
     healthy, reason = await probe_rag_health(
-        "bogus_rag", "http://host1:8002/bogus_rag"
+        "bogus", "http://host1:8002/bogus"
     )
     assert healthy is False
-    assert "'bogus_rag' not found" in reason
-    # Reason lists the available _rag databases from the live response.
-    assert "arxiv_rag" in reason
-    assert "factbook_rag" in reason
-    # Non-RAG siblings (e.g. plain "arxiv") are filtered out of the
-    # suggestion list — they're not valid targets for query_rag.
-    assert "Available RAG databases: arxiv_rag, factbook_rag" in reason
+    assert "'bogus' not found" in reason
+    # Reason lists every database the live response reports, sorted, so
+    # the user can correct a typo against the real set.
+    assert "Available databases: arxiv, arxiv_rag, factbook" in reason
 
 
 @pytest.mark.asyncio
-async def test_probe_rejects_non_rag_name_without_network(
+async def test_probe_accepts_plain_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A name lacking the _rag suffix fails BEFORE the /health round-trip.
+    """A plain (non-_rag) name passes when /health reports it healthy.
 
-    The remote reports both ``arxiv`` and ``arxiv_rag`` as healthy, but
-    only the latter has the /chunks API ``query_rag`` knows how to call.
-    We reject plain ``arxiv`` even though /health would call it healthy
-    — and we do so without hitting the network.
+    The remote's queryable ``/chunks`` endpoints live at the plain
+    database names (e.g. ``arxiv``, ``pydocs``); the ``_rag`` siblings
+    404 on ``/chunks``. The probe must therefore accept plain names
+    rather than demand a ``_rag`` suffix.
     """
-    called = False
-
     def handler(request: httpx.Request) -> httpx.Response:
-        nonlocal called
-        called = True
-        return httpx.Response(200, json={"databases": {"arxiv": "ok"}})
+        assert str(request.url) == "http://host1:8002/health"
+        return httpx.Response(
+            200,
+            json={"ok": True, "databases": {"pydocs": "ok", "pydocs_rag": "ok"}},
+        )
 
     _install_transport(monkeypatch, handler)
 
     healthy, reason = await probe_rag_health(
-        "arxiv", "http://host1:8002/arxiv"
+        "pydocs", "http://host1:8002/pydocs"
     )
-    assert healthy is False
-    assert "must end in '_rag'" in reason
-    assert called is False, "suffix check must fail-fast without network call"
+    assert healthy is True
+    assert reason == ""
 
 
 @pytest.mark.asyncio
@@ -181,16 +177,77 @@ async def test_probe_fails_when_status_not_ok(
 async def test_probe_fails_on_non_2xx(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A 5xx with no usable databases map fails with the HTTP status."""
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, text="boom")
 
     _install_transport(monkeypatch, handler)
 
     healthy, reason = await probe_rag_health(
-        "arxiv_rag", "http://host1:8002/arxiv_rag"
+        "arxiv", "http://host1:8002/arxiv"
     )
     assert healthy is False
     assert "HTTP 500" in reason
+
+
+@pytest.mark.asyncio
+async def test_probe_passes_on_503_when_target_db_healthy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 503 caused by a broken SIBLING db must not block a healthy one.
+
+    The shared /health endpoint returns ``"ok": false`` + HTTP 503 when
+    any hosted database is unhealthy. The map still reports the rest
+    correctly, so a healthy target (``pydocs``) should pass even though
+    a sibling (``wikihow_rag``) is erroring.
+    """
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            503,
+            json={
+                "ok": False,
+                "databases": {
+                    "pydocs": "ok",
+                    "wikihow_rag": "error: 503: db not available",
+                },
+            },
+        )
+
+    _install_transport(monkeypatch, handler)
+
+    healthy, reason = await probe_rag_health(
+        "pydocs", "http://host1:8002/pydocs"
+    )
+    assert healthy is True
+    assert reason == ""
+
+
+@pytest.mark.asyncio
+async def test_probe_fails_on_503_when_target_db_unhealthy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 503 where the TARGET db is the broken one still fails — with its
+    per-database status, not the bare HTTP code."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            503,
+            json={
+                "ok": False,
+                "databases": {
+                    "pydocs": "ok",
+                    "wikihow_rag": "error: 503: db not available",
+                },
+            },
+        )
+
+    _install_transport(monkeypatch, handler)
+
+    healthy, reason = await probe_rag_health(
+        "wikihow_rag", "http://host1:8002/wikihow_rag"
+    )
+    assert healthy is False
+    assert "not healthy" in reason
+    assert "db not available" in reason
 
 
 @pytest.mark.asyncio

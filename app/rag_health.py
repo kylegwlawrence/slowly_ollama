@@ -25,6 +25,11 @@ The /health URL is derived from the typed base URL: we keep the
 ``scheme://host:port`` portion and replace the rest with ``/health``.
 That way a single shared endpoint serves any number of source-prefixed
 URLs on the same host.
+
+The name is accepted as-is: the remote's queryable ``/chunks``
+endpoints live at the plain database names (e.g. ``arxiv``,
+``pydocs``), so we do NOT require any particular naming suffix — we
+only check that the typed name is present and healthy.
 """
 
 import httpx
@@ -39,14 +44,6 @@ _HEALTH_TIMEOUT = httpx.Timeout(5.0, connect=2.0)
 # What the /health endpoint returns for a healthy database. Anything
 # else (including missing keys) is treated as unhealthy.
 _HEALTHY_STATUS = "ok"
-
-# RAG-flavoured databases on the remote host use this suffix to
-# distinguish themselves from sibling non-RAG databases that share
-# the same hostname (e.g. ``arxiv`` is a plain database; ``arxiv_rag``
-# is its chunked/embedded counterpart). The ``query_rag`` tool only
-# knows how to talk to the RAG variant, so we reject names that
-# don't carry this suffix even when /health reports them healthy.
-_RAG_SUFFIX = "_rag"
 
 
 def _health_url(base_url: str) -> str | None:
@@ -77,10 +74,16 @@ async def probe_rag_health(name: str, base_url: str) -> tuple[bool, str]:
     handler can stuff verbatim into the form's error region. We never
     raise; callers always get a tuple back.
 
+    A non-2xx status alone is NOT treated as failure: the shared
+    /health endpoint returns 503 whenever ANY hosted database is
+    unhealthy, so we read the per-database map regardless of status and
+    judge only the specific ``name`` requested. The HTTP status is used
+    as the failure reason only when the body isn't a usable map.
+
     Failure cases:
         * Malformed URL (no scheme or host).
         * Network error (DNS, connect, timeout, read).
-        * Non-2xx HTTP response from /health.
+        * Error HTTP status AND an unparseable / map-less body.
         * Response body isn't JSON / lacks a ``databases`` map.
         * ``name`` isn't a key under ``databases``.
         * ``name`` is present but its status isn't ``"ok"``.
@@ -88,9 +91,9 @@ async def probe_rag_health(name: str, base_url: str) -> tuple[bool, str]:
     Args:
         name: The database name the user typed into the form. Must
             match a key under the /health response's ``databases``
-            map exactly (e.g. ``arxiv_rag``, not ``arxiv``).
+            map exactly (e.g. ``arxiv`` or ``pydocs``).
         base_url: The full RAG base URL as typed (e.g.
-            ``http://host1:8002/arxiv_rag``). The /health URL is
+            ``http://host1:8002/arxiv``). The /health URL is
             derived from this.
 
     Returns:
@@ -102,17 +105,6 @@ async def probe_rag_health(name: str, base_url: str) -> tuple[bool, str]:
             False,
             "URL must include scheme and host"
             " (e.g. http://host1:8002/arxiv_rag).",
-        )
-
-    # Suffix check happens BEFORE the network call: a name like
-    # 'arxiv' is healthy on the remote but isn't a RAG endpoint, so
-    # the /chunks API our tool expects wouldn't be there. Fail fast
-    # without a round-trip.
-    if not name.endswith(_RAG_SUFFIX):
-        return (
-            False,
-            f"Name must end in '{_RAG_SUFFIX}' to identify a RAG database"
-            f" (e.g. arxiv{_RAG_SUFFIX}, factbook{_RAG_SUFFIX}).",
         )
 
     try:
@@ -128,39 +120,47 @@ async def probe_rag_health(name: str, base_url: str) -> tuple[bool, str]:
             f"Health check failed: server unreachable at {health_url}.",
         )
 
-    if response.status_code >= 400:
-        return (
-            False,
-            f"Health check failed: HTTP {response.status_code} from {health_url}.",
-        )
-
+    # Parse the body BEFORE gating on the HTTP status. A single
+    # unhealthy database makes the shared /health endpoint report both
+    # ``"ok": false`` AND an HTTP 503, even though the per-database map
+    # still reports every *other* database correctly. The status of the
+    # SPECIFIC database the user typed (read from the map below) is what
+    # matters — one broken sibling on the same host must not block
+    # adding a healthy database. We only fall back to the HTTP status as
+    # a failure reason when the body isn't a usable databases map.
     try:
         body = response.json()
     except ValueError:
-        return (
-            False,
-            f"Health check failed: non-JSON response from {health_url}.",
-        )
+        body = None
 
     databases = body.get("databases") if isinstance(body, dict) else None
     if not isinstance(databases, dict):
+        # Body wasn't a usable {"databases": {...}} map. Prefer the HTTP
+        # status as the reason when it was an error code (more actionable
+        # than "missing map"); otherwise describe the malformed body.
+        if response.status_code >= 400:
+            return (
+                False,
+                f"Health check failed: HTTP {response.status_code} from {health_url}.",
+            )
+        if body is None:
+            return (
+                False,
+                f"Health check failed: non-JSON response from {health_url}.",
+            )
         return (
             False,
             f"Health check failed: /health response missing 'databases' map.",
         )
 
     if name not in databases:
-        # Surface the actual _rag databases the remote currently
-        # reports so the error stays accurate as the user adds more
-        # ``*_rag`` sources on the RAG box.
-        rag_names = sorted(
-            key for key in databases if key.endswith(_RAG_SUFFIX)
-        )
-        available = ", ".join(rag_names) if rag_names else "(none)"
+        # List the databases the remote currently reports so the user
+        # can correct a typo against the live set.
+        available = ", ".join(sorted(databases)) or "(none)"
         return (
             False,
             f"'{name}' not found in /health response."
-            f" Available RAG databases: {available}.",
+            f" Available databases: {available}.",
         )
 
     reported = databases[name]
