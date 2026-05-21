@@ -25,6 +25,7 @@ from app.queries import (
     get_chat_rag_states,
     get_chat_tool_states,
     get_conversation,
+    get_default_temperature,
     get_enabled_rag_server_names,
     get_enabled_tool_names,
     get_generator_enabled,
@@ -37,6 +38,7 @@ from app.queries import (
     seed_chat_rag_servers,
     seed_chat_tools,
     set_agentic_mode,
+    set_default_temperature,
     set_generator_enabled,
     set_name_auto,
     set_review_enabled,
@@ -417,6 +419,39 @@ def test_set_agentic_mode_rejects_non_bool(conn: sqlite3.Connection) -> None:
         set_agentic_mode(conn, None)  # type: ignore[arg-type]
     # State unchanged — no row was written by any of the failed calls.
     assert get_agentic_mode(conn) is False
+
+
+def test_default_temperature_default_is_0_7(conn: sqlite3.Connection) -> None:
+    """No row → 0.7. Production default before the user touches
+    /settings."""
+    assert get_default_temperature(conn) == 0.7
+
+
+def test_default_temperature_round_trip(conn: sqlite3.Connection) -> None:
+    """A set value reads back unchanged on a subsequent read."""
+    set_default_temperature(conn, 1.2)
+    assert get_default_temperature(conn) == 1.2
+
+
+def test_set_default_temperature_clamps_out_of_range(
+    conn: sqlite3.Connection,
+) -> None:
+    """Values outside [0.0, 2.0] are clamped before storage so they
+    can never be read back out of range."""
+    set_default_temperature(conn, 5.0)
+    assert get_default_temperature(conn) == 2.0
+    set_default_temperature(conn, -3.0)
+    assert get_default_temperature(conn) == 0.0
+
+
+def test_get_default_temperature_falls_back_on_malformed_row(
+    conn: sqlite3.Connection,
+) -> None:
+    """A non-numeric value (hand-edited or legacy DB) reads as 0.7
+    rather than raising, so a corrupt setting can't break chat
+    creation."""
+    set_setting(conn, "default_temperature", "not-a-number")
+    assert get_default_temperature(conn) == 0.7
 
 
 # ---------------------------------------------------------------------------

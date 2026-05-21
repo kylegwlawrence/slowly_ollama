@@ -72,6 +72,32 @@
     </form>
   </section>
 
+  {# Global default sampling temperature applied to newly-created
+     chats. Existing chats keep their own per-chat temperature; this
+     only seeds the composer for the next new chat. PATCHes on `change`
+     with `hx-swap="none"` — the input already shows the typed value,
+     so there's nothing to swap (mirrors the per-chat temp control). #}
+  <section class="settings__section">
+    <h2 class="settings__section-title">Default temperature</h2>
+    <p class="settings__section-help">
+      The sampling temperature new chats start with (0.0–2.0). Lower is
+      more focused; higher is more creative. Changing it doesn't affect
+      existing chats.
+    </p>
+    <form class="settings__default-temperature"
+          hx-patch="/settings/default-temperature"
+          hx-trigger="change"
+          hx-swap="none">
+      <div class="tool-chip tool-chip--on temp-chip">
+        <span class="tool-chip__label">Temp</span>
+        <input id="default-temperature" type="number" name="temperature"
+               value="{{ default_temperature | default(0.7) }}"
+               min="0" max="2" step="0.1"
+               class="temp-chip__input">
+      </div>
+    </form>
+  </section>
+
   {# Phase 13e: agentic-mode toggle + read-only prompts. The whole
      section is one #settings-agentic-section <section> so the POST
      handler can return it as an innerHTML swap target. #}

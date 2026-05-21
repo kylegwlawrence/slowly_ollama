@@ -170,6 +170,7 @@ def index_endpoint(request: Request, db: DB) -> Response:
             "active_chat_id": None,
             "default_tool_states": _default_tool_states(),
             "default_rag_server_states": _default_rag_server_states(db),
+            "default_temperature": queries.get_default_temperature(db),
         },
     )
 
@@ -191,6 +192,7 @@ def new_chat_endpoint(request: Request, db: DB) -> Response:
         context={
             "default_tool_states": _default_tool_states(),
             "default_rag_server_states": _default_rag_server_states(db),
+            "default_temperature": queries.get_default_temperature(db),
         },
     )
 
@@ -214,6 +216,7 @@ def settings_endpoint(request: Request, db: DB) -> Response:
     agentic_mode_on = queries.get_agentic_mode(db)
     review_enabled = queries.get_review_enabled(db)
     generator_enabled = queries.get_generator_enabled(db)
+    default_temperature = queries.get_default_temperature(db)
     if request.headers.get("HX-Request"):
         return templates.TemplateResponse(
             request=request,
@@ -225,6 +228,7 @@ def settings_endpoint(request: Request, db: DB) -> Response:
                 "generator_enabled": generator_enabled,
                 "agentic_prompts": _AGENTIC_PROMPTS,
                 "agentic_available": _AGENTIC_AVAILABLE,
+                "default_temperature": default_temperature,
             },
         )
     return templates.TemplateResponse(
@@ -245,6 +249,7 @@ def settings_endpoint(request: Request, db: DB) -> Response:
             "generator_enabled": generator_enabled,
             "agentic_prompts": _AGENTIC_PROMPTS,
             "agentic_available": _AGENTIC_AVAILABLE,
+            "default_temperature": default_temperature,
         },
     )
 
@@ -532,7 +537,7 @@ async def create_chat_endpoint(
     client: OllamaClient,
     model: Annotated[str, Form()],
     content: Annotated[str, Form()],
-    temperature: Annotated[float, Form()] = 0.8,
+    temperature: Annotated[float | None, Form()] = None,
 ) -> Response:
     """Create a conversation AND save the first message in one request.
 
@@ -556,6 +561,10 @@ async def create_chat_endpoint(
     phase 11d's auto-titler may overwrite it with a model-generated
     title after the first assistant response completes.
     """
+    # Fall back to the global default when the caller omits temperature
+    # (e.g. a non-browser client); the composer always supplies it.
+    if temperature is None:
+        temperature = queries.get_default_temperature(db)
     temperature = max(0.0, min(2.0, temperature))
     chat = queries.create_conversation(
         db, name=_placeholder_name(content), model=model, temperature=temperature
@@ -1147,4 +1156,27 @@ async def set_chat_temperature_endpoint(
         queries.set_conversation_temperature(db, conversation_id, temperature)
     except LookupError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.patch(
+    "/settings/default-temperature",
+    response_class=Response,
+)
+async def set_default_temperature_endpoint(
+    db: DB,
+    temperature: Annotated[float, Form()],
+) -> Response:
+    """Persist the global default sampling temperature for new chats.
+
+    Called by the default-temperature ``<input>`` in ``_settings.html``
+    via ``hx-patch`` on the ``change`` event. Clamps to [0.0, 2.0]
+    server-side so a hand-crafted request can't store an out-of-range
+    value. Only affects chats created after the change; existing chats
+    keep their own per-chat temperature.
+
+    Returns 204 No Content — the browser input already shows the typed
+    value, so no swap is needed.
+    """
+    queries.set_default_temperature(db, temperature)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

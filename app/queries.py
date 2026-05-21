@@ -629,6 +629,48 @@ def set_generator_enabled(conn: sqlite3.Connection, enabled: bool) -> None:
     set_setting(conn, _GENERATOR_ENABLED_KEY, "on" if enabled else "off")
 
 
+_DEFAULT_TEMPERATURE_KEY = "default_temperature"
+_DEFAULT_TEMPERATURE_FALLBACK = 0.7
+
+
+def get_default_temperature(conn: sqlite3.Connection) -> float:
+    """Return the global default sampling temperature for new chats.
+
+    Default (no row): ``0.7``. The stored value is clamped to the
+    [0.0, 2.0] range Ollama accepts; a malformed row (non-numeric,
+    written by a hand-crafted request) falls back to ``0.7`` rather
+    than raising, so a corrupt setting can never break chat creation.
+
+    Args:
+        conn: Open SQLite connection.
+    """
+    raw = get_setting(conn, _DEFAULT_TEMPERATURE_KEY, default=None)
+    if raw is None:
+        return _DEFAULT_TEMPERATURE_FALLBACK
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_TEMPERATURE_FALLBACK
+    return max(0.0, min(2.0, value))
+
+
+def set_default_temperature(
+    conn: sqlite3.Connection, temperature: float
+) -> None:
+    """Persist the global default sampling temperature for new chats.
+
+    Clamps to [0.0, 2.0] before storing so an out-of-range value can't
+    be read back later. Stored as a string (the app_settings value
+    column is text).
+
+    Args:
+        conn: Open SQLite connection.
+        temperature: New default temperature (clamped to 0.0–2.0).
+    """
+    clamped = max(0.0, min(2.0, float(temperature)))
+    set_setting(conn, _DEFAULT_TEMPERATURE_KEY, str(clamped))
+
+
 # ---------------------------------------------------------------------------
 # Phase 15: per-chat tool enablement
 # ---------------------------------------------------------------------------
