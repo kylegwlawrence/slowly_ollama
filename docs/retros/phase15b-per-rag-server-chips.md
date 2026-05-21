@@ -138,7 +138,11 @@ can't satisfy.
   `app/agents/loop.py` will need `_all_rag_servers`, `_enabled_rag_names`,
   and `_enabled_rag_servers` computed the same way `_run_generation` does
   it now, then passed into the `tool_specs = ...` line that currently
-  calls `tool_specs_for_ollama()` unfiltered.
+  calls `tool_specs_for_ollama()` unfiltered. Note this is the *same*
+  unfiltered call that also skips the per-chat **tool** chip filtering
+  (`_enabled_names` in `_run_generation`), not just RAG-server filtering —
+  port BOTH gates, otherwise the agentic loop ignores every per-chat chip
+  toggle (tools and RAG sources alike).
 - `_chip_states`'s `servers=` kwarg is a caller-side optimization only —
   it does not change behavior. Any new call site that doesn't already hold
   the list can omit the kwarg and let `_chip_states` fetch it.
