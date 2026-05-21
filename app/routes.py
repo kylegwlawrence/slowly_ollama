@@ -67,6 +67,7 @@ from app.templates import templates
 # but couples the registration to an internal seam. The noqa silences
 # the unused-import warning since the imports are purely for side
 # effect.
+from app.tools import TOOLS
 from app.tools import builtins as _builtins  # noqa: F401
 from app.tools import rag as _rag_tool  # noqa: F401
 from app.tools.rag import refresh_query_rag_registration
@@ -88,6 +89,18 @@ _AGENTIC_PROMPTS = {
 # ---------------------------------------------------------------------------
 
 
+def _default_tool_states() -> list[queries.ChatToolState]:
+    """Return ChatToolState list with all registered tools enabled.
+
+    Used by routes that render the empty-state composer so chips show
+    all tools on by default before a chat is created.
+    """
+    return [
+        queries.ChatToolState(tool_name=name, enabled=True)
+        for name in TOOLS.keys()
+    ]
+
+
 @router.get("/", response_class=HTMLResponse)
 def index_endpoint(request: Request, db: DB) -> Response:
     """Render the full layout — sidebar list + empty-state composer.
@@ -107,6 +120,7 @@ def index_endpoint(request: Request, db: DB) -> Response:
             # No chat is selected on the empty index — pass None so the
             # sidebar template's `aria-current` check is always defined.
             "active_chat_id": None,
+            "default_tool_states": _default_tool_states(),
         },
     )
 
@@ -124,7 +138,7 @@ def new_chat_endpoint(request: Request) -> Response:
     return templates.TemplateResponse(
         request=request,
         name="_composer.html",
-        context={},
+        context={"default_tool_states": _default_tool_states()},
     )
 
 
@@ -157,6 +171,7 @@ def settings_endpoint(request: Request, db: DB) -> Response:
                 "review_enabled": review_enabled,
                 "generator_enabled": generator_enabled,
                 "agentic_prompts": _AGENTIC_PROMPTS,
+                "agentic_available": False,
             },
         )
     return templates.TemplateResponse(
@@ -176,6 +191,7 @@ def settings_endpoint(request: Request, db: DB) -> Response:
             "review_enabled": review_enabled,
             "generator_enabled": generator_enabled,
             "agentic_prompts": _AGENTIC_PROMPTS,
+            "agentic_available": False,
         },
     )
 
@@ -282,6 +298,7 @@ def toggle_agentic_mode_endpoint(
             "review_enabled": queries.get_review_enabled(db),
             "generator_enabled": queries.get_generator_enabled(db),
             "agentic_prompts": _AGENTIC_PROMPTS,
+            "agentic_available": False,
         },
     )
 
@@ -311,6 +328,7 @@ def toggle_review_enabled_endpoint(
             "review_enabled": review_enabled,
             "generator_enabled": queries.get_generator_enabled(db),
             "agentic_prompts": _AGENTIC_PROMPTS,
+            "agentic_available": False,
         },
     )
 
@@ -337,6 +355,7 @@ def toggle_generator_enabled_endpoint(
             "review_enabled": queries.get_review_enabled(db),
             "generator_enabled": generator_enabled,
             "agentic_prompts": _AGENTIC_PROMPTS,
+            "agentic_available": False,
         },
     )
 
@@ -487,6 +506,18 @@ async def create_chat_endpoint(
         db, name=_placeholder_name(content), model=model
     )
     queries.append_message(db, chat.id, "user", content)
+
+    # Phase 15: seed per-chat tool rows from the composer's submitted
+    # `enabled_tools` checkboxes. getlist returns [] when no fields
+    # were submitted (e.g. from non-browser callers), which seeds all
+    # tools as enabled.
+    form_data = await request.form()
+    enabled_tools_raw = form_data.getlist("enabled_tools")
+    enabled_names: set[str] | None = (
+        set(enabled_tools_raw) if enabled_tools_raw else None
+    )
+    queries.seed_chat_tools(db, chat.id, list(TOOLS.keys()), enabled_names=enabled_names)
+
     messages = queries.list_messages(db, chat.id)
     blocks = render.group_messages_for_render(messages)
 
@@ -503,8 +534,10 @@ async def create_chat_endpoint(
         on_complete="append",
     )
 
-    agentic_skipped = await _compute_agentic_skipped(
-        db=db, client=client, model=chat.model
+    supports_tools = await ollama.model_supports_tools(client, chat.model)
+    tool_states = (
+        queries.get_chat_tool_states(db, chat.id, list(TOOLS.keys()))
+        if supports_tools else []
     )
 
     # Panel includes the just-saved user bubble AND an inline assistant
@@ -517,7 +550,9 @@ async def create_chat_endpoint(
         blocks=blocks,
         pending_stream_url=f"/chats/{chat.id}/stream",
         active_chat_id=chat.id,
-        agentic_skipped=agentic_skipped,
+        agentic_skipped=False,
+        supports_tools=supports_tools,
+        tool_states=tool_states,
     )
 
     # New sidebar row, OOB-prepended to `#chats-list`. The OOB attribute
@@ -614,8 +649,11 @@ async def get_chat_panel_endpoint(
             blocks = blocks[:-1]
         pending_stream_url = f"/chats/{conversation_id}/stream"
 
-    agentic_skipped = await _compute_agentic_skipped(
-        db=db, client=client, model=conversation.model
+    # Phase 15: compute per-chat tool state for chip rendering.
+    supports_tools = await ollama.model_supports_tools(client, conversation.model)
+    tool_states = (
+        queries.get_chat_tool_states(db, conversation_id, list(TOOLS.keys()))
+        if supports_tools else []
     )
 
     if request.headers.get("HX-Request"):
@@ -626,7 +664,9 @@ async def get_chat_panel_endpoint(
                 "conversation": conversation,
                 "blocks": blocks,
                 "pending_stream_url": pending_stream_url,
-                "agentic_skipped": agentic_skipped,
+                "agentic_skipped": False,
+                "supports_tools": supports_tools,
+                "tool_states": tool_states,
             },
         )
     return templates.TemplateResponse(
@@ -637,7 +677,9 @@ async def get_chat_panel_endpoint(
             "conversation": conversation,
             "blocks": blocks,
             "pending_stream_url": pending_stream_url,
-            "agentic_skipped": agentic_skipped,
+            "agentic_skipped": False,
+            "supports_tools": supports_tools,
+            "tool_states": tool_states,
             # The active row highlight lives in the sidebar; pass the
             # id so `_chat_item.html` can set `aria-current="page"`.
             "active_chat_id": conversation.id,
@@ -904,3 +946,47 @@ async def regenerate_endpoint(
     return HTMLResponse(content=placeholder_html)
 
 
+# ---------------------------------------------------------------------------
+# Phase 15: per-chat tool toggles
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/chats/{conversation_id}/tools/{tool_name}",
+    response_class=HTMLResponse,
+)
+async def toggle_chat_tool_endpoint(
+    request: Request,
+    conversation_id: int,
+    tool_name: str,
+    db: DB,
+    client: OllamaClient,
+) -> Response:
+    """Toggle one tool on/off for a conversation; return the updated chip bar.
+
+    Called by an HTMX hx-post on each tool chip. Returns the full chip
+    bar fragment for innerHTML swap into ``#chat-tool-chips`` so chip
+    ordering stays stable and all chip states are in sync.
+
+    Raises:
+        HTTPException 404: When the conversation or tool name is unknown.
+    """
+    try:
+        conversation = queries.get_conversation(db, conversation_id)
+    except LookupError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
+    if tool_name not in TOOLS:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Unknown tool: {tool_name}")
+    queries.toggle_chat_tool(db, conversation_id, tool_name)
+    tool_states = queries.get_chat_tool_states(db, conversation_id, list(TOOLS.keys()))
+    supports_tools = await ollama.model_supports_tools(client, conversation.model)
+    return templates.TemplateResponse(
+        request=request,
+        name="_tool_chips.html",
+        context={
+            "conversation": conversation,
+            "tool_states": tool_states,
+            "supports_tools": supports_tools,
+            "is_composer": False,
+        },
+    )

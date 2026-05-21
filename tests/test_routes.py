@@ -2313,10 +2313,10 @@ def test_chat_panel_shows_banner_when_agentic_on_but_model_lacks_tools(
     make_client: ClientFactory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The actual signal: agentic mode globally enabled, but the
-    chat's pinned model doesn't advertise the `tools` capability.
-    Banner explains why the loop isn't running and names the model
-    so the user knows which one to swap."""
+    """Phase 15: agentic-skipped banner is no longer shown. agentic_skipped
+    is hardcoded False so the banner never renders, even with agentic mode
+    on and a non-tool-capable model. The model name still appears in the
+    chat header."""
     db_path = Path(os.environ["DB_PATH"])
     initialize_database(db_path)
     with open_connection(db_path) as conn:
@@ -2334,8 +2334,9 @@ def test_chat_panel_shows_banner_when_agentic_on_but_model_lacks_tools(
         )
 
     assert response.status_code == 200
-    assert "chat-panel__agentic-skipped" in response.text
-    # Model name surfaces inline so the user can act on it.
+    # Banner is gone — agentic_skipped is always False in phase 15.
+    assert "chat-panel__agentic-skipped" not in response.text
+    # Model name still appears in the header.
     assert "not-tool-capable" in response.text
 
 
@@ -2343,9 +2344,9 @@ def test_chat_panel_banner_also_shows_on_direct_hit(
     make_client: ClientFactory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The full-page render (no HX-Request header) is the bookmark /
-    reload path. The banner must surface there too — otherwise users
-    arriving via a URL wouldn't see the fallback signal."""
+    """Phase 15: agentic-skipped banner is absent on direct hit too.
+    The full-page render hardcodes agentic_skipped=False so the banner
+    never appears in either render path."""
     db_path = Path(os.environ["DB_PATH"])
     initialize_database(db_path)
     with open_connection(db_path) as conn:
@@ -2361,9 +2362,100 @@ def test_chat_panel_banner_also_shows_on_direct_hit(
         response = client.get(f"/chats/{chat.id}")
 
     assert response.status_code == 200
-    # Full page renders the layout + the banner inside the chat panel.
     assert "<!DOCTYPE html>" in response.text
-    assert "chat-panel__agentic-skipped" in response.text
+    # Banner gone — agentic_skipped is always False in phase 15.
+    assert "chat-panel__agentic-skipped" not in response.text
+
+
+# ---------------------------------------------------------------------------
+# Phase 15: per-chat tool toggles
+# ---------------------------------------------------------------------------
+
+
+def test_toggle_chat_tool_returns_chip_bar(
+    make_client: ClientFactory,
+) -> None:
+    """POST /chats/{id}/tools/{name} flips the tool and returns the chip bar.
+
+    The autouse _default_tool_capable fixture sets model_supports_tools=True
+    so tool chips render in the response.
+    """
+    db_path = Path(os.environ["DB_PATH"])
+    initialize_database(db_path)
+
+    with open_connection(db_path) as conn:
+        chat = queries.create_conversation(conn, name="chips", model="llama3")
+        queries.seed_chat_tools(conn, chat.id, ["current_time"])
+
+    with make_client(_tool_capable_handler) as client:
+        response = client.post(
+            f"/chats/{chat.id}/tools/current_time",
+            headers={"HX-Request": "true"},
+        )
+
+    assert response.status_code == 200
+    # Chip bar returned; the toggled chip should now be off.
+    assert "tool-chip" in response.text
+    assert "tool-chip--off" in response.text
+
+
+def test_toggle_chat_tool_404_unknown_conversation(
+    make_client: ClientFactory,
+) -> None:
+    """POST /chats/999/tools/current_time → 404 when conversation missing."""
+    db_path = Path(os.environ["DB_PATH"])
+    initialize_database(db_path)
+
+    with make_client(_tool_capable_handler) as client:
+        response = client.post("/chats/999/tools/current_time")
+
+    assert response.status_code == 404
+
+
+def test_toggle_chat_tool_404_unknown_tool(
+    make_client: ClientFactory,
+) -> None:
+    """POST /chats/{id}/tools/nonexistent → 404 when tool not in registry."""
+    db_path = Path(os.environ["DB_PATH"])
+    initialize_database(db_path)
+
+    with open_connection(db_path) as conn:
+        chat = queries.create_conversation(conn, name="t", model="llama3")
+
+    with make_client(_tool_capable_handler) as client:
+        response = client.post(f"/chats/{chat.id}/tools/nonexistent_tool")
+
+    assert response.status_code == 404
+
+
+def test_create_chat_seeds_tool_rows(
+    make_client: ClientFactory,
+) -> None:
+    """POST /chats seeds tool rows for the new conversation."""
+    db_path = Path(os.environ["DB_PATH"])
+    initialize_database(db_path)
+
+    with make_client(_tool_capable_handler) as client:
+        response = client.post(
+            "/chats",
+            data={"model": "llama3", "content": "hi"},
+        )
+
+    assert response.status_code == 201
+    import re as _re
+    chat_id = int(_re.search(r'data-chat-id="(\d+)"', response.text).group(1))
+
+    with open_connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT tool_name, enabled FROM chat_tool_settings"
+            " WHERE conversation_id = ?",
+            (chat_id,),
+        ).fetchall()
+
+    # At least one tool row was seeded (current_time is always registered).
+    assert len(rows) >= 1
+    # All seeded as enabled by default when no enabled_tools submitted.
+    assert all(row["enabled"] == 1 for row in rows)
 
 
 # ---------------------------------------------------------------------------

@@ -6,6 +6,14 @@
   <header class="chat-panel__header">
     <h2 class="chat-panel__name">{{ conversation.name }}</h2>
     <span class="chat-panel__model">{{ conversation.model }}</span>
+    {# Phase 15: per-chat tool chips. Only rendered when the model
+       supports tools; hidden entirely for non-tool-capable models. #}
+    {% if supports_tools and tool_states %}
+    <div id="chat-tool-chips">
+      {% set is_composer = false %}
+      {% include "_tool_chips.html" %}
+    </div>
+    {% endif %}
   </header>
 
   {# Phase 13g: agentic-mode silent-fallback signal. The dispatcher in

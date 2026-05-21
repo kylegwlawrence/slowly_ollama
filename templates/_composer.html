@@ -29,6 +29,15 @@
     {# Shared with the in-chat message form so both pills behave
        identically (autogrow, Enter-to-submit, send icon). #}
     {% include "_input_pill.html" %}
+    {# Phase 15: tool chips default to all-on. Clicking toggles state
+       client-side (app.js). Checked boxes submit as `enabled_tools`
+       fields with POST /chats so the new chat seeds its tool rows. #}
+    {% if default_tool_states %}
+    {% set is_composer = true %}
+    {% set supports_tools = true %}
+    {% set tool_states = default_tool_states %}
+    {% include "_tool_chips.html" %}
+    {% endif %}
     {# Model selector lives in a toolbar below the input. The placeholder
        option blocks submission via the `required` attribute until /models
        responds (or until the user manually picks). #}

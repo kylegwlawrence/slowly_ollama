@@ -81,6 +81,17 @@ CREATE TABLE IF NOT EXISTS app_settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+-- Phase 15: per-chat tool enablement. One row per (conversation_id, tool_name).
+-- A missing row means enabled (unseeded chats default to all tools on).
+-- Cascade-deletes with the parent conversation.
+CREATE TABLE IF NOT EXISTS chat_tool_settings (
+    conversation_id INTEGER NOT NULL
+        REFERENCES conversations(id) ON DELETE CASCADE,
+    tool_name       TEXT NOT NULL,
+    enabled         INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (conversation_id, tool_name)
+);
 """
 
 

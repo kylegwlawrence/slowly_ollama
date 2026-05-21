@@ -235,3 +235,17 @@ document.body.addEventListener('htmx:afterRequest', (e) => {
     }
   }
 });
+
+// Phase 15: composer tool chips — toggle on/off state client-side.
+// The underlying checkbox carries the value to POST /chats as
+// `enabled_tools`. Chat-panel chips use hx-post instead (no JS needed).
+document.addEventListener('click', function (e) {
+  const chip = e.target.closest('.tool-chip[data-tool]');
+  if (!chip) return;
+  const cb = chip.querySelector('.tool-chip__checkbox');
+  if (!cb) return;
+  cb.checked = !cb.checked;
+  chip.classList.toggle('tool-chip--on', cb.checked);
+  chip.classList.toggle('tool-chip--off', !cb.checked);
+  chip.querySelector('.tool-chip__check').textContent = cb.checked ? '✓' : '✕';
+});

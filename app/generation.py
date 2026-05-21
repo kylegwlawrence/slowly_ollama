@@ -39,6 +39,7 @@ from app import ollama, queries, render
 from app.ollama import OllamaProtocolError, OllamaUnavailable
 from app.templates import templates
 from app.tools import (
+    TOOLS,
     decode_tool_call,
     decode_tool_result,
     encode_tool_call,
@@ -309,24 +310,11 @@ async def start_generation(
             f"Conversation {conversation_id} already has a generation in flight"
         )
 
-    # Pick the producer. `model_supports_tools` returns False on any
-    # Ollama failure (per app.ollama), so the agentic path never
-    # fires when /api/show is unreachable — we degrade to single-
-    # agent rather than crashing. Lazy import of the agentic loop
-    # to avoid a circular import (agents/loop.py imports from
-    # generation.py).
-    use_agentic = (
-        queries.get_agentic_mode(db)
-        and await ollama.model_supports_tools(client, model)
-    )
+    # Phase 15: agentic dispatch disabled; always single-agent.
+    # _run_agentic_generation stays in the codebase but is unreachable
+    # until the agentic loop is re-enabled in a future phase.
+    producer = _run_generation
     producer_kwargs: dict = {}
-    if use_agentic:
-        from app.agents.loop import _run_agentic_generation
-        producer = _run_agentic_generation
-        producer_kwargs["review_enabled"] = queries.get_review_enabled(db)
-        producer_kwargs["generator_enabled"] = queries.get_generator_enabled(db)
-    else:
-        producer = _run_generation
 
     state = GenerationState(conversation_id=conversation_id)
     # Register BEFORE create_task so the registry is populated by
@@ -533,17 +521,21 @@ async def _run_generation(
     `319dd40`) for loop semantics — they're unchanged.
     """
     working_history = list(history)
-    # Phase 12f: gate `tools=` on Ollama-reported capability for this
-    # specific model. The dropdown filter is the primary defense, but
-    # a conversation row pins its model at creation time — if that
-    # model later loses tool support, we'd 400 every follow-up message
-    # without this check. `model_supports_tools` returns False on
-    # cache/network failure, which collapses to `tools_payload = None`
-    # (omits the key entirely; see `maybe_tool_call`).
-    all_specs = tool_specs_for_ollama()
+    # Phase 15: filter to only this chat's enabled tools, then gate on
+    # model capability. Unseeded chats default to all tools enabled.
+    # `model_supports_tools` returns False on cache/network failure,
+    # which collapses to tools_payload = None (omits the key entirely).
+    _all_names = list(TOOLS.keys())
+    _enabled_names = set(
+        queries.get_enabled_tool_names(db, conversation_id, _all_names)
+    )
+    _enabled_specs = [
+        spec for spec in tool_specs_for_ollama()
+        if spec["function"]["name"] in _enabled_names
+    ]
     tools_payload = (
-        all_specs
-        if all_specs and await ollama.model_supports_tools(client, model)
+        _enabled_specs
+        if _enabled_specs and await ollama.model_supports_tools(client, model)
         else None
     )
 
