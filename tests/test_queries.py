@@ -21,13 +21,17 @@ from app.queries import (
     delete_conversation,
     get_agentic_mode,
     get_conversation,
+    get_generator_enabled,
+    get_review_enabled,
     get_setting,
     list_conversations,
     list_messages,
     rename_conversation,
     replace_last_assistant_message,
     set_agentic_mode,
+    set_generator_enabled,
     set_name_auto,
+    set_review_enabled,
     set_setting,
 )
 
@@ -403,3 +407,53 @@ def test_set_agentic_mode_rejects_non_bool(conn: sqlite3.Connection) -> None:
         set_agentic_mode(conn, None)  # type: ignore[arg-type]
     # State unchanged — no row was written by any of the failed calls.
     assert get_agentic_mode(conn) is False
+
+
+# ---------------------------------------------------------------------------
+# Phase 14: review_enabled / generator_enabled helpers
+# ---------------------------------------------------------------------------
+
+
+def test_get_review_enabled_default_true(conn: sqlite3.Connection) -> None:
+    """Absent row → True. Reviewer is on by default so enabling agentic
+    mode for the first time keeps Phase 13's full-loop behavior."""
+    assert get_review_enabled(conn) is True
+
+
+def test_set_review_enabled_roundtrip(conn: sqlite3.Connection) -> None:
+    """Toggle off then back on; both reads reflect the new state."""
+    set_review_enabled(conn, False)
+    assert get_review_enabled(conn) is False
+    set_review_enabled(conn, True)
+    assert get_review_enabled(conn) is True
+
+
+def test_set_review_enabled_rejects_non_bool(conn: sqlite3.Connection) -> None:
+    """String "off" is truthy and would write "on"; guard with TypeError."""
+    with pytest.raises(TypeError):
+        set_review_enabled(conn, "off")  # type: ignore[arg-type]
+    # State unchanged.
+    assert get_review_enabled(conn) is True
+
+
+def test_get_generator_enabled_default_true(conn: sqlite3.Connection) -> None:
+    """Absent row → True. Same first-time-experience rationale as
+    review_enabled."""
+    assert get_generator_enabled(conn) is True
+
+
+def test_set_generator_enabled_roundtrip(conn: sqlite3.Connection) -> None:
+    """Toggle off then back on."""
+    set_generator_enabled(conn, False)
+    assert get_generator_enabled(conn) is False
+    set_generator_enabled(conn, True)
+    assert get_generator_enabled(conn) is True
+
+
+def test_set_generator_enabled_rejects_non_bool(
+    conn: sqlite3.Connection,
+) -> None:
+    """Guard against the truthy-string foot-gun."""
+    with pytest.raises(TypeError):
+        set_generator_enabled(conn, "off")  # type: ignore[arg-type]
+    assert get_generator_enabled(conn) is True

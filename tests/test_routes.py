@@ -2106,6 +2106,114 @@ def test_settings_get_with_agentic_on_renders_prompts(
 
 
 # ---------------------------------------------------------------------------
+# Phase 14: per-agent sub-toggle endpoints + GET context
+# ---------------------------------------------------------------------------
+
+
+def test_toggle_review_enabled_on(make_client: ClientFactory) -> None:
+    """POST /settings/agentic-review with enabled=on → setting True,
+    section fragment returned with the sub-toggle present."""
+    db_path = Path(os.environ["DB_PATH"])
+    initialize_database(db_path)
+    with open_connection(db_path) as conn:
+        queries.set_agentic_mode(conn, True)
+
+    with make_client(_ollama_unreachable) as client:
+        response = client.post(
+            "/settings/agentic-review", data={"enabled": "on"},
+        )
+
+    assert response.status_code == 200
+    with open_connection(db_path) as conn:
+        assert queries.get_review_enabled(conn) is True
+    assert 'hx-post="/settings/agentic-review"' in response.text
+
+
+def test_toggle_review_enabled_off(make_client: ClientFactory) -> None:
+    """POST /settings/agentic-review without enabled → setting False."""
+    db_path = Path(os.environ["DB_PATH"])
+    initialize_database(db_path)
+    with open_connection(db_path) as conn:
+        queries.set_agentic_mode(conn, True)
+        queries.set_review_enabled(conn, True)
+
+    with make_client(_ollama_unreachable) as client:
+        response = client.post("/settings/agentic-review", data={})
+
+    assert response.status_code == 200
+    with open_connection(db_path) as conn:
+        assert queries.get_review_enabled(conn) is False
+
+
+def test_toggle_generator_enabled_on(make_client: ClientFactory) -> None:
+    """POST /settings/agentic-generator with enabled=on → setting True."""
+    db_path = Path(os.environ["DB_PATH"])
+    initialize_database(db_path)
+    with open_connection(db_path) as conn:
+        queries.set_agentic_mode(conn, True)
+
+    with make_client(_ollama_unreachable) as client:
+        response = client.post(
+            "/settings/agentic-generator", data={"enabled": "on"},
+        )
+
+    assert response.status_code == 200
+    with open_connection(db_path) as conn:
+        assert queries.get_generator_enabled(conn) is True
+    assert 'hx-post="/settings/agentic-generator"' in response.text
+
+
+def test_toggle_generator_enabled_off(make_client: ClientFactory) -> None:
+    """POST /settings/agentic-generator without enabled → setting False."""
+    db_path = Path(os.environ["DB_PATH"])
+    initialize_database(db_path)
+    with open_connection(db_path) as conn:
+        queries.set_agentic_mode(conn, True)
+        queries.set_generator_enabled(conn, True)
+
+    with make_client(_ollama_unreachable) as client:
+        response = client.post("/settings/agentic-generator", data={})
+
+    assert response.status_code == 200
+    with open_connection(db_path) as conn:
+        assert queries.get_generator_enabled(conn) is False
+
+
+def test_settings_renders_sub_toggles_when_master_on(
+    make_client: ClientFactory,
+) -> None:
+    """GET /settings with agentic_mode on → sub-toggle inputs present."""
+    db_path = Path(os.environ["DB_PATH"])
+    initialize_database(db_path)
+    with open_connection(db_path) as conn:
+        queries.set_agentic_mode(conn, True)
+
+    with make_client(_ollama_unreachable) as client:
+        response = client.get("/settings")
+
+    assert response.status_code == 200
+    assert 'hx-post="/settings/agentic-review"' in response.text
+    assert 'hx-post="/settings/agentic-generator"' in response.text
+
+
+def test_settings_hides_sub_toggles_when_master_off(
+    make_client: ClientFactory,
+) -> None:
+    """GET /settings with agentic_mode off → sub-toggle inputs absent."""
+    db_path = Path(os.environ["DB_PATH"])
+    initialize_database(db_path)
+    with open_connection(db_path) as conn:
+        queries.set_agentic_mode(conn, False)
+
+    with make_client(_ollama_unreachable) as client:
+        response = client.get("/settings")
+
+    assert response.status_code == 200
+    assert 'hx-post="/settings/agentic-review"' not in response.text
+    assert 'hx-post="/settings/agentic-generator"' not in response.text
+
+
+# ---------------------------------------------------------------------------
 # Phase 13g: agentic-skipped banner on chat panel
 # ---------------------------------------------------------------------------
 

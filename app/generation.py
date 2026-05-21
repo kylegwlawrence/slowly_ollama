@@ -319,9 +319,12 @@ async def start_generation(
         queries.get_agentic_mode(db)
         and await ollama.model_supports_tools(client, model)
     )
+    producer_kwargs: dict = {}
     if use_agentic:
         from app.agents.loop import _run_agentic_generation
         producer = _run_agentic_generation
+        producer_kwargs["review_enabled"] = queries.get_review_enabled(db)
+        producer_kwargs["generator_enabled"] = queries.get_generator_enabled(db)
     else:
         producer = _run_generation
 
@@ -344,6 +347,7 @@ async def start_generation(
             model=model,
             history=history,
             on_complete=on_complete,
+            **producer_kwargs,
         )
     )
     state.task.add_done_callback(_make_done_callback(conversation_id))

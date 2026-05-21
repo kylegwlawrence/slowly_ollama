@@ -1158,3 +1158,37 @@ async def test_dispatcher_in_flight_guard_fires_before_first_await(
                 history=[],
                 on_complete="append",
             )
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_passes_subagent_flags_to_agentic_producer(
+    tmp_path, monkeypatch,
+):
+    """start_generation reads review_enabled/generator_enabled from DB
+    and passes them as kwargs to _run_agentic_generation."""
+    db_path = tmp_path / "chats.db"
+    conv_id = _setup_chat(db_path)
+
+    with open_connection(db_path) as conn:
+        queries.set_agentic_mode(conn, True)
+        queries.set_review_enabled(conn, False)
+        queries.set_generator_enabled(conn, True)
+
+    async def _capable(_client, _name):
+        return True
+    monkeypatch.setattr(ollama, "model_supports_tools", _capable)
+
+    agentic_calls, _single_calls = _capture_producer_calls(monkeypatch)
+
+    with open_connection(db_path) as db:
+        state = await generation.start_generation(
+            client=None, db=db,
+            conversation_id=conv_id, model="llama3",
+            history=queries.list_messages(db, conv_id),
+            on_complete="append",
+        )
+        await state.task
+
+    assert agentic_calls["count"] == 1
+    assert agentic_calls["last_kwargs"]["review_enabled"] is False
+    assert agentic_calls["last_kwargs"]["generator_enabled"] is True
