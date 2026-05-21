@@ -2056,6 +2056,124 @@ def test_settings_delete_server_idempotent(
     assert response.status_code == 200
 
 
+def _add_server_and_get_id(client: object, name: str, url: str) -> int:
+    """Helper: POST a server and parse its assigned id from the row id."""
+    resp = client.post("/settings/servers", data={"name": name, "url": url})
+    marker = 'id="rag-server-'
+    start = resp.text.index(marker) + len(marker)
+    end = resp.text.index('"', start)
+    return int(resp.text[start:end])
+
+
+def test_settings_get_server_edit_mode_renders_textarea(
+    make_client: ClientFactory,
+) -> None:
+    """GET /settings/servers/{id}?edit=1 returns the row with an editable
+    description textarea pre-filled with the current description."""
+    with make_client(_ollama_unreachable) as client:
+        server_id = _add_server_and_get_id(client, "arxiv", "http://x/arxiv")
+        # Give it a known description first.
+        client.patch(
+            f"/settings/servers/{server_id}", data={"description": "current text"}
+        )
+        response = client.get(f"/settings/servers/{server_id}?edit=1")
+
+    assert response.status_code == 200
+    assert "<textarea" in response.text
+    assert 'name="description"' in response.text
+    assert "current text" in response.text
+    assert f'hx-patch="/settings/servers/{server_id}"' in response.text
+
+
+def test_settings_get_server_view_mode_has_edit_button(
+    make_client: ClientFactory,
+) -> None:
+    """GET /settings/servers/{id} (no edit flag) returns the view-mode row
+    with the edit pencil and no textarea — backs the Cancel button."""
+    with make_client(_ollama_unreachable) as client:
+        server_id = _add_server_and_get_id(client, "arxiv", "http://x/arxiv")
+        response = client.get(f"/settings/servers/{server_id}")
+
+    assert response.status_code == 200
+    assert "<textarea" not in response.text
+    assert f'hx-get="/settings/servers/{server_id}?edit=1"' in response.text
+
+
+def test_settings_get_server_missing_id_returns_404(
+    make_client: ClientFactory,
+) -> None:
+    """A stale id returns 404 so HTMX leaves the row in place."""
+    with make_client(_ollama_unreachable) as client:
+        response = client.get("/settings/servers/9999")
+    assert response.status_code == 404
+
+
+def test_settings_update_server_description_persists(
+    make_client: ClientFactory,
+) -> None:
+    """PATCH /settings/servers/{id} saves the new description and returns
+    the view-mode row showing it."""
+    with make_client(_ollama_unreachable) as client:
+        server_id = _add_server_and_get_id(client, "arxiv", "http://x/arxiv")
+        response = client.patch(
+            f"/settings/servers/{server_id}",
+            data={"description": "edited in place"},
+        )
+        # Reload the settings page to confirm the change is durable.
+        settings = client.get("/settings")
+
+    assert response.status_code == 200
+    assert "edited in place" in response.text
+    assert "<textarea" not in response.text  # back to view mode
+    assert "edited in place" in settings.text
+
+
+def test_settings_update_server_description_truncates_at_200_chars(
+    make_client: ClientFactory,
+) -> None:
+    """An overlong description is silently truncated to 200 chars."""
+    with make_client(_ollama_unreachable) as client:
+        server_id = _add_server_and_get_id(client, "arxiv", "http://x/arxiv")
+        response = client.patch(
+            f"/settings/servers/{server_id}",
+            data={"description": "x" * 250},
+        )
+        settings = client.get("/settings")
+
+    assert response.status_code == 200
+    assert "x" * 200 in settings.text
+    assert "x" * 201 not in settings.text
+
+
+def test_settings_update_server_description_strips_whitespace(
+    make_client: ClientFactory,
+) -> None:
+    """Surrounding whitespace is trimmed before storing."""
+    with make_client(_ollama_unreachable) as client:
+        server_id = _add_server_and_get_id(client, "arxiv", "http://x/arxiv")
+        response = client.patch(
+            f"/settings/servers/{server_id}",
+            data={"description": "  trimmed  "},
+        )
+
+    # The submitted padding is stripped before storage, so the verbatim
+    # padded form never reaches the rendered row.
+    assert response.status_code == 200
+    assert "trimmed" in response.text
+    assert "  trimmed  " not in response.text
+
+
+def test_settings_update_server_missing_id_returns_404(
+    make_client: ClientFactory,
+) -> None:
+    """PATCH on a stale id returns 404 (matches the GET route)."""
+    with make_client(_ollama_unreachable) as client:
+        response = client.patch(
+            "/settings/servers/9999", data={"description": "nope"}
+        )
+    assert response.status_code == 404
+
+
 def test_settings_get_lists_existing_servers(
     make_client: ClientFactory,
 ) -> None:

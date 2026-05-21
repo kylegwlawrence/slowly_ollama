@@ -136,6 +136,60 @@ def create_server(
     return _row_to_server(row)
 
 
+def get_server(conn: sqlite3.Connection, server_id: int) -> RagServer | None:
+    """Fetch a single server row by id.
+
+    Backs the inline description editor's GET route, which re-renders
+    one row in view or edit mode without re-listing the whole table.
+
+    Args:
+        conn: Open SQLite connection.
+        server_id: Id of the server to fetch.
+
+    Returns:
+        The matching RagServer, or ``None`` if no row has that id (e.g.
+        another tab deleted it). The route maps ``None`` to a 404.
+    """
+    row = conn.execute(
+        "SELECT id, name, url, description, created_at, updated_at"
+        " FROM rag_servers WHERE id = ?;",
+        (server_id,),
+    ).fetchone()
+    return _row_to_server(row) if row else None
+
+
+def update_server_description(
+    conn: sqlite3.Connection, server_id: int, description: str
+) -> RagServer | None:
+    """Update a server's description in place and bump ``updated_at``.
+
+    Only the description is editable inline — name and URL changes would
+    need a health re-probe and a tool-registry rename, so those still go
+    through delete + re-add.
+
+    Args:
+        conn: Open SQLite connection.
+        server_id: Id of the server to update.
+        description: New human-readable summary of the source's contents.
+
+    Returns:
+        The updated RagServer, or ``None`` if no row has that id (the
+        route maps ``None`` to a 404).
+    """
+    now = _now_iso()
+    with conn:
+        # RETURNING gives us the post-update row without a follow-up SELECT;
+        # a missing id yields no row (fetchone() -> None), which the route
+        # treats as a 404.
+        row = conn.execute(
+            "UPDATE rag_servers SET description = ?, updated_at = ?"
+            " WHERE id = ?"
+            " RETURNING id, name, url, description, created_at, updated_at;",
+            (description, now, server_id),
+        ).fetchone()
+    return _row_to_server(row) if row else None
+
+
 def delete_server(conn: sqlite3.Connection, server_id: int) -> None:
     """Delete a server row by id; idempotent.
 
