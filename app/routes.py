@@ -67,12 +67,19 @@ from app.templates import templates
 # but couples the registration to an internal seam. The noqa silences
 # the unused-import warning since the imports are purely for side
 # effect.
-from app.tools import TOOLS
+from app.tools import RAG_TOOL_NAME, TOOLS
 from app.tools import builtins as _builtins  # noqa: F401
 from app.tools import rag as _rag_tool  # noqa: F401
 from app.tools.rag import refresh_query_rag_registration
 
 router = APIRouter()
+
+# All currently-registered tool names, in registration order.
+# Computed once at import time. Used for seeding and generation filtering.
+_ALL_TOOL_NAMES: list[str] = list(TOOLS.keys())
+
+# Phase 15: agentic mode is disabled until re-enabled in a future phase.
+_AGENTIC_AVAILABLE = False
 
 # Read-only snapshot of the three agentic system prompts — referenced
 # in every context that renders `_settings_agentic_section.html` so a
@@ -90,15 +97,56 @@ _AGENTIC_PROMPTS = {
 
 
 def _default_tool_states() -> list[queries.ChatToolState]:
-    """Return ChatToolState list with all registered tools enabled.
+    """Return ChatToolState list with all non-RAG tools enabled.
 
-    Used by routes that render the empty-state composer so chips show
-    all tools on by default before a chat is created.
+    query_rag is excluded — RAG servers get their own per-server chips.
     """
     return [
         queries.ChatToolState(tool_name=name, enabled=True)
-        for name in TOOLS.keys()
+        for name in _ALL_TOOL_NAMES
+        if name != RAG_TOOL_NAME
     ]
+
+
+def _default_rag_server_states(
+    db: sqlite3.Connection,
+) -> list[queries.ChatRagState]:
+    """Return ChatRagState list with all configured RAG servers enabled.
+
+    Used by the empty-state composer so per-server chips default to on
+    before a chat is created.
+    """
+    servers = _rag_servers_module.list_servers(db)
+    return [
+        queries.ChatRagState(server_name=s.name, enabled=True) for s in servers
+    ]
+
+
+def _chip_states(
+    db: sqlite3.Connection,
+    conversation_id: int,
+    *,
+    servers: list | None = None,
+) -> tuple[list[queries.ChatToolState], list[queries.ChatRagState]]:
+    """Return (tool_states, rag_server_states) for the chip bar.
+
+    tool_states excludes query_rag; RAG servers get their own chips.
+    Both lists respect the per-chat settings stored in DB.
+
+    Pass ``servers`` when you already hold the list from a prior
+    ``_rag_servers_module.list_servers`` call to avoid a redundant fetch.
+    """
+    tool_states = [
+        s
+        for s in queries.get_chat_tool_states(db, conversation_id, _ALL_TOOL_NAMES)
+        if s.tool_name != RAG_TOOL_NAME
+    ]
+    if servers is None:
+        servers = _rag_servers_module.list_servers(db)
+    rag_server_states = queries.get_chat_rag_states(
+        db, conversation_id, [s.name for s in servers]
+    )
+    return tool_states, rag_server_states
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -121,24 +169,29 @@ def index_endpoint(request: Request, db: DB) -> Response:
             # sidebar template's `aria-current` check is always defined.
             "active_chat_id": None,
             "default_tool_states": _default_tool_states(),
+            "default_rag_server_states": _default_rag_server_states(db),
         },
     )
 
 
 @router.get("/new", response_class=HTMLResponse)
-def new_chat_endpoint(request: Request) -> Response:
+def new_chat_endpoint(request: Request, db: DB) -> Response:
     """Return just the empty-state composer fragment.
 
     Wired to the sidebar "+ New chat" link, which `hx-get`s this URL
     and swaps the response into ``#main``. The fragment-only response
     keeps the swap cheap and avoids re-rendering the sidebar (which
     would briefly lose the current active-row highlight before the
-    push-url updates).
+    push-url updates). `db` is needed to read the current RAG server
+    list for per-server composer chips.
     """
     return templates.TemplateResponse(
         request=request,
         name="_composer.html",
-        context={"default_tool_states": _default_tool_states()},
+        context={
+            "default_tool_states": _default_tool_states(),
+            "default_rag_server_states": _default_rag_server_states(db),
+        },
     )
 
 
@@ -171,7 +224,7 @@ def settings_endpoint(request: Request, db: DB) -> Response:
                 "review_enabled": review_enabled,
                 "generator_enabled": generator_enabled,
                 "agentic_prompts": _AGENTIC_PROMPTS,
-                "agentic_available": False,
+                "agentic_available": _AGENTIC_AVAILABLE,
             },
         )
     return templates.TemplateResponse(
@@ -191,7 +244,7 @@ def settings_endpoint(request: Request, db: DB) -> Response:
             "review_enabled": review_enabled,
             "generator_enabled": generator_enabled,
             "agentic_prompts": _AGENTIC_PROMPTS,
-            "agentic_available": False,
+            "agentic_available": _AGENTIC_AVAILABLE,
         },
     )
 
@@ -298,7 +351,7 @@ def toggle_agentic_mode_endpoint(
             "review_enabled": queries.get_review_enabled(db),
             "generator_enabled": queries.get_generator_enabled(db),
             "agentic_prompts": _AGENTIC_PROMPTS,
-            "agentic_available": False,
+            "agentic_available": _AGENTIC_AVAILABLE,
         },
     )
 
@@ -328,7 +381,7 @@ def toggle_review_enabled_endpoint(
             "review_enabled": review_enabled,
             "generator_enabled": queries.get_generator_enabled(db),
             "agentic_prompts": _AGENTIC_PROMPTS,
-            "agentic_available": False,
+            "agentic_available": _AGENTIC_AVAILABLE,
         },
     )
 
@@ -355,7 +408,7 @@ def toggle_generator_enabled_endpoint(
             "review_enabled": queries.get_review_enabled(db),
             "generator_enabled": generator_enabled,
             "agentic_prompts": _AGENTIC_PROMPTS,
-            "agentic_available": False,
+            "agentic_available": _AGENTIC_AVAILABLE,
         },
     )
 
@@ -516,7 +569,21 @@ async def create_chat_endpoint(
     enabled_names: set[str] | None = (
         set(enabled_tools_raw) if enabled_tools_raw else None
     )
-    queries.seed_chat_tools(db, chat.id, list(TOOLS.keys()), enabled_names=enabled_names)
+    queries.seed_chat_tools(db, chat.id, _ALL_TOOL_NAMES, enabled_names=enabled_names)
+
+    # Phase 15b: seed per-chat RAG server rows from the composer's
+    # `enabled_rag_servers` checkboxes.
+    enabled_rag_raw = form_data.getlist("enabled_rag_servers")
+    enabled_rag: set[str] | None = (
+        set(enabled_rag_raw) if enabled_rag_raw else None
+    )
+    rag_servers_list = _rag_servers_module.list_servers(db)
+    queries.seed_chat_rag_servers(
+        db,
+        chat.id,
+        [s.name for s in rag_servers_list],
+        enabled_names=enabled_rag,
+    )
 
     messages = queries.list_messages(db, chat.id)
     blocks = render.group_messages_for_render(messages)
@@ -535,10 +602,12 @@ async def create_chat_endpoint(
     )
 
     supports_tools = await ollama.model_supports_tools(client, chat.model)
-    tool_states = (
-        queries.get_chat_tool_states(db, chat.id, list(TOOLS.keys()))
-        if supports_tools else []
-    )
+    if supports_tools:
+        tool_states, rag_server_states = _chip_states(
+            db, chat.id, servers=rag_servers_list
+        )
+    else:
+        tool_states, rag_server_states = [], []
 
     # Panel includes the just-saved user bubble AND an inline assistant
     # placeholder that opens the SSE stream on insert. Inlining the
@@ -553,6 +622,7 @@ async def create_chat_endpoint(
         agentic_skipped=False,
         supports_tools=supports_tools,
         tool_states=tool_states,
+        rag_server_states=rag_server_states,
     )
 
     # New sidebar row, OOB-prepended to `#chats-list`. The OOB attribute
@@ -651,10 +721,10 @@ async def get_chat_panel_endpoint(
 
     # Phase 15: compute per-chat tool state for chip rendering.
     supports_tools = await ollama.model_supports_tools(client, conversation.model)
-    tool_states = (
-        queries.get_chat_tool_states(db, conversation_id, list(TOOLS.keys()))
-        if supports_tools else []
-    )
+    if supports_tools:
+        tool_states, rag_server_states = _chip_states(db, conversation_id)
+    else:
+        tool_states, rag_server_states = [], []
 
     if request.headers.get("HX-Request"):
         return templates.TemplateResponse(
@@ -667,6 +737,7 @@ async def get_chat_panel_endpoint(
                 "agentic_skipped": False,
                 "supports_tools": supports_tools,
                 "tool_states": tool_states,
+                "rag_server_states": rag_server_states,
             },
         )
     return templates.TemplateResponse(
@@ -680,6 +751,7 @@ async def get_chat_panel_endpoint(
             "agentic_skipped": False,
             "supports_tools": supports_tools,
             "tool_states": tool_states,
+            "rag_server_states": rag_server_states,
             # The active row highlight lives in the sidebar; pass the
             # id so `_chat_item.html` can set `aria-current="page"`.
             "active_chat_id": conversation.id,
@@ -960,13 +1032,15 @@ async def toggle_chat_tool_endpoint(
     conversation_id: int,
     tool_name: str,
     db: DB,
-    client: OllamaClient,
 ) -> Response:
     """Toggle one tool on/off for a conversation; return the updated chip bar.
 
     Called by an HTMX hx-post on each tool chip. Returns the full chip
     bar fragment for innerHTML swap into ``#chat-tool-chips`` so chip
     ordering stays stable and all chip states are in sync.
+
+    Chips are only visible when the model supports tools, so supports_tools
+    is always True here — no capability re-check needed.
 
     Raises:
         HTTPException 404: When the conversation or tool name is unknown.
@@ -978,15 +1052,60 @@ async def toggle_chat_tool_endpoint(
     if tool_name not in TOOLS:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Unknown tool: {tool_name}")
     queries.toggle_chat_tool(db, conversation_id, tool_name)
-    tool_states = queries.get_chat_tool_states(db, conversation_id, list(TOOLS.keys()))
-    supports_tools = await ollama.model_supports_tools(client, conversation.model)
+    tool_states, rag_server_states = _chip_states(db, conversation_id)
     return templates.TemplateResponse(
         request=request,
         name="_tool_chips.html",
         context={
             "conversation": conversation,
             "tool_states": tool_states,
-            "supports_tools": supports_tools,
+            "rag_server_states": rag_server_states,
+            "supports_tools": True,
+            "is_composer": False,
+        },
+    )
+
+
+@router.post(
+    "/chats/{conversation_id}/rag-servers/{server_name}",
+    response_class=HTMLResponse,
+)
+async def toggle_chat_rag_server_endpoint(
+    request: Request,
+    conversation_id: int,
+    server_name: str,
+    db: DB,
+) -> Response:
+    """Toggle one RAG server on/off for a conversation; return the chip bar.
+
+    Called by an HTMX hx-post on each per-server chip. Returns the full
+    chip bar for innerHTML swap into ``#chat-tool-chips``.
+
+    404s when the conversation is unknown or the server name is not in the
+    currently-configured set — prevents toggling phantom servers.
+
+    Raises:
+        HTTPException 404: When the conversation or server name is unknown.
+    """
+    try:
+        conversation = queries.get_conversation(db, conversation_id)
+    except LookupError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
+    servers = _rag_servers_module.list_servers(db)
+    if server_name not in {s.name for s in servers}:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, f"Unknown RAG server: {server_name}"
+        )
+    queries.toggle_chat_rag_server(db, conversation_id, server_name)
+    tool_states, rag_server_states = _chip_states(db, conversation_id, servers=servers)
+    return templates.TemplateResponse(
+        request=request,
+        name="_tool_chips.html",
+        context={
+            "conversation": conversation,
+            "tool_states": tool_states,
+            "rag_server_states": rag_server_states,
+            "supports_tools": True,
             "is_composer": False,
         },
     )

@@ -15,14 +15,17 @@ import pytest
 from app.connection import open_connection
 from app.db import initialize_database
 from app.queries import (
+    ChatRagState,
     ChatToolState,
     append_message,
     count_assistant_messages,
     create_conversation,
     delete_conversation,
     get_agentic_mode,
+    get_chat_rag_states,
     get_chat_tool_states,
     get_conversation,
+    get_enabled_rag_server_names,
     get_enabled_tool_names,
     get_generator_enabled,
     get_review_enabled,
@@ -31,12 +34,14 @@ from app.queries import (
     list_messages,
     rename_conversation,
     replace_last_assistant_message,
+    seed_chat_rag_servers,
     seed_chat_tools,
     set_agentic_mode,
     set_generator_enabled,
     set_name_auto,
     set_review_enabled,
     set_setting,
+    toggle_chat_rag_server,
     toggle_chat_tool,
 )
 
@@ -572,6 +577,99 @@ def test_chat_tool_state_dataclass(conn: sqlite3.Connection) -> None:
     """ChatToolState is frozen and carries the right fields."""
     state = ChatToolState(tool_name="current_time", enabled=True)
     assert state.tool_name == "current_time"
+    assert state.enabled is True
+    with pytest.raises(Exception):
+        state.enabled = False  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Phase 15b: per-chat RAG server enablement
+# ---------------------------------------------------------------------------
+
+
+def test_seed_chat_rag_servers_all_enabled_by_default(
+    conn: sqlite3.Connection,
+) -> None:
+    """seed_chat_rag_servers with enabled_names=None enables every server."""
+    cid = _make_chat(conn)
+    seed_chat_rag_servers(conn, cid, ["arxiv", "pubmed"])
+    states = get_chat_rag_states(conn, cid, ["arxiv", "pubmed"])
+    assert {s.server_name: s.enabled for s in states} == {"arxiv": True, "pubmed": True}
+
+
+def test_seed_chat_rag_servers_partial_enabled(conn: sqlite3.Connection) -> None:
+    """seed_chat_rag_servers with enabled_names only enables the named subset."""
+    cid = _make_chat(conn)
+    seed_chat_rag_servers(conn, cid, ["arxiv", "pubmed"], enabled_names={"arxiv"})
+    states = get_chat_rag_states(conn, cid, ["arxiv", "pubmed"])
+    assert {s.server_name: s.enabled for s in states} == {"arxiv": True, "pubmed": False}
+
+
+def test_seed_chat_rag_servers_is_idempotent(conn: sqlite3.Connection) -> None:
+    """Calling seed_chat_rag_servers twice doesn't flip rows already written."""
+    cid = _make_chat(conn)
+    seed_chat_rag_servers(conn, cid, ["arxiv"], enabled_names={"arxiv"})
+    seed_chat_rag_servers(conn, cid, ["arxiv"], enabled_names=set())
+    states = get_chat_rag_states(conn, cid, ["arxiv"])
+    # First seed wins; second call is a no-op (INSERT OR IGNORE).
+    assert states[0].enabled is True
+
+
+def test_get_chat_rag_states_unseeded_defaults_to_enabled(
+    conn: sqlite3.Connection,
+) -> None:
+    """Unseeded conversation: all servers default to enabled."""
+    cid = _make_chat(conn)
+    states = get_chat_rag_states(conn, cid, ["arxiv", "pubmed"])
+    assert all(s.enabled for s in states)
+
+
+def test_get_chat_rag_states_respects_seeded_rows(
+    conn: sqlite3.Connection,
+) -> None:
+    """Seeded disabled row is returned as disabled."""
+    cid = _make_chat(conn)
+    seed_chat_rag_servers(conn, cid, ["arxiv", "pubmed"], enabled_names={"pubmed"})
+    states = {s.server_name: s.enabled for s in get_chat_rag_states(conn, cid, ["arxiv", "pubmed"])}
+    assert states == {"arxiv": False, "pubmed": True}
+
+
+def test_toggle_chat_rag_server_off_from_unseeded(conn: sqlite3.Connection) -> None:
+    """First toggle on an unseeded row inserts disabled (on → off)."""
+    cid = _make_chat(conn)
+    result = toggle_chat_rag_server(conn, cid, "arxiv")
+    assert result is False
+    states = get_chat_rag_states(conn, cid, ["arxiv"])
+    assert states[0].enabled is False
+
+
+def test_toggle_chat_rag_server_on_from_off(conn: sqlite3.Connection) -> None:
+    """Second toggle flips back to enabled (off → on)."""
+    cid = _make_chat(conn)
+    toggle_chat_rag_server(conn, cid, "arxiv")  # off
+    result = toggle_chat_rag_server(conn, cid, "arxiv")  # on
+    assert result is True
+
+
+def test_get_enabled_rag_server_names_unseeded(conn: sqlite3.Connection) -> None:
+    """Unseeded conversation: all names returned (missing row = enabled)."""
+    cid = _make_chat(conn)
+    enabled = get_enabled_rag_server_names(conn, cid, ["arxiv", "pubmed"])
+    assert enabled == ["arxiv", "pubmed"]
+
+
+def test_get_enabled_rag_server_names_filtered(conn: sqlite3.Connection) -> None:
+    """Only enabled servers are returned when some are toggled off."""
+    cid = _make_chat(conn)
+    seed_chat_rag_servers(conn, cid, ["arxiv", "pubmed"], enabled_names={"pubmed"})
+    enabled = get_enabled_rag_server_names(conn, cid, ["arxiv", "pubmed"])
+    assert enabled == ["pubmed"]
+
+
+def test_chat_rag_state_dataclass(conn: sqlite3.Connection) -> None:
+    """ChatRagState is frozen and carries the right fields."""
+    state = ChatRagState(server_name="arxiv", enabled=True)
+    assert state.server_name == "arxiv"
     assert state.enabled is True
     with pytest.raises(Exception):
         state.enabled = False  # type: ignore[misc]

@@ -633,14 +633,16 @@ def seed_chat_tools(
         enabled_names: When provided, only these names are seeded as
             enabled=1. All others get enabled=0. None → all tools enabled.
     """
+    rows = [
+        (conversation_id, name, 1 if (enabled_names is None or name in enabled_names) else 0)
+        for name in tool_names
+    ]
     with conn:
-        for name in tool_names:
-            is_on = 1 if (enabled_names is None or name in enabled_names) else 0
-            conn.execute(
-                "INSERT OR IGNORE INTO chat_tool_settings"
-                " (conversation_id, tool_name, enabled) VALUES (?, ?, ?);",
-                (conversation_id, name, is_on),
-            )
+        conn.executemany(
+            "INSERT OR IGNORE INTO chat_tool_settings"
+            " (conversation_id, tool_name, enabled) VALUES (?, ?, ?);",
+            rows,
+        )
 
 
 def get_chat_tool_states(
@@ -724,3 +726,140 @@ def get_enabled_tool_names(
     """
     states = get_chat_tool_states(conn, conversation_id, all_tool_names)
     return [s.tool_name for s in states if s.enabled]
+
+
+# ---------------------------------------------------------------------------
+# Phase 15b: per-chat RAG server enablement
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ChatRagState:
+    """Enabled/disabled state of one RAG server for one conversation.
+
+    Attributes:
+        server_name: Unique name from rag_servers.name (e.g. ``"arxiv"``).
+        enabled: True when this server's chip is toggled on for the chat.
+    """
+
+    server_name: str
+    enabled: bool
+
+
+def seed_chat_rag_servers(
+    conn: sqlite3.Connection,
+    conversation_id: int,
+    server_names: list[str],
+    *,
+    enabled_names: set[str] | None = None,
+) -> None:
+    """Insert default RAG server rows for a new conversation.
+
+    Uses INSERT OR IGNORE so re-runs are safe (idempotent). Called at
+    chat creation time alongside ``seed_chat_tools``.
+
+    Args:
+        conn: Open SQLite connection.
+        conversation_id: Id of the newly-created conversation.
+        server_names: All currently-configured server names.
+        enabled_names: When provided, only these names are seeded as
+            enabled=1. All others get enabled=0. None → all enabled.
+    """
+    rows = [
+        (
+            conversation_id,
+            name,
+            1 if (enabled_names is None or name in enabled_names) else 0,
+        )
+        for name in server_names
+    ]
+    with conn:
+        conn.executemany(
+            "INSERT OR IGNORE INTO chat_rag_settings"
+            " (conversation_id, server_name, enabled) VALUES (?, ?, ?);",
+            rows,
+        )
+
+
+def get_chat_rag_states(
+    conn: sqlite3.Connection,
+    conversation_id: int,
+    all_server_names: list[str],
+) -> list[ChatRagState]:
+    """Return enabled/disabled state for every server in all_server_names.
+
+    Servers with no row (unseeded conversations or newly-added servers)
+    default to enabled=True so existing chats see new sources without
+    explicit seeding.
+
+    Args:
+        conn: Open SQLite connection.
+        conversation_id: Conversation to look up.
+        all_server_names: Current snapshot of configured server names.
+
+    Returns:
+        One ChatRagState per entry in all_server_names, in the same order.
+    """
+    rows = conn.execute(
+        "SELECT server_name, enabled FROM chat_rag_settings"
+        " WHERE conversation_id = ?;",
+        (conversation_id,),
+    ).fetchall()
+    stored = {row["server_name"]: bool(row["enabled"]) for row in rows}
+    return [
+        ChatRagState(server_name=name, enabled=stored.get(name, True))
+        for name in all_server_names
+    ]
+
+
+def toggle_chat_rag_server(
+    conn: sqlite3.Connection,
+    conversation_id: int,
+    server_name: str,
+) -> bool:
+    """Flip the enabled state of one RAG server for one conversation.
+
+    Unseeded servers are treated as currently on, so the first toggle
+    inserts a disabled row (on → off). Subsequent toggles XOR-flip the
+    stored value.
+
+    Args:
+        conn: Open SQLite connection.
+        conversation_id: Conversation whose RAG server to toggle.
+        server_name: Name of the RAG server to toggle.
+
+    Returns:
+        True if the server is now enabled, False if now disabled.
+    """
+    with conn:
+        row = conn.execute(
+            "INSERT INTO chat_rag_settings (conversation_id, server_name, enabled)"
+            " VALUES (?, ?, 0)"
+            " ON CONFLICT(conversation_id, server_name)"
+            " DO UPDATE SET enabled = 1 - enabled"
+            " RETURNING enabled;",
+            (conversation_id, server_name),
+        ).fetchone()
+    return bool(row["enabled"])
+
+
+def get_enabled_rag_server_names(
+    conn: sqlite3.Connection,
+    conversation_id: int,
+    all_server_names: list[str],
+) -> list[str]:
+    """Return only the RAG server names that are enabled for a conversation.
+
+    Used by _run_generation to filter the query_rag source list. Unseeded
+    servers are treated as enabled.
+
+    Args:
+        conn: Open SQLite connection.
+        conversation_id: Conversation to look up.
+        all_server_names: Current snapshot of configured server names.
+
+    Returns:
+        Subset of all_server_names where enabled (including unseeded servers).
+    """
+    states = get_chat_rag_states(conn, conversation_id, all_server_names)
+    return [s.server_name for s in states if s.enabled]

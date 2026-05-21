@@ -2458,6 +2458,93 @@ def test_create_chat_seeds_tool_rows(
     assert all(row["enabled"] == 1 for row in rows)
 
 
+def test_toggle_chat_rag_server_returns_chip_bar(
+    make_client: ClientFactory,
+) -> None:
+    """POST /chats/{id}/rag-servers/{name} flips the server and returns the chip bar."""
+    from app import rag_servers as _rs
+
+    db_path = Path(os.environ["DB_PATH"])
+    initialize_database(db_path)
+
+    with open_connection(db_path) as conn:
+        chat = queries.create_conversation(conn, name="chips", model="llama3")
+        _rs.create_server(conn, "arxiv", "http://fake/arxiv")
+
+    with make_client(_tool_capable_handler) as client:
+        response = client.post(
+            f"/chats/{chat.id}/rag-servers/arxiv",
+            headers={"HX-Request": "true"},
+        )
+
+    assert response.status_code == 200
+    assert "tool-chip" in response.text
+    assert "tool-chip--off" in response.text
+
+
+def test_toggle_chat_rag_server_404_unknown_conversation(
+    make_client: ClientFactory,
+) -> None:
+    """POST /chats/999/rag-servers/arxiv → 404 when conversation missing."""
+    db_path = Path(os.environ["DB_PATH"])
+    initialize_database(db_path)
+
+    with make_client(_tool_capable_handler) as client:
+        response = client.post("/chats/999/rag-servers/arxiv")
+
+    assert response.status_code == 404
+
+
+def test_toggle_chat_rag_server_404_unknown_server(
+    make_client: ClientFactory,
+) -> None:
+    """POST /chats/{id}/rag-servers/nonexistent → 404 when server not configured."""
+    db_path = Path(os.environ["DB_PATH"])
+    initialize_database(db_path)
+
+    with open_connection(db_path) as conn:
+        chat = queries.create_conversation(conn, name="t", model="llama3")
+
+    with make_client(_tool_capable_handler) as client:
+        response = client.post(f"/chats/{chat.id}/rag-servers/ghost_server")
+
+    assert response.status_code == 404
+
+
+def test_create_chat_seeds_rag_server_rows(
+    make_client: ClientFactory,
+) -> None:
+    """POST /chats seeds chat_rag_settings rows for configured RAG servers."""
+    from app import rag_servers as _rs
+
+    db_path = Path(os.environ["DB_PATH"])
+    initialize_database(db_path)
+
+    with open_connection(db_path) as conn:
+        _rs.create_server(conn, "arxiv", "http://fake/arxiv")
+
+    with make_client(_tool_capable_handler) as client:
+        response = client.post(
+            "/chats",
+            data={"model": "llama3", "content": "hi"},
+        )
+
+    assert response.status_code == 201
+    import re as _re
+    chat_id = int(_re.search(r'data-chat-id="(\d+)"', response.text).group(1))
+
+    with open_connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT server_name, enabled FROM chat_rag_settings"
+            " WHERE conversation_id = ?",
+            (chat_id,),
+        ).fetchall()
+
+    assert len(rows) == 1
+    assert rows[0]["server_name"] == "arxiv"
+    assert rows[0]["enabled"] == 1
+
+
 # ---------------------------------------------------------------------------
 # Phase 12d: server-side tool-calling loop
 # ---------------------------------------------------------------------------

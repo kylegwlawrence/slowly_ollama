@@ -26,6 +26,7 @@ assistant row is still persisted before the exception resumes.
 """
 
 import asyncio
+import copy
 import html
 import logging
 import sqlite3
@@ -35,10 +36,11 @@ from typing import AsyncIterator, Literal
 
 import httpx
 
-from app import ollama, queries, render
+from app import ollama, queries, rag_servers as _rag_module, render
 from app.ollama import OllamaProtocolError, OllamaUnavailable
 from app.templates import templates
 from app.tools import (
+    RAG_TOOL_NAME,
     TOOLS,
     decode_tool_call,
     decode_tool_result,
@@ -48,6 +50,7 @@ from app.tools import (
     run_tool,
     tool_specs_for_ollama,
 )
+from app.tools.rag import build_source_description
 
 logger = logging.getLogger(__name__)
 
@@ -313,8 +316,6 @@ async def start_generation(
     # Phase 15: agentic dispatch disabled; always single-agent.
     # _run_agentic_generation stays in the codebase but is unreachable
     # until the agentic loop is re-enabled in a future phase.
-    producer = _run_generation
-    producer_kwargs: dict = {}
 
     state = GenerationState(conversation_id=conversation_id)
     # Register BEFORE create_task so the registry is populated by
@@ -327,7 +328,7 @@ async def start_generation(
     # task-done.
     live_generations[conversation_id] = state
     state.task = asyncio.create_task(
-        producer(
+        _run_generation(
             state=state,
             client=client,
             db=db,
@@ -335,7 +336,6 @@ async def start_generation(
             model=model,
             history=history,
             on_complete=on_complete,
-            **producer_kwargs,
         )
     )
     state.task.add_done_callback(_make_done_callback(conversation_id))
@@ -529,10 +529,34 @@ async def _run_generation(
     _enabled_names = set(
         queries.get_enabled_tool_names(db, conversation_id, _all_names)
     )
-    _enabled_specs = [
-        spec for spec in tool_specs_for_ollama()
-        if spec["function"]["name"] in _enabled_names
-    ]
+
+    # Phase 15b: per-chat RAG server filtering. Build the enabled server
+    # list once, then apply it when constructing the query_rag spec so
+    # the model only sees the sources the user toggled on for this chat.
+    # If all servers are toggled off, query_rag is excluded entirely.
+    _all_rag_servers = _rag_module.list_servers(db)
+    _enabled_rag_names = set(
+        queries.get_enabled_rag_server_names(
+            db, conversation_id, [s.name for s in _all_rag_servers]
+        )
+    )
+    _enabled_rag_servers = [s for s in _all_rag_servers if s.name in _enabled_rag_names]
+
+    _enabled_specs: list[dict] = []
+    for _spec in tool_specs_for_ollama():
+        _name = _spec["function"]["name"]
+        if _name not in _enabled_names:
+            continue
+        if _name == RAG_TOOL_NAME:
+            if not _enabled_rag_servers:
+                continue  # All server chips off → exclude query_rag
+            # Deep-copy so we don't mutate the global registry entry.
+            _spec = copy.deepcopy(_spec)
+            _spec["function"]["parameters"]["properties"]["source"]["description"] = (
+                build_source_description(_enabled_rag_servers)
+            )
+        _enabled_specs.append(_spec)
+
     tools_payload = (
         _enabled_specs
         if _enabled_specs and await ollama.model_supports_tools(client, model)
