@@ -60,6 +60,21 @@ logger = logging.getLogger(__name__)
 _TOOL_ITERATION_CAP = 5
 
 
+# Phase 15: minimal system prompt injected ONLY on turns where tools are
+# actually available (see `_run_generation`). Local Ollama models tend to
+# under-call tools without an explicit policy, so document-grounded
+# questions get answered from the model's weights instead of retrieval.
+# This nudges grounded retrieval while still discouraging speculative
+# calls — the same balance the per-tool `current_time` description strikes.
+SINGLE_AGENT_SYSTEM_PROMPT = (
+    "You have tools available. Use them when they materially help: when a "
+    "question depends on information in the user's configured knowledge "
+    "sources, call the retrieval tool to ground your answer instead of "
+    "relying on memory. Do not call tools speculatively or for things you "
+    "already know — call a tool only when its result would change your answer."
+)
+
+
 class GenerationInProgress(Exception):
     """Raised by `start_generation` when the conv already has a live task.
 
@@ -378,17 +393,31 @@ def _make_done_callback(conversation_id: int):
 # ---------------------------------------------------------------------------
 
 
-def _build_history_payload(history: list) -> list[dict]:
+def _build_history_payload(
+    history: list, system_prompt: str | None = None
+) -> list[dict]:
     """Turn Message dataclasses into the wire format Ollama expects.
 
     Identical semantics to `app.routes._build_history_payload` in
     phase 12d; moved here because `_run_generation` is the only
     caller after phase 12g.
 
+    Args:
+        history: Conversation Message rows to serialize.
+        system_prompt: When set, a ``{"role": "system", ...}`` message
+            is prepended so the model sees it before any turn. Used by
+            the tool-enabled generation path (phase 15) to nudge
+            retrieval; left ``None`` for title generation, which has no
+            business carrying a tool-use policy. Conversation rows never
+            store a ``system`` role, so prepending here can't duplicate
+            one already present in ``history``.
+
     Returns:
         A list of dicts in Ollama's ``/api/chat`` ``messages`` shape.
     """
     out: list[dict] = []
+    if system_prompt:
+        out.append({"role": "system", "content": system_prompt})
     # When we drop a corrupt tool_call row, we must ALSO drop the
     # paired tool_result that follows it — otherwise Ollama sees a
     # role="tool" message with no preceding assistant+tool_calls and
@@ -569,6 +598,12 @@ async def _run_generation(
         else None
     )
 
+    # Inject the tool-use system prompt ONLY when tools are actually sent
+    # this turn. With no tools available, a "use your tools" policy is just
+    # noise — and omitting it keeps the plain-chat path byte-identical to
+    # the pre-phase-15 behavior.
+    system_prompt = SINGLE_AGENT_SYSTEM_PROMPT if tools_payload is not None else None
+
     turn_id = str(time.monotonic_ns())
     card_id = render.card_id_for(turn_id)
     list_id = f"{card_id}-list"
@@ -589,7 +624,7 @@ async def _run_generation(
                 tool_calls, _content = await ollama.maybe_tool_call(
                     client,
                     model,
-                    _build_history_payload(working_history),
+                    _build_history_payload(working_history, system_prompt),
                     tools=tools_payload,
                     temperature=temperature,
                 )
@@ -703,7 +738,8 @@ async def _run_generation(
         # Streaming phase.
         try:
             async for chunk in ollama.stream_chat(
-                client, model, _build_history_payload(working_history),
+                client, model,
+                _build_history_payload(working_history, system_prompt),
                 temperature=temperature,
             ):
                 if chunk.content:

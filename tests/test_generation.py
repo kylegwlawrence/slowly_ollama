@@ -408,6 +408,169 @@ async def test_generation_omits_tools_when_model_not_tool_capable(
 
 
 # ---------------------------------------------------------------------------
+# Phase 15: single-agent system prompt injection
+#
+# The retrieval-nudge prompt is injected ONLY on turns where tools are
+# actually sent. These pin both the helper-level prepend and the
+# end-to-end gate on tool availability.
+# ---------------------------------------------------------------------------
+
+
+def test_build_history_payload_prepends_system_prompt_when_given() -> None:
+    """A non-None ``system_prompt`` is prepended as a ``role="system"``
+    message ahead of the conversation rows."""
+    now = datetime.now(timezone.utc)
+    history = [
+        Message(
+            id=1, conversation_id=1, role="user",
+            content="hi", created_at=now,
+        ),
+    ]
+    out = _build_history_payload(history, "be helpful")
+    assert out[0] == {"role": "system", "content": "be helpful"}
+    assert out[1] == {"role": "user", "content": "hi"}
+
+
+def test_build_history_payload_omits_system_prompt_by_default() -> None:
+    """With no ``system_prompt`` the payload is byte-identical to the
+    pre-phase-15 shape — no system message is added. Pins that the
+    plain-chat path is unchanged."""
+    now = datetime.now(timezone.utc)
+    history = [
+        Message(
+            id=1, conversation_id=1, role="user",
+            content="hi", created_at=now,
+        ),
+    ]
+    out = _build_history_payload(history)
+    assert out == [{"role": "user", "content": "hi"}]
+
+
+@pytest.mark.asyncio
+async def test_generation_injects_system_prompt_when_tools_present(
+    tmp_path, monkeypatch
+):
+    """When tools are sent (capable model + ≥1 enabled tool), every
+    /api/chat body leads with the single-agent system prompt."""
+    from app.tools import builtins  # noqa: F401 — registers current_time
+    from app.generation import SINGLE_AGENT_SYSTEM_PROMPT
+
+    db_path = tmp_path / "chats.db"
+    conv_id = _setup_chat(db_path)
+    monkeypatch.setenv("DB_PATH", str(db_path))
+
+    # Lock the chat name so the auto-titler doesn't fire — its
+    # /api/chat call is a separate concern that intentionally carries
+    # NO system prompt, and would otherwise pollute captured_bodies.
+    with open_connection(db_path) as conn:
+        queries.rename_conversation(conn, conv_id, "locked")
+
+    captured_bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content or b"{}")
+        captured_bodies.append(body)
+        if body.get("stream"):
+            return httpx.Response(
+                200,
+                content=(
+                    b'{"message":{"content":"hi"},"done":false}\n'
+                    b'{"message":{"content":""},"done":true}\n'
+                ),
+            )
+        return httpx.Response(
+            200, json={"message": {"content": "", "tool_calls": []}}
+        )
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://test"
+    )
+
+    async def _capable(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr(ollama, "model_supports_tools", _capable)
+
+    with open_connection(db_path) as db:
+        state = await generation.start_generation(
+            client=client,
+            db=db,
+            conversation_id=conv_id,
+            model="llama3",
+            history=queries.list_messages(db, conv_id),
+            on_complete="append",
+        )
+        await state.task
+
+    assert captured_bodies, "expected at least one /api/chat call"
+    # Both the non-stream probe and the streaming reply must lead with
+    # the system prompt.
+    for body in captured_bodies:
+        msgs = body.get("messages") or []
+        assert msgs, f"expected messages in body: {body}"
+        assert msgs[0] == {
+            "role": "system",
+            "content": SINGLE_AGENT_SYSTEM_PROMPT,
+        }
+
+
+@pytest.mark.asyncio
+async def test_generation_omits_system_prompt_when_no_tools(
+    tmp_path, monkeypatch
+):
+    """When the model isn't tool-capable, ``tools_payload`` is None and
+    the system prompt is NOT injected — the plain-chat path stays
+    prompt-free."""
+    db_path = tmp_path / "chats.db"
+    conv_id = _setup_chat(db_path)
+    monkeypatch.setenv("DB_PATH", str(db_path))
+
+    captured_bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content or b"{}")
+        captured_bodies.append(body)
+        if body.get("stream"):
+            return httpx.Response(
+                200,
+                content=(
+                    b'{"message":{"content":"hi"},"done":false}\n'
+                    b'{"message":{"content":""},"done":true}\n'
+                ),
+            )
+        return httpx.Response(
+            200, json={"message": {"content": "", "tool_calls": []}}
+        )
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://test"
+    )
+
+    async def _not_capable(*args, **kwargs):
+        return False
+
+    monkeypatch.setattr(ollama, "model_supports_tools", _not_capable)
+
+    with open_connection(db_path) as db:
+        state = await generation.start_generation(
+            client=client,
+            db=db,
+            conversation_id=conv_id,
+            model="llama3",
+            history=queries.list_messages(db, conv_id),
+            on_complete="append",
+        )
+        await state.task
+
+    assert captured_bodies, "expected at least one /api/chat call"
+    for body in captured_bodies:
+        msgs = body.get("messages") or []
+        assert all(m.get("role") != "system" for m in msgs), (
+            f"system prompt leaked into the no-tools path: {body}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # tool_result JSON envelope (phase 12h)
 # ---------------------------------------------------------------------------
 
