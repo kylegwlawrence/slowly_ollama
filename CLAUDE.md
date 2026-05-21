@@ -59,8 +59,18 @@ controlled artifacts, not workspace scratch.
   `#messages` when the toggle is on but the model can't do tools.
   Single-agent path (toggle off) is byte-identical to phase 12. See
   `docs/retros/phase13-agentic-loop.md` for the full retrospective.
-- **393/393 tests passing**; coverage 98% on `app/` + `main.py`
-  (`app/render.py` at 100%).
+- **Phase 14 (per-agent toggles) complete.** Two new sub-toggles —
+  **Reviewer agent** and **Generator agent** — nested under the
+  existing master toggle in `/settings`. When reviewer is off,
+  research runs a single pass with no iteration or verdict. When
+  generator is off, research findings are used verbatim as the
+  assistant bubble (no synthesis pass). Both default on so enabling
+  the master toggle for the first time keeps Phase 13 full-loop
+  behavior. Storage: two new `app_settings` rows (`review_enabled`,
+  `generator_enabled`). Four toggle configurations are tested
+  end-to-end. See `docs/retros/phase14-per-agent-toggles.md`.
+- **419/419 tests passing**; coverage 97% on `app/` + `main.py`
+  (`app/render.py` at 100%, `app/queries.py` at 100%).
 
 ## Working rules (override Claude defaults where they conflict)
 

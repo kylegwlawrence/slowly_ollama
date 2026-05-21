@@ -522,3 +522,75 @@ def set_agentic_mode(conn: sqlite3.Connection, enabled: bool) -> None:
             f"set_agentic_mode requires a bool; got {type(enabled).__name__}"
         )
     set_setting(conn, _AGENTIC_MODE_KEY, "on" if enabled else "off")
+
+
+_REVIEW_ENABLED_KEY = "review_enabled"
+_GENERATOR_ENABLED_KEY = "generator_enabled"
+
+
+def get_review_enabled(conn: sqlite3.Connection) -> bool:
+    """Return True when the review agent participates in the loop.
+
+    Default (no row): True. The reviewer is on by default so the
+    first-time experience after master-toggle-on matches Phase 13's
+    full-loop behavior. Any value other than the literal string
+    ``"off"`` returns True.
+
+    Only meaningful when ``get_agentic_mode`` is True; the single-
+    agent path ignores this setting.
+
+    Args:
+        conn: Open SQLite connection.
+    """
+    return get_setting(conn, _REVIEW_ENABLED_KEY, default="on") != "off"
+
+
+def set_review_enabled(conn: sqlite3.Connection, enabled: bool) -> None:
+    """Toggle the reviewer-participation setting.
+
+    Args:
+        conn: Open SQLite connection.
+        enabled: True for ``"on"``, False for ``"off"``. Must be a
+            real bool — same foot-gun guard as ``set_agentic_mode``.
+
+    Raises:
+        TypeError: When ``enabled`` is not a bool.
+    """
+    if not isinstance(enabled, bool):
+        raise TypeError(
+            f"set_review_enabled requires a bool; got {type(enabled).__name__}"
+        )
+    set_setting(conn, _REVIEW_ENABLED_KEY, "on" if enabled else "off")
+
+
+def get_generator_enabled(conn: sqlite3.Connection) -> bool:
+    """Return True when the generator agent participates in the loop.
+
+    Default (no row): True. Same first-time-experience rationale as
+    ``get_review_enabled``.
+
+    Only meaningful when ``get_agentic_mode`` is True.
+
+    Args:
+        conn: Open SQLite connection.
+    """
+    return get_setting(conn, _GENERATOR_ENABLED_KEY, default="on") != "off"
+
+
+def set_generator_enabled(conn: sqlite3.Connection, enabled: bool) -> None:
+    """Toggle the generator-participation setting.
+
+    Args:
+        conn: Open SQLite connection.
+        enabled: True for ``"on"``, False for ``"off"``. Must be a
+            real bool.
+
+    Raises:
+        TypeError: When ``enabled`` is not a bool.
+    """
+    if not isinstance(enabled, bool):
+        raise TypeError(
+            f"set_generator_enabled requires a bool; got "
+            f"{type(enabled).__name__}"
+        )
+    set_setting(conn, _GENERATOR_ENABLED_KEY, "on" if enabled else "off")

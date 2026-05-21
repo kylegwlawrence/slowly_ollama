@@ -575,6 +575,44 @@ async def test_ollama_error_during_research_emits_error_event(
 
 
 @pytest.mark.asyncio
+async def test_ollama_error_during_review_emits_error_event(
+    tmp_path, monkeypatch,
+):
+    """OllamaUnavailable during the review pass → SSE error event.
+    Research already persisted; assistant row is NOT persisted."""
+    db_path = tmp_path / "chats.db"
+    conv_id = _setup_chat(db_path)
+
+    call_count = {"n": 0}
+
+    async def fake(client_, model_, messages_, tools=None):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            # Research pass succeeds.
+            return ([], "some findings")
+        # Review pass raises.
+        raise ollama.OllamaUnavailable("Ollama down on review")
+
+    monkeypatch.setattr(ollama, "maybe_tool_call", fake)
+
+    with open_connection(db_path) as db:
+        state = _make_state(conv_id)
+        await agentic_loop._run_agentic_generation(
+            state=state, client=None, db=db,
+            conversation_id=conv_id, model="llama3",
+            history=queries.list_messages(db, conv_id),
+            on_complete="append",
+        )
+
+    assert "error" in _event_names(state)
+    assert "Ollama unavailable" in _emitted_payloads(state, "error")[0]
+    roles = _persisted_roles(db_path, conv_id)
+    assert "research_findings" in roles
+    assert "review_verdict" not in roles
+    assert "assistant" not in roles
+
+
+@pytest.mark.asyncio
 async def test_ollama_error_during_generation_emits_error_event(
     tmp_path, monkeypatch,
 ):
@@ -734,3 +772,187 @@ async def test_loop_regenerate_does_not_emit_title(tmp_path, monkeypatch):
     assert "done" in _event_names(state)
     # No title event landed either.
     assert "title" not in _event_names(state)
+
+
+# ---------------------------------------------------------------------------
+# Phase 14: per-agent toggle configurations
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_agentic_loop_reviewer_off_runs_single_pass(
+    tmp_path, monkeypatch,
+):
+    """review_enabled=False → one research iteration, no verdict event,
+    no max-iterations event. Loop exits after a single pass and the
+    generator synthesizes the answer."""
+    db_path = tmp_path / "chats.db"
+    conv_id = _setup_chat(db_path)
+
+    fake_call, _ = _scripted_maybe_tool_call([
+        # Exactly one research call — no reviewer means the loop
+        # exits immediately after it, so there must be no second
+        # maybe_tool_call for review.
+        ([], "single-pass findings"),
+    ])
+    monkeypatch.setattr(ollama, "maybe_tool_call", fake_call)
+    _stub_title_noop(monkeypatch)
+    monkeypatch.setattr(
+        ollama, "stream_chat", _scripted_stream_chat(["synthesized answer"]),
+    )
+
+    with open_connection(db_path) as db:
+        state = _make_state(conv_id)
+        await agentic_loop._run_agentic_generation(
+            state=state, client=None, db=db,
+            conversation_id=conv_id, model="llama3",
+            history=queries.list_messages(db, conv_id),
+            on_complete="append",
+            review_enabled=False,
+        )
+
+    events = _event_names(state)
+    assert events.count("iteration-start") == 1
+    assert "research-findings" in events
+    assert "review-verdict" not in events
+    assert "max-iterations" not in events
+    assert events[-1] == "done"
+
+    roles = _persisted_roles(db_path, conv_id)
+    assert "research_findings" in roles
+    assert "review_verdict" not in roles
+    assert "assistant" in roles
+    # Done payload carries the generated answer.
+    done_payload = _emitted_payloads(state, "done")[0]
+    assert "synthesized answer" in done_payload
+
+
+@pytest.mark.asyncio
+async def test_agentic_loop_generator_off_uses_findings_verbatim(
+    tmp_path, monkeypatch,
+):
+    """generator_enabled=False → no stream_chat call; research findings
+    are used verbatim as the assistant bubble content."""
+    db_path = tmp_path / "chats.db"
+    conv_id = _setup_chat(db_path)
+
+    fake_call, _ = _scripted_maybe_tool_call([
+        ([], "findings used verbatim as answer"),
+        ([{"name": "mark_passed", "arguments": {"reason": "ok"}}], ""),
+    ])
+    monkeypatch.setattr(ollama, "maybe_tool_call", fake_call)
+    _stub_title_noop(monkeypatch)
+
+    # stream_chat must NOT be called — assert it if invoked.
+    async def must_not_stream(*args, **kwargs):
+        raise AssertionError("stream_chat must not be called when generator is off")
+        yield  # unreachable
+
+    monkeypatch.setattr(ollama, "stream_chat", must_not_stream)
+
+    with open_connection(db_path) as db:
+        state = _make_state(conv_id)
+        await agentic_loop._run_agentic_generation(
+            state=state, client=None, db=db,
+            conversation_id=conv_id, model="llama3",
+            history=queries.list_messages(db, conv_id),
+            on_complete="append",
+            generator_enabled=False,
+        )
+
+    events = _event_names(state)
+    assert "research-findings" in events
+    assert "review-verdict" in events
+    # Exactly one token event carrying the findings text.
+    token_payloads = _emitted_payloads(state, "token")
+    assert len(token_payloads) == 1
+    assert "findings used verbatim as answer" in token_payloads[0]
+    assert events[-1] == "done"
+
+    # Assistant row content == findings text.
+    with open_connection(db_path) as conn:
+        rows = queries.list_messages(conn, conv_id)
+    assistant_row = next(m for m in rows if m.role == "assistant")
+    assert assistant_row.content == "findings used verbatim as answer"
+
+
+@pytest.mark.asyncio
+async def test_agentic_loop_both_off_minimal_path(tmp_path, monkeypatch):
+    """review_enabled=False AND generator_enabled=False → single
+    research pass, no verdict, findings become the assistant message."""
+    db_path = tmp_path / "chats.db"
+    conv_id = _setup_chat(db_path)
+
+    fake_call, _ = _scripted_maybe_tool_call([
+        ([], "minimal findings"),
+    ])
+    monkeypatch.setattr(ollama, "maybe_tool_call", fake_call)
+    _stub_title_noop(monkeypatch)
+
+    async def must_not_stream(*args, **kwargs):
+        raise AssertionError("stream_chat must not be called when both flags are off")
+        yield
+
+    monkeypatch.setattr(ollama, "stream_chat", must_not_stream)
+
+    with open_connection(db_path) as db:
+        state = _make_state(conv_id)
+        await agentic_loop._run_agentic_generation(
+            state=state, client=None, db=db,
+            conversation_id=conv_id, model="llama3",
+            history=queries.list_messages(db, conv_id),
+            on_complete="append",
+            review_enabled=False,
+            generator_enabled=False,
+        )
+
+    events = _event_names(state)
+    assert events.count("iteration-start") == 1
+    assert "research-findings" in events
+    assert "review-verdict" not in events
+    assert "max-iterations" not in events
+    token_payloads = _emitted_payloads(state, "token")
+    assert len(token_payloads) == 1
+    assert "minimal findings" in token_payloads[0]
+    assert events[-1] == "done"
+
+    with open_connection(db_path) as conn:
+        rows = queries.list_messages(conn, conv_id)
+    assistant_row = next(m for m in rows if m.role == "assistant")
+    assert assistant_row.content == "minimal findings"
+
+
+@pytest.mark.asyncio
+async def test_agentic_loop_default_kwargs_match_phase13(tmp_path, monkeypatch):
+    """Backwards-compat: omitting review_enabled/generator_enabled
+    keeps Phase 13 full-loop behavior (both default to True)."""
+    db_path = tmp_path / "chats.db"
+    conv_id = _setup_chat(db_path)
+
+    fake_call, _ = _scripted_maybe_tool_call([
+        ([], "default findings"),
+        ([{"name": "mark_passed", "arguments": {"reason": "ok"}}], ""),
+    ])
+    monkeypatch.setattr(ollama, "maybe_tool_call", fake_call)
+    _stub_title_noop(monkeypatch)
+    monkeypatch.setattr(
+        ollama, "stream_chat", _scripted_stream_chat(["generated answer"]),
+    )
+
+    with open_connection(db_path) as db:
+        state = _make_state(conv_id)
+        # No review_enabled / generator_enabled kwargs — defaults apply.
+        await agentic_loop._run_agentic_generation(
+            state=state, client=None, db=db,
+            conversation_id=conv_id, model="llama3",
+            history=queries.list_messages(db, conv_id),
+            on_complete="append",
+        )
+
+    events = _event_names(state)
+    assert "review-verdict" in events
+    token_payloads = _emitted_payloads(state, "token")
+    assert len(token_payloads) >= 1
+    assert events[-1] == "done"
+    done_payload = _emitted_payloads(state, "done")[0]
+    assert "generated answer" in done_payload

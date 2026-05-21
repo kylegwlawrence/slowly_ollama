@@ -1,14 +1,19 @@
 {# Phase 13e: agentic-mode toggle + read-only system prompts.
+   Phase 14: per-agent sub-toggles (reviewer, generator).
 
    Included by `_settings.html` on initial render AND returned
-   standalone from `POST /settings/agentic-mode`. Both contexts produce
-   the same DOM so the swap is seamless.
+   standalone from `POST /settings/agentic-mode`,
+   `POST /settings/agentic-review`, and
+   `POST /settings/agentic-generator`. All contexts produce the same
+   DOM so the swap is seamless.
 
    Context vars:
-     agentic_mode_on: bool — current setting.
+     agentic_mode_on: bool — current master toggle state.
+     review_enabled: bool — reviewer participates (phase 14).
+     generator_enabled: bool — generator participates (phase 14).
      agentic_prompts: dict[str, str] — keys "research", "review", "generation".
 
-   HTMX wiring: the checkbox `hx-post`s on every change and targets
+   HTMX wiring: each checkbox `hx-post`s on every change and targets
    `#settings-agentic-section` with `innerHTML` so this fragment's
    contents replace the section in place. The `enabled` form field is
    sent only when the checkbox is checked (standard HTML form
@@ -32,6 +37,45 @@
 </label>
 
 {% if agentic_mode_on %}
+<div class="agentic-sub-toggles">
+  <p class="agentic-sub-toggles__help">
+    Customize which agents participate. Research always runs (it
+    produces the findings the others operate on).
+  </p>
+
+  <label class="agentic-sub-toggle">
+    <input type="checkbox" name="enabled"
+           {% if review_enabled %}checked{% endif %}
+           hx-post="/settings/agentic-review"
+           hx-trigger="change"
+           hx-target="#settings-agentic-section"
+           hx-swap="innerHTML">
+    <span class="agentic-sub-toggle__label">
+      Reviewer agent
+      <small>
+        When off, research runs a single pass — no iteration, no
+        self-critique.
+      </small>
+    </span>
+  </label>
+
+  <label class="agentic-sub-toggle">
+    <input type="checkbox" name="enabled"
+           {% if generator_enabled %}checked{% endif %}
+           hx-post="/settings/agentic-generator"
+           hx-trigger="change"
+           hx-target="#settings-agentic-section"
+           hx-swap="innerHTML">
+    <span class="agentic-sub-toggle__label">
+      Generator agent
+      <small>
+        When off, research's findings are used as the answer
+        verbatim (no separate synthesis pass).
+      </small>
+    </span>
+  </label>
+</div>
+
 <details class="agentic-prompts">
   <summary>View system prompts (read-only)</summary>
   <div class="agentic-prompts__group">

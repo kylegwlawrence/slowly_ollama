@@ -259,6 +259,8 @@ async def _run_agentic_generation(
     model: str,
     history: list,
     on_complete: Literal["append", "replace"],
+    review_enabled: bool = True,
+    generator_enabled: bool = True,
 ) -> None:
     """Producer body for the agentic three-agent loop.
 
@@ -445,55 +447,61 @@ async def _run_agentic_generation(
                 ),
             )
 
-            # === Review pass ===
-            review_payload = _build_review_payload(user_message, findings)
-            try:
-                verdict_calls, _ = await ollama.maybe_tool_call(
-                    client, model, review_payload, tools=REVIEW_TOOL_SPECS,
+            if review_enabled:
+                # === Review pass ===
+                review_payload = _build_review_payload(user_message, findings)
+                try:
+                    verdict_calls, _ = await ollama.maybe_tool_call(
+                        client, model, review_payload, tools=REVIEW_TOOL_SPECS,
+                    )
+                except (OllamaUnavailable, OllamaProtocolError) as e:
+                    persisted_or_errored = True
+                    await emit_ollama_error(state, e)
+                    return
+
+                decision = parse_verdict(verdict_calls)
+                queries.append_message(
+                    db, conversation_id, "review_verdict",
+                    content=json.dumps({
+                        "verdict": decision.verdict,
+                        "message": decision.message,
+                    }),
                 )
-            except (OllamaUnavailable, OllamaProtocolError) as e:
-                persisted_or_errored = True
-                await emit_ollama_error(state, e)
-                return
+                await _emit(
+                    state,
+                    "review-verdict",
+                    render.render_verdict_row(
+                        verdict_status=decision.verdict,
+                        verdict_message=decision.message,
+                        iteration_index=iteration_index,
+                        list_id=list_id,
+                    ),
+                )
 
-            decision = parse_verdict(verdict_calls)
-            queries.append_message(
-                db, conversation_id, "review_verdict",
-                content=json.dumps({
-                    "verdict": decision.verdict,
-                    "message": decision.message,
-                }),
-            )
-            await _emit(
-                state,
-                "review-verdict",
-                render.render_verdict_row(
-                    verdict_status=decision.verdict,
-                    verdict_message=decision.message,
-                    iteration_index=iteration_index,
-                    list_id=list_id,
-                ),
-            )
+                final_findings = findings
+                iterations_run = iteration_index
+                if decision.verdict == "passed":
+                    break
 
-            final_findings = findings
-            iterations_run = iteration_index
-            if decision.verdict == "passed":
+                # Failed — push feedback into intra_turn as a user
+                # message so the NEXT iteration's research payload
+                # includes it (and so EVERY maybe_tool_call inside that
+                # iteration sees it, since intra_turn is rebuilt into
+                # the payload on each call).
+                intra_turn.append({
+                    "role": "user",
+                    "content": (
+                        f"Review feedback on your last findings:\n"
+                        f"{decision.message}\n\n"
+                        "Continue researching to address the feedback."
+                        " Do not repeat queries you already ran."
+                    ),
+                })
+            else:
+                # No reviewer: single research pass, exit loop immediately.
+                final_findings = findings
+                iterations_run = iteration_index
                 break
-
-            # Failed — push feedback into intra_turn as a user
-            # message so the NEXT iteration's research payload
-            # includes it (and so EVERY maybe_tool_call inside that
-            # iteration sees it, since intra_turn is rebuilt into
-            # the payload on each call).
-            intra_turn.append({
-                "role": "user",
-                "content": (
-                    f"Review feedback on your last findings:\n"
-                    f"{decision.message}\n\n"
-                    "Continue researching to address the feedback."
-                    " Do not repeat queries you already ran."
-                ),
-            })
         else:
             # for-else: completed all _AGENTIC_ITERATION_CAP without
             # a "passed" break → fall through to generation with the
@@ -507,25 +515,32 @@ async def _run_agentic_generation(
                 render.render_max_iterations_badge(card_id),
             )
 
-        # === Generation pass ===
-        generation_payload = _build_generation_payload(
-            user_message, final_findings,
-        )
-        try:
-            async for chunk in ollama.stream_chat(
-                client, model, generation_payload,
-            ):
-                if chunk.content:
-                    chunks.append(chunk.content)
-                    await _emit(state, "token", html.escape(chunk.content))
-                if chunk.done:
-                    break
-        except (OllamaUnavailable, OllamaProtocolError) as e:
-            persisted_or_errored = True
-            await emit_ollama_error(state, e)
-            return
+        if generator_enabled:
+            # === Generation pass ===
+            generation_payload = _build_generation_payload(
+                user_message, final_findings,
+            )
+            try:
+                async for chunk in ollama.stream_chat(
+                    client, model, generation_payload,
+                ):
+                    if chunk.content:
+                        chunks.append(chunk.content)
+                        await _emit(state, "token", html.escape(chunk.content))
+                    if chunk.done:
+                        break
+            except (OllamaUnavailable, OllamaProtocolError) as e:
+                persisted_or_errored = True
+                await emit_ollama_error(state, e)
+                return
 
-        full_text = "".join(chunks)
+            full_text = "".join(chunks)
+        else:
+            # Generator off: emit the findings as a single token so the
+            # placeholder swap has been "fed" before the done event lands.
+            full_text = final_findings
+            if full_text:
+                await _emit(state, "token", html.escape(full_text))
         if on_complete == "append":
             message = queries.append_message(
                 db, conversation_id, "assistant", full_text,

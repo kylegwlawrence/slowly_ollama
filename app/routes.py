@@ -136,6 +136,8 @@ def settings_endpoint(request: Request, db: DB) -> Response:
     """
     servers = _rag_servers_module.list_servers(db)
     agentic_mode_on = queries.get_agentic_mode(db)
+    review_enabled = queries.get_review_enabled(db)
+    generator_enabled = queries.get_generator_enabled(db)
     agentic_prompts = {
         "research": RESEARCH_SYSTEM_PROMPT,
         "review": REVIEW_SYSTEM_PROMPT,
@@ -148,6 +150,8 @@ def settings_endpoint(request: Request, db: DB) -> Response:
             context={
                 "servers": servers,
                 "agentic_mode_on": agentic_mode_on,
+                "review_enabled": review_enabled,
+                "generator_enabled": generator_enabled,
                 "agentic_prompts": agentic_prompts,
             },
         )
@@ -165,6 +169,8 @@ def settings_endpoint(request: Request, db: DB) -> Response:
             # the included _settings.html fragment.
             "rag_servers": servers,
             "agentic_mode_on": agentic_mode_on,
+            "review_enabled": review_enabled,
+            "generator_enabled": generator_enabled,
             "agentic_prompts": agentic_prompts,
         },
     )
@@ -269,6 +275,71 @@ def toggle_agentic_mode_endpoint(
         name="_settings_agentic_section.html",
         context={
             "agentic_mode_on": agentic_mode_on,
+            "review_enabled": queries.get_review_enabled(db),
+            "generator_enabled": queries.get_generator_enabled(db),
+            "agentic_prompts": {
+                "research": RESEARCH_SYSTEM_PROMPT,
+                "review": REVIEW_SYSTEM_PROMPT,
+                "generation": GENERATION_SYSTEM_PROMPT,
+            },
+        },
+    )
+
+
+@router.post("/settings/agentic-review", response_class=HTMLResponse)
+def toggle_review_enabled_endpoint(
+    request: Request,
+    db: DB,
+    enabled: Annotated[str | None, Form()] = None,
+) -> Response:
+    """Toggle the reviewer-participation setting (phase 14).
+
+    Presence-check on the ``enabled`` form field — checkbox sends
+    ``enabled=on`` when checked, omits the field entirely when
+    unchecked. Same convention as ``toggle_agentic_mode_endpoint``.
+
+    Returns the agentic section fragment so HTMX swaps it in place;
+    the toggle UI reflects the new state on the next render.
+    """
+    review_enabled = enabled is not None
+    queries.set_review_enabled(db, review_enabled)
+    return templates.TemplateResponse(
+        request=request,
+        name="_settings_agentic_section.html",
+        context={
+            "agentic_mode_on": queries.get_agentic_mode(db),
+            "review_enabled": review_enabled,
+            "generator_enabled": queries.get_generator_enabled(db),
+            "agentic_prompts": {
+                "research": RESEARCH_SYSTEM_PROMPT,
+                "review": REVIEW_SYSTEM_PROMPT,
+                "generation": GENERATION_SYSTEM_PROMPT,
+            },
+        },
+    )
+
+
+@router.post("/settings/agentic-generator", response_class=HTMLResponse)
+def toggle_generator_enabled_endpoint(
+    request: Request,
+    db: DB,
+    enabled: Annotated[str | None, Form()] = None,
+) -> Response:
+    """Toggle the generator-participation setting (phase 14).
+
+    Same shape as ``toggle_review_enabled_endpoint``. Route path is
+    ``agentic-generator`` (not ``agentic-generation``) to match the
+    user-facing label "Generator agent".
+    """
+    generator_enabled = enabled is not None
+    queries.set_generator_enabled(db, generator_enabled)
+    return templates.TemplateResponse(
+        request=request,
+        name="_settings_agentic_section.html",
+        context={
+            "agentic_mode_on": queries.get_agentic_mode(db),
+            "review_enabled": queries.get_review_enabled(db),
+            "generator_enabled": generator_enabled,
             "agentic_prompts": {
                 "research": RESEARCH_SYSTEM_PROMPT,
                 "review": REVIEW_SYSTEM_PROMPT,
