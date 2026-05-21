@@ -271,6 +271,7 @@ async def start_generation(
     conversation_id: int,
     model: str,
     temperature: float = 0.8,
+    tool_iteration_cap: int = _TOOL_ITERATION_CAP,
     history: list,
     on_complete: Literal["append", "replace"],
 ) -> GenerationState:
@@ -336,6 +337,7 @@ async def start_generation(
             conversation_id=conversation_id,
             model=model,
             temperature=temperature,
+            tool_iteration_cap=tool_iteration_cap,
             history=history,
             on_complete=on_complete,
         )
@@ -504,6 +506,7 @@ async def _run_generation(
     conversation_id: int,
     model: str,
     temperature: float = 0.8,
+    tool_iteration_cap: int = _TOOL_ITERATION_CAP,
     history: list,
     on_complete: Literal["append", "replace"],
 ) -> None:
@@ -581,7 +584,7 @@ async def _run_generation(
     persisted_or_errored = False
 
     try:
-        for iteration in range(_TOOL_ITERATION_CAP):
+        for iteration in range(tool_iteration_cap):
             try:
                 tool_calls, _content = await ollama.maybe_tool_call(
                     client,

@@ -42,6 +42,9 @@ CREATE TABLE IF NOT EXISTS conversations (
     -- Per-chat temperature passed to Ollama's options dict (0.0–2.0).
     -- Ollama's own default is 0.8.
     temperature  REAL NOT NULL DEFAULT 0.8,
+    -- Per-chat cap on single-agent tool-call iterations per turn (1–10).
+    -- The agentic loop's caps are separate and not stored here.
+    tool_iteration_cap INTEGER NOT NULL DEFAULT 5,
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL
 );
@@ -145,6 +148,22 @@ def _ensure_conversations_temperature_column(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE conversations"
             " ADD COLUMN temperature REAL NOT NULL DEFAULT 0.8;"
+        )
+
+
+def _ensure_conversations_tool_iteration_cap_column(conn: sqlite3.Connection) -> None:
+    """Backfill the ``tool_iteration_cap`` column on conversations tables that pre-date this phase.
+
+    Args:
+        conn: Open SQLite connection.
+    """
+    columns = {row[1] for row in conn.execute(
+        "PRAGMA table_info(conversations);"
+    )}
+    if "tool_iteration_cap" not in columns:
+        conn.execute(
+            "ALTER TABLE conversations"
+            " ADD COLUMN tool_iteration_cap INTEGER NOT NULL DEFAULT 5;"
         )
 
 
@@ -264,5 +283,8 @@ def initialize_database(path: Path | None = None) -> Path:
         # Per-chat temperature: backfill the temperature column on
         # conversations tables created before this phase.
         _ensure_conversations_temperature_column(conn)
+        # Per-chat tool-iteration cap: backfill the tool_iteration_cap
+        # column on conversations tables created before this phase.
+        _ensure_conversations_tool_iteration_cap_column(conn)
 
     return target

@@ -6,7 +6,7 @@
   <header class="chat-panel__header">
     <h2 class="chat-panel__name">{{ conversation.name }}</h2>
     <span class="chat-panel__model">{{ conversation.model }}</span>
-    <form class="chat-panel__temperature"
+    <form class="chat-panel__chip-form"
           hx-patch="/chats/{{ conversation.id }}/temperature"
           hx-trigger="change"
           hx-swap="none">
@@ -19,6 +19,24 @@
                class="temp-chip__input">
       </div>
     </form>
+    {# Per-chat tool-iteration cap. Only meaningful for tool-capable
+       models, so it's hidden entirely otherwise (the temperature chip
+       above always applies). #}
+    {% if supports_tools %}
+    <form class="chat-panel__chip-form"
+          hx-patch="/chats/{{ conversation.id }}/tool-iteration-cap"
+          hx-trigger="change"
+          hx-swap="none">
+      <div class="tool-chip tool-chip--on temp-chip">
+        <span class="tool-chip__label">Tool cap</span>
+        <input id="tool-iteration-cap-{{ conversation.id }}"
+               type="number" name="tool_iteration_cap"
+               value="{{ conversation.tool_iteration_cap }}"
+               min="1" max="10" step="1"
+               class="temp-chip__input">
+      </div>
+    </form>
+    {% endif %}
     {# Phase 15: per-chat tool chips. Only rendered when the model
        supports tools; hidden entirely for non-tool-capable models.
        Phase 15b: rag_server_states adds per-server RAG chips alongside

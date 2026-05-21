@@ -54,6 +54,7 @@ class Conversation:
     model: str
     name_locked: bool
     temperature: float
+    tool_iteration_cap: int
     created_at: datetime
     updated_at: datetime
 
@@ -106,6 +107,7 @@ def _row_to_conversation(row: sqlite3.Row) -> Conversation:
         model=row["model"],
         name_locked=bool(row["name_locked"]),
         temperature=float(row["temperature"]),
+        tool_iteration_cap=int(row["tool_iteration_cap"]),
         created_at=datetime.fromisoformat(row["created_at"]),
         updated_at=datetime.fromisoformat(row["updated_at"]),
     )
@@ -128,7 +130,11 @@ def _row_to_message(row: sqlite3.Row) -> Message:
 
 
 def create_conversation(
-    conn: sqlite3.Connection, name: str, model: str, temperature: float = 0.8
+    conn: sqlite3.Connection,
+    name: str,
+    model: str,
+    temperature: float = 0.8,
+    tool_iteration_cap: int = 5,
 ) -> Conversation:
     """Insert a new conversation row.
 
@@ -137,6 +143,8 @@ def create_conversation(
         name: Human-readable conversation name.
         model: Ollama model identifier this conversation will use.
         temperature: Sampling temperature passed to Ollama (0.0–2.0).
+        tool_iteration_cap: Per-turn cap on single-agent tool-call
+            iterations (caller should clamp to 1–10).
 
     Returns:
         The newly created Conversation, populated with its assigned id and
@@ -150,11 +158,11 @@ def create_conversation(
         # free to refresh the placeholder until the user manually renames.
         row = conn.execute(
             "INSERT INTO conversations"
-            " (name, model, name_locked, temperature, created_at, updated_at)"
-            " VALUES (?, ?, 0, ?, ?, ?)"
-            " RETURNING id, name, model, name_locked, temperature,"
+            " (name, model, name_locked, temperature, tool_iteration_cap, created_at, updated_at)"
+            " VALUES (?, ?, 0, ?, ?, ?, ?)"
+            " RETURNING id, name, model, name_locked, temperature, tool_iteration_cap,"
             "          created_at, updated_at;",
-            (name, model, temperature, now, now),
+            (name, model, temperature, tool_iteration_cap, now, now),
         ).fetchone()
     return _row_to_conversation(row)
 
@@ -179,7 +187,7 @@ def get_conversation(
         LookupError: If no conversation exists with that id.
     """
     row = conn.execute(
-        "SELECT id, name, model, name_locked, temperature, created_at, updated_at"
+        "SELECT id, name, model, name_locked, temperature, tool_iteration_cap, created_at, updated_at"
         " FROM conversations WHERE id = ?;",
         (conversation_id,),
     ).fetchone()
@@ -199,7 +207,7 @@ def list_conversations(conn: sqlite3.Connection) -> list[Conversation]:
         this order so the chat the user just touched is on top.
     """
     rows = conn.execute(
-        "SELECT id, name, model, name_locked, temperature, created_at, updated_at"
+        "SELECT id, name, model, name_locked, temperature, tool_iteration_cap, created_at, updated_at"
         " FROM conversations"
         " ORDER BY updated_at DESC, id DESC;"
     ).fetchall()
@@ -234,7 +242,7 @@ def rename_conversation(
             "UPDATE conversations"
             " SET name = ?, name_locked = 1, updated_at = ?"
             " WHERE id = ?"
-            " RETURNING id, name, model, name_locked, temperature,"
+            " RETURNING id, name, model, name_locked, temperature, tool_iteration_cap,"
             "          created_at, updated_at;",
             (new_name, now, conversation_id),
         ).fetchone()
@@ -271,7 +279,7 @@ def set_name_auto(
             "UPDATE conversations"
             " SET name = ?, updated_at = ?"
             " WHERE id = ? AND name_locked = 0"
-            " RETURNING id, name, model, name_locked, temperature,"
+            " RETURNING id, name, model, name_locked, temperature, tool_iteration_cap,"
             "          created_at, updated_at;",
             (new_name, now, conversation_id),
         ).fetchone()
@@ -317,9 +325,39 @@ def set_conversation_temperature(
             "UPDATE conversations"
             " SET temperature = ?"
             " WHERE id = ?"
-            " RETURNING id, name, model, name_locked, temperature,"
+            " RETURNING id, name, model, name_locked, temperature, tool_iteration_cap,"
             "          created_at, updated_at;",
             (temperature, conversation_id),
+        ).fetchone()
+    if row is None:
+        raise LookupError(f"Conversation {conversation_id} not found.")
+    return _row_to_conversation(row)
+
+
+def set_conversation_tool_iteration_cap(
+    conn: sqlite3.Connection, conversation_id: int, tool_iteration_cap: int
+) -> Conversation:
+    """Update the single-agent tool-iteration cap for a conversation.
+
+    Args:
+        conn: Open SQLite connection.
+        conversation_id: Id of the conversation to update.
+        tool_iteration_cap: New cap (caller should clamp to 1–10).
+
+    Returns:
+        The updated Conversation.
+
+    Raises:
+        LookupError: If no conversation exists with that id.
+    """
+    with conn:
+        row = conn.execute(
+            "UPDATE conversations"
+            " SET tool_iteration_cap = ?"
+            " WHERE id = ?"
+            " RETURNING id, name, model, name_locked, temperature, tool_iteration_cap,"
+            "          created_at, updated_at;",
+            (tool_iteration_cap, conversation_id),
         ).fetchone()
     if row is None:
         raise LookupError(f"Conversation {conversation_id} not found.")

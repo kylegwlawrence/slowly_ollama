@@ -411,7 +411,9 @@ def _create_chat_and_get_id(
     return int(response.text[start:end])
 
 
-def _create_chat_db_only(content: str = "first message") -> int:
+def _create_chat_db_only(
+    content: str = "first message", tool_iteration_cap: int = 5
+) -> int:
     """Create a chat row directly in the DB without spawning a generation.
 
     Phase 12g: POST /chats spawns a generation as a side effect,
@@ -425,7 +427,10 @@ def _create_chat_db_only(content: str = "first message") -> int:
     db_path = os.environ["DB_PATH"]
     with open_connection(db_path) as conn:
         chat = queries.create_conversation(
-            conn, name=content[:40] or "New chat", model="llama3"
+            conn,
+            name=content[:40] or "New chat",
+            model="llama3",
+            tool_iteration_cap=tool_iteration_cap,
         )
         queries.append_message(conn, chat.id, "user", content)
     return chat.id
@@ -1684,6 +1689,44 @@ def test_new_composer_reflects_default_temperature(
     assert 'value="0.3"' in composer.text
 
 
+def test_new_composer_renders_tool_iteration_cap_input(
+    make_client: ClientFactory,
+) -> None:
+    """The empty-state composer exposes a Tool cap input defaulting to 5."""
+    with make_client(_ollama_unreachable) as client:
+        composer = client.get("/new")
+    assert 'id="composer-tool-iteration-cap"' in composer.text
+    assert 'name="tool_iteration_cap"' in composer.text
+
+
+def test_chat_panel_renders_tool_iteration_cap_for_capable_model(
+    make_client: ClientFactory,
+) -> None:
+    """A tool-capable chat shows the per-chat Tool cap chip seeded with the
+    conversation's stored value."""
+    with make_client(_ollama_unreachable) as client:
+        chat_id = _create_chat_db_only("cap panel", tool_iteration_cap=4)
+        panel = client.get(f"/chats/{chat_id}", headers={"HX-Request": "true"})
+    assert f'hx-patch="/chats/{chat_id}/tool-iteration-cap"' in panel.text
+    assert f'id="tool-iteration-cap-{chat_id}"' in panel.text
+    assert 'value="4"' in panel.text
+
+
+def test_chat_panel_hides_tool_iteration_cap_for_non_tool_model(
+    make_client: ClientFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the model can't do tools, the Tool cap chip is hidden (the cap
+    is meaningless without tools)."""
+    async def _not_capable(client_, model_):
+        return False
+
+    monkeypatch.setattr(ollama, "model_supports_tools", _not_capable)
+    with make_client(_ollama_unreachable) as client:
+        chat_id = _create_chat_db_only("no tools")
+        panel = client.get(f"/chats/{chat_id}", headers={"HX-Request": "true"})
+    assert "/tool-iteration-cap" not in panel.text
+
+
 def test_create_chat_without_temperature_uses_default(
     make_client: ClientFactory,
 ) -> None:
@@ -2797,6 +2840,102 @@ def test_stream_caps_at_five_iterations(
     assert tool_call_count == 5
     assert tool_result_count == 5
     assert "Tool-call limit reached" in final_text
+
+
+def test_stream_respects_per_chat_tool_iteration_cap(
+    make_client: ClientFactory,
+) -> None:
+    """A chat with a non-default tool_iteration_cap caps the loop at that
+    value rather than the module default of 5."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content or b"{}")
+        if body.get("stream"):
+            raise AssertionError("stream_chat reached despite cap")
+        return httpx.Response(
+            200,
+            json={
+                "message": {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "current_time",
+                                "arguments": {"timezone": "UTC"},
+                            }
+                        }
+                    ],
+                }
+            },
+        )
+
+    with make_client(handler) as client:
+        chat_id = _create_chat_db_only("cap test", tool_iteration_cap=2)
+        client.post(f"/chats/{chat_id}/messages", data={"content": "ping"})
+        response = client.get(f"/chats/{chat_id}/stream")
+
+    assert response.status_code == 200
+    assert "Tool-call limit reached" in response.text
+
+    db_path = os.environ["DB_PATH"]
+    with sqlite3.connect(db_path) as conn:
+        tool_call_count = conn.execute(
+            "SELECT COUNT(*) FROM messages"
+            " WHERE conversation_id = ? AND role = 'tool_call'",
+            (chat_id,),
+        ).fetchone()[0]
+    assert tool_call_count == 2
+
+
+def test_set_chat_tool_iteration_cap_persists(
+    make_client: ClientFactory,
+) -> None:
+    """PATCH /chats/{id}/tool-iteration-cap returns 204 and stores the value."""
+    with make_client(_ollama_unreachable) as client:
+        chat_id = _create_chat_db_only("cap chat")
+        response = client.patch(
+            f"/chats/{chat_id}/tool-iteration-cap",
+            data={"tool_iteration_cap": "8"},
+        )
+    assert response.status_code == 204
+
+    db_path = os.environ["DB_PATH"]
+    with open_connection(db_path) as conn:
+        assert queries.get_conversation(conn, chat_id).tool_iteration_cap == 8
+
+
+def test_set_chat_tool_iteration_cap_clamps(
+    make_client: ClientFactory,
+) -> None:
+    """Out-of-range caps are clamped to [1, 10] server-side."""
+    db_path = os.environ["DB_PATH"]
+    with make_client(_ollama_unreachable) as client:
+        high_id = _create_chat_db_only("cap high")
+        low_id = _create_chat_db_only("cap low")
+        client.patch(
+            f"/chats/{high_id}/tool-iteration-cap",
+            data={"tool_iteration_cap": "99"},
+        )
+        client.patch(
+            f"/chats/{low_id}/tool-iteration-cap",
+            data={"tool_iteration_cap": "0"},
+        )
+
+    with open_connection(db_path) as conn:
+        assert queries.get_conversation(conn, high_id).tool_iteration_cap == 10
+        assert queries.get_conversation(conn, low_id).tool_iteration_cap == 1
+
+
+def test_set_chat_tool_iteration_cap_404_for_missing_chat(
+    make_client: ClientFactory,
+) -> None:
+    """PATCHing an unknown conversation id returns 404."""
+    with make_client(_ollama_unreachable) as client:
+        response = client.patch(
+            "/chats/999999/tool-iteration-cap",
+            data={"tool_iteration_cap": "5"},
+        )
+    assert response.status_code == 404
 
 
 @pytest.mark.asyncio

@@ -215,6 +215,41 @@ def test_migration_drops_legacy_role_check(tmp_path: Path) -> None:
         )
 
 
+def test_migration_backfills_tool_iteration_cap_column(tmp_path: Path) -> None:
+    """A conversations table that pre-dates this phase gets the
+    tool_iteration_cap column backfilled (default 5) on init."""
+    db = tmp_path / "chats.db"
+    with sqlite3.connect(db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE conversations (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                model TEXT NOT NULL,
+                name_locked INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO conversations
+                (name, model, name_locked, created_at, updated_at)
+                VALUES ('legacy', 'm', 0, 'now', 'now');
+            """
+        )
+
+    initialize_database(db)
+
+    with sqlite3.connect(db) as conn:
+        columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(conversations);")
+        }
+        assert "tool_iteration_cap" in columns
+        # The pre-existing row picks up the column default.
+        cap = conn.execute(
+            "SELECT tool_iteration_cap FROM conversations WHERE name = 'legacy';"
+        ).fetchone()[0]
+        assert cap == 5
+
+
 def test_rag_servers_table_exists_after_init(initialized_db: Path) -> None:
     """Phase 12a introduced the rag_servers table; verify its columns."""
     with _open(initialized_db) as conn:
