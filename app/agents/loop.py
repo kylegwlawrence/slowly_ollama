@@ -200,6 +200,52 @@ def _build_generation_payload(user_message: str, findings: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _strip_json_tool_calls(text: str) -> str:
+    """Remove raw JSON tool-call blocks from model text content.
+
+    Some models emit a follow-up tool call as plain-text JSON (e.g.
+    ``{"name": "query_rag", "parameters": {...}}``) rather than as a
+    structured ``tool_calls`` response. These fragments are noise in
+    the findings display — the tool card rows already show what was
+    called via ``format_tool_invocation``. This helper walks the text
+    character-by-character, excising any ``{...}`` block that parses
+    as valid JSON with a ``"name"`` key.
+    """
+    parts: list[str] = []
+    i = 0
+    while i < len(text):
+        if text[i] != "{":
+            parts.append(text[i])
+            i += 1
+            continue
+        # Walk forward to find the matching close brace.
+        depth, j = 0, i
+        while j < len(text):
+            if text[j] == "{":
+                depth += 1
+            elif text[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        fragment = text[i : j + 1]
+        try:
+            obj = json.loads(fragment)
+            if isinstance(obj, dict) and "name" in obj:
+                i = j + 1  # skip the tool-call JSON block
+                continue
+        except (json.JSONDecodeError, ValueError):
+            pass
+        parts.append(text[i])
+        i += 1
+    return "".join(parts).strip()
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
 
@@ -297,7 +343,7 @@ async def _run_agentic_generation(
                     return
 
                 if not tool_calls:
-                    findings = content.strip()
+                    findings = _strip_json_tool_calls(content)
                     break
 
                 for call in tool_calls:

@@ -78,7 +78,7 @@ def test_tool_row_renders_details_when_sources_present() -> None:
     assert "tool-row--expandable" in html
     assert '<details class="tool-row__details">' in html
     assert 'class="tool-row__chevron material-symbols-outlined"' in html
-    assert "expand_more" in html
+    assert "chevron_right" in html
     assert 'class="tool-row__sources"' in html
     assert 'class="tool-row__source"' in html
 
