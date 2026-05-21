@@ -199,6 +199,11 @@ class ToolSpec:
 # functions are imported. The routes layer reads it via the helpers below.
 TOOLS: dict[str, ToolSpec] = {}
 
+# Canonical name for the RAG query tool. Referenced in routes (chip
+# filtering) and generation (source-description patching) — one place to
+# update if the function is ever renamed.
+RAG_TOOL_NAME = "query_rag"
+
 
 # Maps Python types to JSON schema types. Anything not in this map
 # defaults to "string" — the model will pass strings and the

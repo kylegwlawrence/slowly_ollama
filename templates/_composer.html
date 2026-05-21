@@ -31,11 +31,13 @@
     {% include "_input_pill.html" %}
     {# Phase 15: tool chips default to all-on. Clicking toggles state
        client-side (app.js). Checked boxes submit as `enabled_tools`
-       fields with POST /chats so the new chat seeds its tool rows. #}
-    {% if default_tool_states %}
+       or `enabled_rag_servers` fields with POST /chats so the new
+       chat seeds its tool and RAG server rows. #}
+    {% if default_tool_states or default_rag_server_states %}
     {% set is_composer = true %}
     {% set supports_tools = true %}
     {% set tool_states = default_tool_states %}
+    {% set rag_server_states = default_rag_server_states %}
     {% include "_tool_chips.html" %}
     {% endif %}
     {# Model selector lives in a toolbar below the input. The placeholder

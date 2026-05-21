@@ -92,6 +92,18 @@ CREATE TABLE IF NOT EXISTS chat_tool_settings (
     enabled         INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY (conversation_id, tool_name)
 );
+
+-- Phase 15b: per-chat RAG server enablement. One row per (conversation_id, server_name).
+-- A missing row means enabled (default on). Cascade-deletes with the parent conversation.
+-- server_name matches rag_servers.name — no FK enforced; server deletions orphan rows
+-- that are harmlessly ignored on lookup.
+CREATE TABLE IF NOT EXISTS chat_rag_settings (
+    conversation_id INTEGER NOT NULL
+        REFERENCES conversations(id) ON DELETE CASCADE,
+    server_name     TEXT NOT NULL,
+    enabled         INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (conversation_id, server_name)
+);
 """
 
 

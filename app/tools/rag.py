@@ -25,7 +25,7 @@ import httpx
 from app import rag_servers as _rag_servers_module
 from app.connection import open_connection
 from app.rag_servers import RagServer
-from app.tools import Source, ToolResult, tool
+from app.tools import RAG_TOOL_NAME, Source, ToolResult, tool
 
 # ---------------------------------------------------------------------------
 # Hardcoded caps — keep RAG output from blowing the model's context window.
@@ -225,12 +225,33 @@ async def query_rag(source: str, query: str) -> ToolResult:
     )
 
 
+def build_source_description(servers: list[RagServer]) -> str:
+    """Build the ``source`` parameter description for the query_rag tool spec.
+
+    Used by ``refresh_query_rag_registration`` (global spec) and by
+    ``app.generation._run_generation`` (per-chat filtered spec) so the
+    bullet format stays in one place.
+
+    Args:
+        servers: The servers to include. Callers filter to the relevant
+            subset before calling (all configured, or chat-enabled only).
+
+    Returns:
+        A multi-line string listing each server with its description.
+    """
+    lines = ["Name of the RAG source to query. Available sources:"]
+    for s in servers:
+        desc = s.description.strip() or "(no description)"
+        lines.append(f"- {s.name}: {desc}")
+    return "\n".join(lines)
+
+
 # Snapshot the ToolSpec the @tool decorator built above so we can
 # re-register query_rag after a pop (see refresh_query_rag_registration).
 # parameters_schema stays shared by design — the refresh function mutates
 # it in place to reflect the current source list.
 from app.tools import TOOLS as _TOOLS  # noqa: E402
-_QUERY_RAG_SPEC = _TOOLS["query_rag"]
+_QUERY_RAG_SPEC = _TOOLS[RAG_TOOL_NAME]
 
 
 def refresh_query_rag_registration() -> None:
@@ -254,19 +275,15 @@ def refresh_query_rag_registration() -> None:
     if not servers:
         # No sources configured → remove the tool so the model never
         # sees a tool it cannot successfully invoke.
-        TOOLS.pop("query_rag", None)
+        TOOLS.pop(RAG_TOOL_NAME, None)
         return
 
     # Re-add after a prior pop (or on first call). The spec object is
     # the same one the @tool decorator built — name/description/func stay intact.
-    if "query_rag" not in TOOLS:
-        TOOLS["query_rag"] = _QUERY_RAG_SPEC
+    if RAG_TOOL_NAME not in TOOLS:
+        TOOLS[RAG_TOOL_NAME] = _QUERY_RAG_SPEC
 
-    spec = TOOLS["query_rag"]
-    lines = ["Name of the RAG source to query. Available sources:"]
-    for s in servers:
-        desc = s.description.strip() or "(no description)"
-        lines.append(f"- {s.name}: {desc}")
+    spec = TOOLS[RAG_TOOL_NAME]
     spec.parameters_schema["properties"]["source"]["description"] = (
-        "\n".join(lines)
+        build_source_description(servers)
     )

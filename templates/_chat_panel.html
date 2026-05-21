@@ -7,8 +7,10 @@
     <h2 class="chat-panel__name">{{ conversation.name }}</h2>
     <span class="chat-panel__model">{{ conversation.model }}</span>
     {# Phase 15: per-chat tool chips. Only rendered when the model
-       supports tools; hidden entirely for non-tool-capable models. #}
-    {% if supports_tools and tool_states %}
+       supports tools; hidden entirely for non-tool-capable models.
+       Phase 15b: rag_server_states adds per-server RAG chips alongside
+       the non-RAG tool chips. #}
+    {% if supports_tools and (tool_states or rag_server_states) %}
     <div id="chat-tool-chips">
       {% set is_composer = false %}
       {% include "_tool_chips.html" %}

@@ -1201,3 +1201,142 @@ async def test_dispatcher_ignores_subagent_flags(
     # Agentic path never fires regardless of settings.
     assert agentic_calls["count"] == 0
     assert single_calls["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_generation_excludes_query_rag_when_all_servers_disabled(
+    tmp_path, monkeypatch
+):
+    """When all per-chat RAG server chips are toggled off, query_rag is
+    absent from the tools sent to Ollama even if query_rag is registered."""
+    from app import rag_servers as _rs
+    from app.queries import seed_chat_rag_servers, toggle_chat_rag_server
+
+    db_path = tmp_path / "chats.db"
+    conv_id = _setup_chat(db_path)
+    monkeypatch.setenv("DB_PATH", str(db_path))
+
+    with open_connection(db_path) as conn:
+        _rs.create_server(conn, "arxiv", "http://fake/arxiv")
+        # Disable the arxiv server for this chat.
+        toggle_chat_rag_server(conn, conv_id, "arxiv")
+
+    captured_tools: list[list] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content or b"{}")
+        if not body.get("stream"):
+            captured_tools.append(body.get("tools") or [])
+            return httpx.Response(
+                200, json={"message": {"content": "", "tool_calls": []}}
+            )
+        return httpx.Response(
+            200,
+            content=(
+                b'{"message":{"content":"ok"},"done":false}\n'
+                b'{"message":{"content":""},"done":true}\n'
+            ),
+        )
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://test"
+    )
+
+    async def _capable(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr(ollama, "model_supports_tools", _capable)
+
+    with open_connection(db_path) as db:
+        from app.tools.rag import refresh_query_rag_registration
+        refresh_query_rag_registration()
+        state = await generation.start_generation(
+            client=client,
+            db=db,
+            conversation_id=conv_id,
+            model="llama3",
+            history=queries.list_messages(db, conv_id),
+            on_complete="append",
+        )
+        await state.task
+
+    # query_rag must not appear in the tools list sent to Ollama.
+    assert captured_tools, "expected at least one non-stream probe"
+    tool_names_sent = [
+        t["function"]["name"]
+        for call_tools in captured_tools
+        for t in call_tools
+    ]
+    assert "query_rag" not in tool_names_sent
+
+
+@pytest.mark.asyncio
+async def test_generation_filters_query_rag_source_desc_to_enabled_servers(
+    tmp_path, monkeypatch
+):
+    """query_rag's source description only lists the enabled server when
+    one of two servers is disabled for the chat."""
+    from app import rag_servers as _rs
+    from app.queries import seed_chat_rag_servers, toggle_chat_rag_server
+
+    db_path = tmp_path / "chats.db"
+    conv_id = _setup_chat(db_path)
+    monkeypatch.setenv("DB_PATH", str(db_path))
+
+    with open_connection(db_path) as conn:
+        _rs.create_server(conn, "arxiv", "http://fake/arxiv")
+        _rs.create_server(conn, "pubmed", "http://fake/pubmed")
+        # Disable pubmed for this chat.
+        toggle_chat_rag_server(conn, conv_id, "pubmed")
+
+    captured_tools: list[list] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content or b"{}")
+        if not body.get("stream"):
+            captured_tools.append(body.get("tools") or [])
+            return httpx.Response(
+                200, json={"message": {"content": "", "tool_calls": []}}
+            )
+        return httpx.Response(
+            200,
+            content=(
+                b'{"message":{"content":"ok"},"done":false}\n'
+                b'{"message":{"content":""},"done":true}\n'
+            ),
+        )
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://test"
+    )
+
+    async def _capable(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr(ollama, "model_supports_tools", _capable)
+
+    with open_connection(db_path) as db:
+        from app.tools.rag import refresh_query_rag_registration
+        refresh_query_rag_registration()
+        state = await generation.start_generation(
+            client=client,
+            db=db,
+            conversation_id=conv_id,
+            model="llama3",
+            history=queries.list_messages(db, conv_id),
+            on_complete="append",
+        )
+        await state.task
+
+    # query_rag should be sent (arxiv is enabled), but pubmed must not
+    # appear in the source description.
+    assert captured_tools
+    rag_specs = [
+        t for t in captured_tools[0] if t["function"]["name"] == "query_rag"
+    ]
+    assert rag_specs, "expected query_rag in tools when one server is enabled"
+    source_desc = (
+        rag_specs[0]["function"]["parameters"]["properties"]["source"]["description"]
+    )
+    assert "arxiv" in source_desc
+    assert "pubmed" not in source_desc
