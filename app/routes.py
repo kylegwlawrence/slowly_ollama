@@ -538,6 +538,7 @@ async def create_chat_endpoint(
     model: Annotated[str, Form()],
     content: Annotated[str, Form()],
     temperature: Annotated[float | None, Form()] = None,
+    tool_iteration_cap: Annotated[int | None, Form()] = None,
 ) -> Response:
     """Create a conversation AND save the first message in one request.
 
@@ -566,8 +567,18 @@ async def create_chat_endpoint(
     if temperature is None:
         temperature = queries.get_default_temperature(db)
     temperature = max(0.0, min(2.0, temperature))
+    # Per-chat tool-iteration cap: fall back to the schema default when
+    # the caller omits it (non-browser clients); clamp to 1–10 so a
+    # hand-crafted request can't drive a runaway or no-op tool loop.
+    if tool_iteration_cap is None:
+        tool_iteration_cap = 5
+    tool_iteration_cap = max(1, min(10, tool_iteration_cap))
     chat = queries.create_conversation(
-        db, name=_placeholder_name(content), model=model, temperature=temperature
+        db,
+        name=_placeholder_name(content),
+        model=model,
+        temperature=temperature,
+        tool_iteration_cap=tool_iteration_cap,
     )
     queries.append_message(db, chat.id, "user", content)
 
@@ -609,6 +620,7 @@ async def create_chat_endpoint(
         conversation_id=chat.id,
         model=chat.model,
         temperature=chat.temperature,
+        tool_iteration_cap=chat.tool_iteration_cap,
         history=messages,
         on_complete="append",
     )
@@ -913,6 +925,7 @@ async def send_message_endpoint(
             conversation_id=conversation_id,
             model=conversation.model,
             temperature=conversation.temperature,
+            tool_iteration_cap=conversation.tool_iteration_cap,
             history=history,
             on_complete="append",
         )
@@ -1014,6 +1027,7 @@ async def regenerate_endpoint(
             conversation_id=conversation_id,
             model=conversation.model,
             temperature=conversation.temperature,
+            tool_iteration_cap=conversation.tool_iteration_cap,
             history=prompt_history,
             on_complete="replace",
         )
@@ -1154,6 +1168,37 @@ async def set_chat_temperature_endpoint(
     temperature = max(0.0, min(2.0, temperature))
     try:
         queries.set_conversation_temperature(db, conversation_id, temperature)
+    except LookupError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.patch(
+    "/chats/{conversation_id}/tool-iteration-cap",
+    response_class=Response,
+)
+async def set_chat_tool_iteration_cap_endpoint(
+    conversation_id: int,
+    db: DB,
+    tool_iteration_cap: Annotated[int, Form()],
+) -> Response:
+    """Persist the single-agent tool-iteration cap for a conversation.
+
+    Called by the cap ``<input>`` in ``_chat_panel.html`` via
+    ``hx-patch`` on the ``change`` event. Clamps to [1, 10] server-side
+    so a hand-crafted request can't drive a runaway or no-op tool loop.
+
+    Returns 204 No Content — the browser input already shows the typed
+    value, so no swap is needed.
+
+    Raises:
+        HTTPException 404: When the conversation doesn't exist.
+    """
+    tool_iteration_cap = max(1, min(10, tool_iteration_cap))
+    try:
+        queries.set_conversation_tool_iteration_cap(
+            db, conversation_id, tool_iteration_cap
+        )
     except LookupError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
     return Response(status_code=status.HTTP_204_NO_CONTENT)

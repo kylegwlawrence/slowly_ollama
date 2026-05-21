@@ -454,12 +454,13 @@ body {
   font-weight: 500;
 }
 
-/* Wrapper form for the per-chat temperature chip in the header. Flex
-   (not the default block) so the inline-flex chip is centered and the
-   form collapses to the chip's height — a block wrapper instead builds a
-   line box from the inherited line-height, leaving the chip 3px low and
-   misaligned with the model badge and tool chips. */
-.chat-panel__temperature {
+/* Wrapper form for a single chip in the header (temperature, tool
+   cap, …). Flex (not the default block) so the inline-flex chip is
+   centered and the form collapses to the chip's height — a block
+   wrapper instead builds a line box from the inherited line-height,
+   leaving the chip 3px low and misaligned with the model badge and
+   tool chips. */
+.chat-panel__chip-form {
   display: flex;
   align-items: center;
   margin: 0;

@@ -38,6 +38,7 @@ from app.queries import (
     seed_chat_rag_servers,
     seed_chat_tools,
     set_agentic_mode,
+    set_conversation_tool_iteration_cap,
     set_default_temperature,
     set_generator_enabled,
     set_name_auto,
@@ -83,6 +84,43 @@ def test_create_conversation_returns_populated_row(
     # marker somewhere in the read path).
     assert c.created_at.tzinfo is not None
     assert c.updated_at == c.created_at
+
+
+def test_create_conversation_defaults_tool_iteration_cap_to_5(
+    conn: sqlite3.Connection,
+) -> None:
+    """A new conversation starts with the default tool-iteration cap of 5."""
+    c = create_conversation(conn, name="My chat", model="llama3")
+    assert c.tool_iteration_cap == 5
+
+
+def test_create_conversation_honors_explicit_tool_iteration_cap(
+    conn: sqlite3.Connection,
+) -> None:
+    """create_conversation stores a caller-supplied tool-iteration cap."""
+    c = create_conversation(
+        conn, name="My chat", model="llama3", tool_iteration_cap=3
+    )
+    assert c.tool_iteration_cap == 3
+    assert get_conversation(conn, c.id).tool_iteration_cap == 3
+
+
+def test_set_conversation_tool_iteration_cap_round_trips(
+    conn: sqlite3.Connection,
+) -> None:
+    """The setter updates the cap and the change is readable afterwards."""
+    c = create_conversation(conn, "X", "llama3")
+    updated = set_conversation_tool_iteration_cap(conn, c.id, 7)
+    assert updated.tool_iteration_cap == 7
+    assert get_conversation(conn, c.id).tool_iteration_cap == 7
+
+
+def test_set_conversation_tool_iteration_cap_raises_for_unknown_id(
+    conn: sqlite3.Connection,
+) -> None:
+    """Updating a non-existent conversation raises LookupError."""
+    with pytest.raises(LookupError):
+        set_conversation_tool_iteration_cap(conn, 999999, 5)
 
 
 def test_get_conversation_returns_the_row(conn: sqlite3.Connection) -> None:
