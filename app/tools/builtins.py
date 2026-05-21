@@ -12,7 +12,7 @@ from app.tools import tool
 
 @tool
 def current_time(timezone: str = "UTC") -> str:
-    """Get the current time as an ISO 8601 string.
+    """Get the current wall-clock time as ISO 8601. Only call this when the user explicitly asks for the date/time or a calculation genuinely depends on "now"; never as a default, warm-up, or speculative call.
 
     Args:
         timezone: IANA timezone name like "America/Vancouver" or "UTC".
