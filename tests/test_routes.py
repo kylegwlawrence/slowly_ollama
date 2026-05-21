@@ -1629,6 +1629,77 @@ def test_settings_get_returns_fragment_for_htmx(
     assert 'class="settings"' in response.text
 
 
+def test_settings_renders_default_temperature_input(
+    make_client: ClientFactory,
+) -> None:
+    """GET /settings shows the default-temperature control seeded with
+    the production default (0.7) before the user changes it."""
+    with make_client(_ollama_unreachable) as client:
+        response = client.get("/settings", headers={"HX-Request": "true"})
+
+    assert response.status_code == 200
+    assert 'hx-patch="/settings/default-temperature"' in response.text
+    assert 'id="default-temperature"' in response.text
+    assert 'value="0.7"' in response.text
+
+
+def test_set_default_temperature_persists(
+    make_client: ClientFactory,
+) -> None:
+    """PATCH /settings/default-temperature returns 204 and the new value
+    is reflected on a subsequent /settings render."""
+    with make_client(_ollama_unreachable) as client:
+        patch = client.patch(
+            "/settings/default-temperature", data={"temperature": "1.3"}
+        )
+        assert patch.status_code == 204
+
+        settings = client.get("/settings", headers={"HX-Request": "true"})
+    assert 'value="1.3"' in settings.text
+
+
+def test_set_default_temperature_clamps(
+    make_client: ClientFactory,
+) -> None:
+    """An out-of-range PATCH is clamped to [0.0, 2.0] before storage."""
+    with make_client(_ollama_unreachable) as client:
+        client.patch(
+            "/settings/default-temperature", data={"temperature": "9"}
+        )
+        settings = client.get("/settings", headers={"HX-Request": "true"})
+    assert 'value="2.0"' in settings.text
+
+
+def test_new_composer_reflects_default_temperature(
+    make_client: ClientFactory,
+) -> None:
+    """The empty-state composer seeds its Temp input from the stored
+    global default, so a new chat starts at the configured value."""
+    with make_client(_ollama_unreachable) as client:
+        client.patch(
+            "/settings/default-temperature", data={"temperature": "0.3"}
+        )
+        composer = client.get("/new")
+    assert 'id="composer-temperature"' in composer.text
+    assert 'value="0.3"' in composer.text
+
+
+def test_create_chat_without_temperature_uses_default(
+    make_client: ClientFactory,
+) -> None:
+    """A POST /chats that omits temperature (non-browser caller) falls
+    back to the global default rather than a hardcoded constant."""
+    with make_client(_ollama_unreachable) as client:
+        client.patch(
+            "/settings/default-temperature", data={"temperature": "0.2"}
+        )
+        chat_id = _create_chat_and_get_id(client)
+        panel = client.get(
+            f"/chats/{chat_id}", headers={"HX-Request": "true"}
+        )
+    assert 'value="0.2"' in panel.text
+
+
 def test_settings_add_server_returns_row(
     make_client: ClientFactory,
 ) -> None:
