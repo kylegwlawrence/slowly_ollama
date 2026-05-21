@@ -1003,8 +1003,9 @@ body {
 
 .rag-server {
   display: grid;
-  /* Row 1: name, url, delete button. Row 2: description spanning cols 1–2. */
-  grid-template-columns: 1fr auto auto;
+  /* Row 1: name, url, edit button, delete button.
+     Row 2: description (view mode) or edit form, spanning cols 1–2. */
+  grid-template-columns: 1fr auto auto auto;
   align-items: center;
   gap: var(--space-sm) var(--space-md);
   padding: var(--space-sm) var(--space-md);
@@ -1036,6 +1037,75 @@ body {
 }
 
 .rag-server__delete:hover { background: var(--surface-hover); color: var(--danger); }
+
+/* Edit pencil — same icon-button shape as the delete button, but hovers
+   to the accent colour instead of danger to signal a non-destructive
+   action. */
+.rag-server__edit-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-secondary);
+  padding: var(--space-xs);
+  border-radius: var(--radius-sm);
+  width: auto;
+}
+
+.rag-server__edit-btn:hover { background: var(--surface-hover); color: var(--accent); }
+
+/* Inline description editor. Replaces the row's description + buttons on
+   row 2, spanning the name + url columns so the row stays the same width
+   as its view-mode self. */
+.rag-server__edit {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin: 0;
+}
+
+.rag-server__edit textarea {
+  font-size: 13px;
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text-primary);
+  height: auto;
+  margin: 0;
+  resize: vertical;
+}
+
+.rag-server__edit-actions {
+  display: flex;
+  gap: var(--space-sm);
+}
+
+.rag-server__save,
+.rag-server__cancel {
+  padding: var(--space-xs) var(--space-md);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  margin: 0;
+  width: auto;
+  border: 1px solid var(--border);
+}
+
+.rag-server__save {
+  background: var(--accent);
+  color: var(--accent-on);
+  border-color: var(--accent);
+}
+
+.rag-server__cancel {
+  background: var(--bg);
+  color: var(--text-secondary);
+}
+
+.rag-server__cancel:hover { background: var(--surface-hover); }
 
 /* Description sits on row 2, spanning the name + url columns so the
    delete button stays visually anchored to row 1. */

@@ -1,21 +1,56 @@
 {# One row in the RAG servers list.
 
    The `<li>`'s id is the swap target for the delete button (so
-   hx-swap="delete" removes just this row, not the whole list).
+   hx-swap="delete" removes just this row, not the whole list) and for
+   the inline description editor (which swaps the whole `<li>` outerHTML
+   between view and edit modes).
+
    The same template is reused as the POST /settings/servers response
-   body, where it gets appended into #rag-servers-list via beforeend. #}
+   body, where it gets appended into #rag-servers-list via beforeend.
+   In that path (and the list-render loop) `editing` is undefined, which
+   Jinja treats as falsy — so the row defaults to view mode. The GET
+   /settings/servers/{id}?edit=1 route sets `editing=True` to render the
+   description textarea instead. #}
 <li id="rag-server-{{ server.id }}" class="rag-server">
   <div class="rag-server__name">{{ server.name }}</div>
   <code class="rag-server__url">{{ server.url }}</code>
-  <button type="button" class="rag-server__delete"
-          aria-label="Delete RAG server"
-          hx-delete="/settings/servers/{{ server.id }}"
+  {% if editing %}
+    {# Edit mode: only the description is editable. Save PATCHes the new
+       text and swaps back the view-mode row; Cancel re-GETs the row
+       (view mode) so any in-progress edit is discarded. #}
+    <form class="rag-server__edit"
+          hx-patch="/settings/servers/{{ server.id }}"
           hx-target="#rag-server-{{ server.id }}"
-          hx-swap="delete"
-          hx-confirm="Remove RAG server '{{ server.name }}'?">
-    <span class="material-symbols-outlined">delete</span>
-  </button>
-  <div class="rag-server__description">
-    {{ server.description or "(no description)" }}
-  </div>
+          hx-swap="outerHTML">
+      <textarea name="description" maxlength="200" rows="2"
+                aria-label="Edit description for {{ server.name }}"
+                placeholder="What's in this RAG server? e.g. 'PubMed abstracts on cardiology, 2020-2024'">{{ server.description }}</textarea>
+      <div class="rag-server__edit-actions">
+        <button type="submit" class="rag-server__save">Save</button>
+        <button type="button" class="rag-server__cancel"
+                hx-get="/settings/servers/{{ server.id }}"
+                hx-target="#rag-server-{{ server.id }}"
+                hx-swap="outerHTML">Cancel</button>
+      </div>
+    </form>
+  {% else %}
+    <button type="button" class="rag-server__edit-btn"
+            aria-label="Edit description for {{ server.name }}"
+            hx-get="/settings/servers/{{ server.id }}?edit=1"
+            hx-target="#rag-server-{{ server.id }}"
+            hx-swap="outerHTML">
+      <span class="material-symbols-outlined">edit</span>
+    </button>
+    <button type="button" class="rag-server__delete"
+            aria-label="Delete RAG server"
+            hx-delete="/settings/servers/{{ server.id }}"
+            hx-target="#rag-server-{{ server.id }}"
+            hx-swap="delete"
+            hx-confirm="Remove RAG server '{{ server.name }}'?">
+      <span class="material-symbols-outlined">delete</span>
+    </button>
+    <div class="rag-server__description">
+      {{ server.description or "(no description)" }}
+    </div>
+  {% endif %}
 </li>

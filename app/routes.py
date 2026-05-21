@@ -328,6 +328,66 @@ def delete_server_endpoint(server_id: int, db: DB) -> Response:
     return Response(content="", status_code=status.HTTP_200_OK)
 
 
+@router.get("/settings/servers/{server_id}", response_class=HTMLResponse)
+def get_server_endpoint(
+    server_id: int,
+    request: Request,
+    db: DB,
+    edit: bool = False,
+) -> Response:
+    """Return one RAG server row, in view or edit mode.
+
+    Backs the inline description editor: the row's edit pencil GETs with
+    ``?edit=1`` to swap the row into a textarea form; the form's Cancel
+    button GETs without the param to swap back to view mode. Both target
+    the row's own ``<li>`` with ``hx-swap="outerHTML"``.
+
+    A missing id (e.g. another tab deleted the row) returns 404 so HTMX
+    leaves the stale row in place rather than blanking it.
+    """
+    server = _rag_servers_module.get_server(db, server_id)
+    if server is None:
+        return Response(content="", status_code=status.HTTP_404_NOT_FOUND)
+    return templates.TemplateResponse(
+        request=request,
+        name="_rag_server_row.html",
+        context={"server": server, "editing": edit},
+    )
+
+
+@router.patch("/settings/servers/{server_id}", response_class=HTMLResponse)
+def update_server_endpoint(
+    server_id: int,
+    request: Request,
+    db: DB,
+    description: Annotated[str, Form()] = "",
+) -> Response:
+    """Update a server's description in place; return the view-mode row.
+
+    Only the description is editable inline — name/URL edits would need a
+    health re-probe and a tool-registry rename, so those still go through
+    delete + re-add. Truncates to 200 chars to match the add-server form's
+    cap (the textarea's ``maxlength`` is a client-side hint only), then
+    refreshes the query_rag registration so the tool's ``source`` hint
+    reflects the edited description.
+
+    A missing id returns 404 so a stale row left over from another tab's
+    delete isn't replaced with anything.
+    """
+    description_clean = description.strip()[:200]
+    server = _rag_servers_module.update_server_description(
+        db, server_id, description_clean
+    )
+    if server is None:
+        return Response(content="", status_code=status.HTTP_404_NOT_FOUND)
+    refresh_query_rag_registration()
+    return templates.TemplateResponse(
+        request=request,
+        name="_rag_server_row.html",
+        context={"server": server, "editing": False},
+    )
+
+
 @router.post("/settings/agentic-mode", response_class=HTMLResponse)
 def toggle_agentic_mode_endpoint(
     request: Request,

@@ -18,7 +18,9 @@ from app.rag_servers import (
     RagServer,
     create_server,
     delete_server,
+    get_server,
     list_servers,
+    update_server_description,
 )
 
 
@@ -101,6 +103,61 @@ def test_create_allows_same_url_with_different_name(
     create_server(conn, "arxiv", "http://shared/")
     create_server(conn, "duplicate-source", "http://shared/")
     assert len(list_servers(conn)) == 2
+
+
+def test_get_server_returns_matching_row(conn: sqlite3.Connection) -> None:
+    """get_server fetches the row whose id matches."""
+    s = create_server(conn, "arxiv", "http://x/arxiv", description="Papers")
+    fetched = get_server(conn, s.id)
+    assert fetched is not None
+    assert fetched.id == s.id
+    assert fetched.name == "arxiv"
+    assert fetched.description == "Papers"
+
+
+def test_get_server_returns_none_for_missing_id(
+    conn: sqlite3.Connection,
+) -> None:
+    """get_server returns None when no row has that id (route -> 404)."""
+    assert get_server(conn, 999) is None
+
+
+def test_update_description_changes_text_and_bumps_updated_at(
+    conn: sqlite3.Connection,
+) -> None:
+    """update_server_description rewrites description and advances updated_at.
+
+    name/url/created_at are left untouched — only the description is
+    editable in place.
+    """
+    s = create_server(conn, "arxiv", "http://x/arxiv", description="old")
+
+    updated = update_server_description(conn, s.id, "new and improved")
+
+    assert updated is not None
+    assert updated.id == s.id
+    assert updated.name == "arxiv"
+    assert updated.url == "http://x/arxiv"
+    assert updated.description == "new and improved"
+    assert updated.created_at == s.created_at
+    assert updated.updated_at >= s.updated_at
+    # The change is durable, not just reflected in the return value.
+    assert get_server(conn, s.id).description == "new and improved"
+
+
+def test_update_description_to_empty_string(conn: sqlite3.Connection) -> None:
+    """A description can be cleared back to empty string."""
+    s = create_server(conn, "arxiv", "http://x/arxiv", description="something")
+    updated = update_server_description(conn, s.id, "")
+    assert updated is not None
+    assert updated.description == ""
+
+
+def test_update_description_missing_id_returns_none(
+    conn: sqlite3.Connection,
+) -> None:
+    """Updating a missing id returns None rather than raising (route -> 404)."""
+    assert update_server_description(conn, 999, "ignored") is None
 
 
 def test_delete_removes_row(conn: sqlite3.Connection) -> None:
