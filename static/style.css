@@ -643,7 +643,7 @@ body {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  font-size: 0.9em;
+  font-size: 0.7em;
 }
 
 .tool-card__summary {
@@ -661,7 +661,7 @@ body {
   transition: transform 0.15s;
 }
 .tool-card[open] .tool-card__chevron {
-  transform: rotate(180deg);
+  transform: rotate(90deg);
 }
 
 .tool-card__list {
@@ -719,7 +719,7 @@ body {
   color: var(--text-secondary);
   transition: transform 0.15s;
 }
-.tool-row__details[open] .tool-row__chevron { transform: rotate(180deg); }
+.tool-row__details[open] .tool-row__chevron { transform: rotate(90deg); }
 
 .tool-row__sources {
   list-style: none;
