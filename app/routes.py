@@ -73,6 +73,15 @@ from app.tools.rag import refresh_query_rag_registration
 
 router = APIRouter()
 
+# Read-only snapshot of the three agentic system prompts — referenced
+# in every context that renders `_settings_agentic_section.html` so a
+# prompt key change only needs to happen in one place.
+_AGENTIC_PROMPTS = {
+    "research": RESEARCH_SYSTEM_PROMPT,
+    "review": REVIEW_SYSTEM_PROMPT,
+    "generation": GENERATION_SYSTEM_PROMPT,
+}
+
 
 # ---------------------------------------------------------------------------
 # Index page
@@ -138,11 +147,6 @@ def settings_endpoint(request: Request, db: DB) -> Response:
     agentic_mode_on = queries.get_agentic_mode(db)
     review_enabled = queries.get_review_enabled(db)
     generator_enabled = queries.get_generator_enabled(db)
-    agentic_prompts = {
-        "research": RESEARCH_SYSTEM_PROMPT,
-        "review": REVIEW_SYSTEM_PROMPT,
-        "generation": GENERATION_SYSTEM_PROMPT,
-    }
     if request.headers.get("HX-Request"):
         return templates.TemplateResponse(
             request=request,
@@ -152,7 +156,7 @@ def settings_endpoint(request: Request, db: DB) -> Response:
                 "agentic_mode_on": agentic_mode_on,
                 "review_enabled": review_enabled,
                 "generator_enabled": generator_enabled,
-                "agentic_prompts": agentic_prompts,
+                "agentic_prompts": _AGENTIC_PROMPTS,
             },
         )
     return templates.TemplateResponse(
@@ -171,7 +175,7 @@ def settings_endpoint(request: Request, db: DB) -> Response:
             "agentic_mode_on": agentic_mode_on,
             "review_enabled": review_enabled,
             "generator_enabled": generator_enabled,
-            "agentic_prompts": agentic_prompts,
+            "agentic_prompts": _AGENTIC_PROMPTS,
         },
     )
 
@@ -277,11 +281,7 @@ def toggle_agentic_mode_endpoint(
             "agentic_mode_on": agentic_mode_on,
             "review_enabled": queries.get_review_enabled(db),
             "generator_enabled": queries.get_generator_enabled(db),
-            "agentic_prompts": {
-                "research": RESEARCH_SYSTEM_PROMPT,
-                "review": REVIEW_SYSTEM_PROMPT,
-                "generation": GENERATION_SYSTEM_PROMPT,
-            },
+            "agentic_prompts": _AGENTIC_PROMPTS,
         },
     )
 
@@ -310,11 +310,7 @@ def toggle_review_enabled_endpoint(
             "agentic_mode_on": queries.get_agentic_mode(db),
             "review_enabled": review_enabled,
             "generator_enabled": queries.get_generator_enabled(db),
-            "agentic_prompts": {
-                "research": RESEARCH_SYSTEM_PROMPT,
-                "review": REVIEW_SYSTEM_PROMPT,
-                "generation": GENERATION_SYSTEM_PROMPT,
-            },
+            "agentic_prompts": _AGENTIC_PROMPTS,
         },
     )
 
@@ -340,11 +336,7 @@ def toggle_generator_enabled_endpoint(
             "agentic_mode_on": queries.get_agentic_mode(db),
             "review_enabled": queries.get_review_enabled(db),
             "generator_enabled": generator_enabled,
-            "agentic_prompts": {
-                "research": RESEARCH_SYSTEM_PROMPT,
-                "review": REVIEW_SYSTEM_PROMPT,
-                "generation": GENERATION_SYSTEM_PROMPT,
-            },
+            "agentic_prompts": _AGENTIC_PROMPTS,
         },
     )
 
