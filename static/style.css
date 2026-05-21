@@ -1085,23 +1085,30 @@ body {
 .rag-server__save,
 .rag-server__cancel {
   padding: var(--space-xs) var(--space-md);
+  border: none;
   border-radius: var(--radius-md);
   cursor: pointer;
   font-size: 13px;
   font-weight: 500;
   margin: 0;
+  /* Pico's `button[type=submit] { width: 100% }` would stretch Save
+     across the flex row; pin both to content width. */
   width: auto;
-  border: 1px solid var(--border);
 }
 
+/* Save = filled primary, matching the "Add server" button and the
+   composer's Send button (accent fill, accent-on text, accent-hover). */
 .rag-server__save {
   background: var(--accent);
   color: var(--accent-on);
-  border-color: var(--accent);
 }
 
+.rag-server__save:hover { background: var(--accent-hover); }
+
+/* Cancel = ghost secondary, matching the chat-rename and kebab-menu
+   buttons (transparent until hover, muted text). */
 .rag-server__cancel {
-  background: var(--bg);
+  background: none;
   color: var(--text-secondary);
 }
 
