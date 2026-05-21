@@ -2750,12 +2750,12 @@ async def test_stream_persists_partial_assistant_on_aclose(
 
     # Fake stream_chat that yields two chunks then waits forever —
     # gives us a stable point to cancel while the gen is suspended.
-    async def fake_stream_chat(client_, model_, messages_):
+    async def fake_stream_chat(client_, model_, messages_, **kwargs):
         yield ollama.ChatChunk(content="partial ", done=False)
         yield ollama.ChatChunk(content="answer", done=False)
         await asyncio.sleep(60)
 
-    async def fake_maybe_tool_call(client_, model_, messages_, tools=None):
+    async def fake_maybe_tool_call(client_, model_, messages_, tools=None, **kwargs):
         return ([], "")
 
     monkeypatch.setattr("app.generation.ollama.stream_chat", fake_stream_chat)
@@ -2822,7 +2822,7 @@ async def test_stream_persists_placeholder_when_aclosed_during_tool_execution(
         await asyncio.sleep(60)
         return "never returned"
 
-    async def fake_maybe_tool_call(client_, model_, messages_, tools=None):
+    async def fake_maybe_tool_call(client_, model_, messages_, tools=None, **kwargs):
         return (
             [
                 {
@@ -2888,7 +2888,7 @@ def test_stream_persists_partial_assistant_on_cancellation(
     shows an orphan tool-card with nothing after it on reload."""
 
 
-    async def fake_stream_chat(client_, model_, messages_):
+    async def fake_stream_chat(client_, model_, messages_, **kwargs):
         # Yield two chunks, then simulate client disconnect by
         # raising CancelledError mid-stream.
         yield ollama.ChatChunk(content="partial ", done=False)
@@ -2936,7 +2936,7 @@ def test_stream_persists_placeholder_when_cancelled_with_zero_chunks(
     `(response interrupted)` placeholder — so the chat panel has a
     bubble to show after reload."""
 
-    async def fake_stream_chat(client_, model_, messages_):
+    async def fake_stream_chat(client_, model_, messages_, **kwargs):
         # No yields — cancellation before the first chunk arrives.
         raise asyncio.CancelledError
         yield  # unreachable, makes this an async generator
@@ -2984,7 +2984,7 @@ async def test_regenerate_cancellation_preserves_original_when_no_chunks(
     db_path = tmp_path / "chats.db"
     initialize_database(db_path)
 
-    async def fake_maybe_tool_call(client_, model_, messages_, tools=None):
+    async def fake_maybe_tool_call(client_, model_, messages_, tools=None, **kwargs):
         return ([], "")
 
     monkeypatch.setattr(
@@ -2998,7 +2998,7 @@ async def test_regenerate_cancellation_preserves_original_when_no_chunks(
 
         # Regen path: stream_chat raises CancelledError immediately,
         # meaning the producer never collected any chunks.
-        async def cancel_immediately(client_, model_, messages_):
+        async def cancel_immediately(client_, model_, messages_, **kwargs):
             raise asyncio.CancelledError
             yield  # unreachable, makes this an async generator
 
@@ -3048,10 +3048,10 @@ async def test_regenerate_cancellation_writes_partial_when_tokens_arrived(
     db_path = tmp_path / "chats.db"
     initialize_database(db_path)
 
-    async def fake_maybe_tool_call(client_, model_, messages_, tools=None):
+    async def fake_maybe_tool_call(client_, model_, messages_, tools=None, **kwargs):
         return ([], "")
 
-    async def partial_then_block(client_, model_, messages_):
+    async def partial_then_block(client_, model_, messages_, **kwargs):
         yield ollama.ChatChunk(content="new partial", done=False)
         await asyncio.sleep(60)
 

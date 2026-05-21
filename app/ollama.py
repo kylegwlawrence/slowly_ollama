@@ -281,6 +281,7 @@ async def stream_chat(
     client: httpx.AsyncClient,
     model: str,
     messages: list[dict[str, str]],
+    temperature: float = 0.8,
 ) -> AsyncIterator[ChatChunk]:
     """Stream a chat completion from Ollama, yielding chunks as they arrive.
 
@@ -293,6 +294,8 @@ async def stream_chat(
             dict with ``"role"`` (``"user"`` or ``"assistant"``) and
             ``"content"``. Phase 6 builds these from ``Message``
             dataclasses.
+        temperature: Sampling temperature (0.0–2.0). Passed in Ollama's
+            ``options`` dict; Ollama's own default is 0.8.
 
     Yields:
         One ``ChatChunk`` per line of Ollama's NDJSON stream. The final
@@ -305,7 +308,12 @@ async def stream_chat(
         OllamaProtocolError: A line of the NDJSON stream wasn't valid
             JSON.
     """
-    payload = {"model": model, "messages": messages, "stream": True}
+    payload = {
+        "model": model,
+        "messages": messages,
+        "stream": True,
+        "options": {"temperature": temperature},
+    }
     try:
         async with client.stream(
             "POST", "/api/chat", json=payload
@@ -344,6 +352,7 @@ async def maybe_tool_call(
     model: str,
     messages: list[dict],
     tools: list[dict] | None,
+    temperature: float = 0.8,
 ) -> tuple[list[dict], str]:
     """Single non-streaming /api/chat to detect tool calls.
 
@@ -367,6 +376,8 @@ async def maybe_tool_call(
             shape). Pass ``None`` to omit the key entirely — required for
             models that don't advertise tool capability (passing
             ``tools=[]`` for those models still trips a 400 from Ollama).
+        temperature: Sampling temperature (0.0–2.0). Passed in Ollama's
+            ``options`` dict; Ollama's own default is 0.8.
 
     Returns:
         A 2-tuple ``(tool_calls, content)``:
@@ -392,6 +403,7 @@ async def maybe_tool_call(
         # Non-streaming — the whole assistant reply (or its tool_calls)
         # comes back in one JSON object rather than NDJSON.
         "stream": False,
+        "options": {"temperature": temperature},
     }
     # Only include `tools` when there's something to advertise. Some
     # models 400 when given an empty list; passing None lets the caller

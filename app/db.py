@@ -39,6 +39,9 @@ CREATE TABLE IF NOT EXISTS conversations (
     -- Set to 1 by `rename_conversation` so a manual rename always wins
     -- over a subsequent automated title refresh.
     name_locked  INTEGER NOT NULL DEFAULT 0,
+    -- Per-chat temperature passed to Ollama's options dict (0.0–2.0).
+    -- Ollama's own default is 0.8.
+    temperature  REAL NOT NULL DEFAULT 0.8,
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL
 );
@@ -126,6 +129,22 @@ def _ensure_name_locked_column(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE conversations"
             " ADD COLUMN name_locked INTEGER NOT NULL DEFAULT 0;"
+        )
+
+
+def _ensure_conversations_temperature_column(conn: sqlite3.Connection) -> None:
+    """Backfill the ``temperature`` column on conversations tables that pre-date this phase.
+
+    Args:
+        conn: Open SQLite connection.
+    """
+    columns = {row[1] for row in conn.execute(
+        "PRAGMA table_info(conversations);"
+    )}
+    if "temperature" not in columns:
+        conn.execute(
+            "ALTER TABLE conversations"
+            " ADD COLUMN temperature REAL NOT NULL DEFAULT 0.8;"
         )
 
 
@@ -242,5 +261,8 @@ def initialize_database(path: Path | None = None) -> Path:
         # RAG source descriptions: backfill the description column on
         # rag_servers tables created before this phase.
         _ensure_rag_servers_description_column(conn)
+        # Per-chat temperature: backfill the temperature column on
+        # conversations tables created before this phase.
+        _ensure_conversations_temperature_column(conn)
 
     return target

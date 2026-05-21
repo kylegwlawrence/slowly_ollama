@@ -55,7 +55,7 @@ def _scripted_maybe_tool_call(
     state = {"i": 0}
     sent_payloads: list[list[dict]] = []
 
-    async def fake(client_, model_, messages_, tools=None):
+    async def fake(client_, model_, messages_, tools=None, **kwargs):
         sent_payloads.append(messages_)
         i = state["i"]
         state["i"] += 1
@@ -73,7 +73,7 @@ def _scripted_stream_chat(
     chunks: list[str],
 ) -> Callable[..., AsyncIterator[ollama.ChatChunk]]:
     """Build a fake `stream_chat` that yields the given text chunks."""
-    async def fake(client_, model_, messages_):
+    async def fake(client_, model_, messages_, **kwargs):
         for c in chunks:
             yield ollama.ChatChunk(content=c, done=False)
         yield ollama.ChatChunk(content="", done=True)
@@ -552,7 +552,7 @@ async def test_ollama_error_during_research_emits_error_event(
     db_path = tmp_path / "chats.db"
     conv_id = _setup_chat(db_path)
 
-    async def fake(client_, model_, messages_, tools=None):
+    async def fake(client_, model_, messages_, tools=None, **kwargs):
         raise ollama.OllamaUnavailable("Ollama down")
 
     monkeypatch.setattr(ollama, "maybe_tool_call", fake)
@@ -585,7 +585,7 @@ async def test_ollama_error_during_review_emits_error_event(
 
     call_count = {"n": 0}
 
-    async def fake(client_, model_, messages_, tools=None):
+    async def fake(client_, model_, messages_, tools=None, **kwargs):
         call_count["n"] += 1
         if call_count["n"] == 1:
             # Research pass succeeds.
