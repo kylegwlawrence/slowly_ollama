@@ -367,21 +367,21 @@ def agentic_client(
 
 
 def test_agentic_mode_full_journey(agentic_client: TestClient) -> None:
-    """Enable agentic mode → send a message → loop runs → answer
-    arrives → reload reconstructs the agentic card from persisted rows.
+    """Phase 15: agentic mode is disabled; even with the toggle on the
+    dispatcher always uses the single-agent path.
 
-    Covers the seam between every 13-phase piece:
-    - 13a/13e: agentic_mode flag persisted via POST /settings/agentic-mode
-    - 13d.3 dispatcher: routes to `_run_agentic_generation` because
-      both the toggle is on AND llama3 advertises `tools`
-    - 13d.2 orchestrator: emits iteration-start / tool-call /
-      tool-result / research-findings / review-verdict / token / done
-    - 13f historic render: GET /chats/{id} after completion shows the
-      AgenticToolBatchBlock-rendered card
+    Verifies:
+    - agentic_mode toggle still persists without error
+    - chat creation and streaming succeed via single-agent
+    - no agentic-only SSE events (iteration-start, research-findings,
+      review-verdict) are emitted
+    - the single-agent tool flow still works (tool-call → tool-result →
+      token → done)
     """
     client = agentic_client
 
-    # 1. Toggle agentic mode on.
+    # 1. Toggle agentic mode on — the toggle still works, just has no
+    # effect on dispatch.
     toggle_response = client.post(
         "/settings/agentic-mode",
         data={"enabled": "on"},
@@ -389,8 +389,7 @@ def test_agentic_mode_full_journey(agentic_client: TestClient) -> None:
     )
     assert toggle_response.status_code == 200
 
-    # 2. Create a chat with the user's first message. The composer
-    # POST kicks off the agentic generation as a side effect.
+    # 2. Create a chat with the user's first message.
     created = client.post(
         "/chats", data={"model": "llama3", "content": "what time is it?"}
     )
@@ -399,82 +398,33 @@ def test_agentic_mode_full_journey(agentic_client: TestClient) -> None:
         re.search(r'data-chat-id="(\d+)"', created.text).group(1)
     )
 
-    # 3. Drive the SSE stream. The orchestrator's full event sequence
-    # for a one-iteration happy path is:
-    #   iteration-start → tool-call → tool-result →
-    #   research-findings → review-verdict → token* → done
+    # 3. Drive the SSE stream — single-agent path.
     stream = client.get(f"/chats/{chat_id}/stream")
     assert stream.status_code == 200
 
-    # Every named event the orchestrator emits must appear.
-    for event_name in (
-        "iteration-start",
-        "tool-call",
-        "tool-result",
-        "research-findings",
-        "review-verdict",
-        "token",
-        "done",
-    ):
-        assert f"event: {event_name}" in stream.text, (
-            f"missing SSE event '{event_name}' in stream payload"
-        )
+    # Agentic-only events must NOT appear.
+    assert "event: iteration-start" not in stream.text
+    assert "event: research-findings" not in stream.text
+    assert "event: review-verdict" not in stream.text
 
-    # Order pins the orchestrator's contract. Note: `tool-call`
-    # appears TWICE in the stream — first carrying the empty agentic
-    # card shell (before iteration-start, as the OOB swap target),
-    # then again for each actual tool invocation (after
-    # iteration-start). We don't pin `tool-call`'s position because
-    # the shell-emit precedes iteration-start by design. The
-    # invariants that matter:
-    #   - The iteration header lands before its findings (otherwise
-    #     the findings row has no card to insert into).
-    #   - Findings precede the review verdict for that iteration.
-    #   - The verdict closes the loop before generation tokens stream.
-    #   - `done` is last.
-    indices = {
-        name: stream.text.index(f"event: {name}")
-        for name in (
-            "iteration-start",
-            "research-findings",
-            "review-verdict",
-            "token",
-            "done",
-        )
-    }
-    assert indices["iteration-start"] < indices["research-findings"]
-    assert indices["research-findings"] < indices["review-verdict"]
-    assert indices["review-verdict"] < indices["token"]
-    assert indices["token"] < indices["done"]
-    # Final assistant text appears in the done event's payload.
-    assert "The answer is 42." in stream.text
+    # Single-agent events must appear.
+    assert "event: tool-call" in stream.text
+    assert "event: tool-result" in stream.text
+    assert "event: token" in stream.text
+    assert "event: done" in stream.text
 
-    # 4. Persisted message sequence matches the agentic-mode shape.
+    # 4. Panel renders normally via the single-agent historic path.
     panel = client.get(f"/chats/{chat_id}")
     assert panel.status_code == 200
-    # Historic render uses the agentic card template — the
-    # `tool-card--agentic` modifier class is its distinguishing
-    # marker vs. the single-agent shell.
-    assert "tool-card--agentic" in panel.text
-    # Iteration header surfaces as a <li> with the data-attribute.
-    assert 'data-iteration="1"' in panel.text
-    # Findings + passed-verdict markers are present.
-    assert "tool-card__findings" in panel.text
-    assert "tool-card__verdict--passed" in panel.text
-    # Assistant bubble carries the final answer.
     assert "The answer is 42." in panel.text
 
 
 def test_agentic_mode_dispatcher_falls_back_when_model_lacks_tools(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Even with agentic mode globally on, a chat pinned to a
-    non-tool-capable model uses the single-agent producer. The chat
-    panel surfaces a banner explaining why.
-
-    Companion to `test_agentic_mode_full_journey`'s happy path —
-    pins the silent-fallback contract that's documented as a locked
-    decision in `docs/plans/phase13-agentic-loop.md`.
+    """Phase 15: agentic mode is disabled; non-tool-capable models still
+    work via the single-agent path. The agentic-skipped banner is no
+    longer shown (agentic_skipped is hardcoded False).
     """
     monkeypatch.setenv("DB_PATH", str(tmp_path / "chats.db"))
     monkeypatch.setenv("OLLAMA_HOST", "http://test")
@@ -540,10 +490,10 @@ def test_agentic_mode_dispatcher_falls_back_when_model_lacks_tools(
             # The plain stream answer landed.
             assert "plain reply" in stream.text
 
-            # Reload — the chat panel renders the agentic-skipped
-            # banner naming the model.
+            # Reload — single-agent panel renders without agentic banner.
             panel = client.get(f"/chats/{chat_id}")
-            assert "chat-panel__agentic-skipped" in panel.text
+            assert "chat-panel__agentic-skipped" not in panel.text
+            # The model name still appears in the chat header.
             assert "llama3" in panel.text
     finally:
         app.dependency_overrides.clear()

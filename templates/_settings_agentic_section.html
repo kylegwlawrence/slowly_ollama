@@ -1,5 +1,6 @@
 {# Phase 13e: agentic-mode toggle + read-only system prompts.
    Phase 14: per-agent sub-toggles (reviewer, generator).
+   Phase 15: agentic_available=False greys out the section ("Coming soon").
 
    Included by `_settings.html` on initial render AND returned
    standalone from `POST /settings/agentic-mode`,
@@ -8,6 +9,7 @@
    DOM so the swap is seamless.
 
    Context vars:
+     agentic_available: bool — False = disabled "Coming soon" state.
      agentic_mode_on: bool — current master toggle state.
      review_enabled: bool — reviewer participates (phase 14).
      generator_enabled: bool — generator participates (phase 14).
@@ -18,7 +20,12 @@
    contents replace the section in place. The `enabled` form field is
    sent only when the checkbox is checked (standard HTML form
    convention) — the route uses presence as the toggle. #}
-<h2 class="settings__section-title">Agentic mode</h2>
+<h2 class="settings__section-title">
+  Agentic mode
+  {% if not agentic_available %}
+  <span class="settings__coming-soon">Coming soon</span>
+  {% endif %}
+</h2>
 <p class="settings__section-help">
   When on, every assistant turn runs a research → review → generation
   loop instead of a single tool-calling pass. Slower (3+ Ollama
@@ -26,6 +33,7 @@
   responses. Requires a tool-capable model.
 </p>
 
+<fieldset {% if not agentic_available %}disabled class="agentic-fieldset--disabled"{% endif %}>
 <label class="agentic-mode-toggle">
   <input type="checkbox" name="enabled"
          {% if agentic_mode_on %}checked{% endif %}
@@ -92,3 +100,4 @@
   </div>
 </details>
 {% endif %}
+</fieldset>

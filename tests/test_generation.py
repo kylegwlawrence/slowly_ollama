@@ -1021,18 +1021,23 @@ def _capture_producer_calls(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_dispatcher_routes_to_agentic_when_enabled_and_tool_capable(
+async def test_dispatcher_always_routes_to_single_agent(
     tmp_path, monkeypatch,
 ):
-    """agentic_mode on + model_supports_tools True → agentic producer."""
+    """Phase 15: dispatcher always uses single-agent regardless of agentic_mode.
+
+    Even with agentic_mode on and a tool-capable model, the dispatcher
+    never routes to _run_agentic_generation — the agentic path is
+    disabled (greyed out in the UI) until a future phase re-enables it.
+    """
     db_path = tmp_path / "chats.db"
     conv_id = _setup_chat(db_path)
 
-    # Enable agentic mode in the DB.
+    # Enable agentic mode in the DB — should have no effect.
     with open_connection(db_path) as conn:
         queries.set_agentic_mode(conn, True)
 
-    # Model is tool-capable.
+    # Model is tool-capable — should have no effect on dispatch.
     async def _capable(_client, _name):
         return True
     monkeypatch.setattr(ollama, "model_supports_tools", _capable)
@@ -1048,11 +1053,11 @@ async def test_dispatcher_routes_to_agentic_when_enabled_and_tool_capable(
         )
         await state.task
 
-    assert agentic_calls["count"] == 1
-    assert single_calls["count"] == 0
-    # The kwargs reach the producer unchanged.
-    assert agentic_calls["last_kwargs"]["conversation_id"] == conv_id
-    assert agentic_calls["last_kwargs"]["on_complete"] == "append"
+    # Phase 15: agentic dispatch disabled — always single-agent.
+    assert agentic_calls["count"] == 0
+    assert single_calls["count"] == 1
+    assert single_calls["last_kwargs"]["conversation_id"] == conv_id
+    assert single_calls["last_kwargs"]["on_complete"] == "append"
 
 
 @pytest.mark.asyncio
@@ -1161,11 +1166,15 @@ async def test_dispatcher_in_flight_guard_fires_before_first_await(
 
 
 @pytest.mark.asyncio
-async def test_dispatcher_passes_subagent_flags_to_agentic_producer(
+async def test_dispatcher_ignores_subagent_flags(
     tmp_path, monkeypatch,
 ):
-    """start_generation reads review_enabled/generator_enabled from DB
-    and passes them as kwargs to _run_agentic_generation."""
+    """Phase 15: subagent flags have no effect; dispatcher always uses single-agent.
+
+    review_enabled/generator_enabled in the DB are preserved for when
+    the agentic loop is re-enabled, but start_generation no longer
+    reads or passes them.
+    """
     db_path = tmp_path / "chats.db"
     conv_id = _setup_chat(db_path)
 
@@ -1178,7 +1187,7 @@ async def test_dispatcher_passes_subagent_flags_to_agentic_producer(
         return True
     monkeypatch.setattr(ollama, "model_supports_tools", _capable)
 
-    agentic_calls, _single_calls = _capture_producer_calls(monkeypatch)
+    agentic_calls, single_calls = _capture_producer_calls(monkeypatch)
 
     with open_connection(db_path) as db:
         state = await generation.start_generation(
@@ -1189,6 +1198,6 @@ async def test_dispatcher_passes_subagent_flags_to_agentic_producer(
         )
         await state.task
 
-    assert agentic_calls["count"] == 1
-    assert agentic_calls["last_kwargs"]["review_enabled"] is False
-    assert agentic_calls["last_kwargs"]["generator_enabled"] is True
+    # Agentic path never fires regardless of settings.
+    assert agentic_calls["count"] == 0
+    assert single_calls["count"] == 1

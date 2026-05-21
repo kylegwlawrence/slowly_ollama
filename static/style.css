@@ -399,7 +399,8 @@ body {
 .chat-panel__header {
   display: flex;
   align-items: center;
-  gap: var(--space-md);
+  flex-wrap: wrap;
+  gap: var(--space-sm);
   padding: var(--space-md) var(--space-xl);
   background: var(--bg);
   border-bottom: 1px solid var(--border);
@@ -1200,4 +1201,99 @@ body {
   white-space: pre-wrap;
   color: var(--text-primary);
   margin: 0;
+}
+
+/* ===== Phase 15: per-chat tool chips ==================================== */
+
+.tool-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  align-items: center;
+}
+
+.tool-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-pill);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid transparent;
+  background: none;
+  line-height: 1;
+  margin: 0;
+  width: auto;
+  transition: background 0.15s ease, color 0.15s ease,
+              border-color 0.15s ease, opacity 0.15s ease;
+}
+
+.tool-chip--on {
+  background: var(--accent-tonal);
+  color: var(--accent-tonal-text);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.tool-chip--on:hover {
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
+  border-color: var(--accent);
+}
+
+.tool-chip--off {
+  background: var(--surface);
+  color: var(--text-secondary);
+  border-color: var(--border);
+  opacity: 0.65;
+}
+
+.tool-chip--off:hover {
+  opacity: 1;
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.tool-chip__check {
+  font-size: 11px;
+}
+
+.tool-chip__label {
+  white-space: nowrap;
+}
+
+/* Composer chips: the checkbox carries the value; visually hidden. */
+.tool-chip__checkbox {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+/* Chip row in the composer sits between the input pill and the model toolbar */
+.composer__form .tool-chips {
+  padding: var(--space-xs) 0;
+}
+
+/* ===== Phase 15: settings agentic "Coming soon" ========================= */
+
+.settings__coming-soon {
+  display: inline-block;
+  margin-left: var(--space-sm);
+  padding: var(--space-xs) var(--space-sm);
+  background: var(--surface-hover);
+  color: var(--text-secondary);
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 400;
+  vertical-align: middle;
+}
+
+.agentic-fieldset--disabled {
+  border: none;
+  padding: 0;
+  margin: 0;
+  opacity: 0.5;
+  pointer-events: none;
 }

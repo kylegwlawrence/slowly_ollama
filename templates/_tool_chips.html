@@ -1,0 +1,43 @@
+{# Per-chat tool chip bar.
+
+   Rendered in two contexts:
+     - Chat panel header (is_composer=False): each chip is a <button>
+       that hx-posts to toggle the tool. The full bar is returned as
+       innerHTML into #chat-tool-chips on each toggle.
+     - Empty-state composer (is_composer=True): each chip is a <label>
+       wrapping a hidden checkbox. Clicking toggles the CSS class
+       client-side (app.js); the checkbox carries the tool name to
+       POST /chats as `enabled_tools` form fields.
+
+   Context vars:
+     supports_tools: bool       — False → render nothing.
+     tool_states: list[ChatToolState]
+     conversation: Conversation | None — None in composer context.
+     is_composer: bool          — True = label/checkbox, False = button.
+#}
+{% if supports_tools and tool_states %}
+<div class="tool-chips">
+  {% for state in tool_states %}
+    {% if is_composer %}
+    <label class="tool-chip {% if state.enabled %}tool-chip--on{% else %}tool-chip--off{% endif %}"
+           data-tool="{{ state.tool_name }}">
+      <input type="checkbox"
+             name="enabled_tools"
+             value="{{ state.tool_name }}"
+             {% if state.enabled %}checked{% endif %}
+             class="tool-chip__checkbox">
+      <span class="tool-chip__check">{% if state.enabled %}✓{% else %}✕{% endif %}</span>
+      <span class="tool-chip__label">{{ state.tool_name }}</span>
+    </label>
+    {% else %}
+    <button class="tool-chip {% if state.enabled %}tool-chip--on{% else %}tool-chip--off{% endif %}"
+            hx-post="/chats/{{ conversation.id }}/tools/{{ state.tool_name }}"
+            hx-target="#chat-tool-chips"
+            hx-swap="innerHTML">
+      <span class="tool-chip__check">{% if state.enabled %}✓{% else %}✕{% endif %}</span>
+      <span class="tool-chip__label">{{ state.tool_name }}</span>
+    </button>
+    {% endif %}
+  {% endfor %}
+</div>
+{% endif %}

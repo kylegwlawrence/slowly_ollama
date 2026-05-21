@@ -73,12 +73,13 @@ def test_initialize_is_idempotent(initialized_db: Path) -> None:
             )
         }
     # Phase 12a added rag_servers; phase 13a added app_settings;
-    # conversations + messages predate both.
+    # phase 15 added chat_tool_settings; conversations + messages predate all.
     assert tables == {
         "conversations",
         "messages",
         "rag_servers",
         "app_settings",
+        "chat_tool_settings",
     }
 
 

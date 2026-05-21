@@ -594,3 +594,133 @@ def set_generator_enabled(conn: sqlite3.Connection, enabled: bool) -> None:
             f"{type(enabled).__name__}"
         )
     set_setting(conn, _GENERATOR_ENABLED_KEY, "on" if enabled else "off")
+
+
+# ---------------------------------------------------------------------------
+# Phase 15: per-chat tool enablement
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ChatToolState:
+    """Enabled/disabled state of one tool for one conversation.
+
+    Attributes:
+        tool_name: Registered name of the tool (matches TOOLS key).
+        enabled: True when the tool is active for this conversation.
+    """
+
+    tool_name: str
+    enabled: bool
+
+
+def seed_chat_tools(
+    conn: sqlite3.Connection,
+    conversation_id: int,
+    tool_names: list[str],
+    *,
+    enabled_names: set[str] | None = None,
+) -> None:
+    """Insert default tool rows for a new conversation.
+
+    Uses INSERT OR IGNORE so re-runs are safe (idempotent). Called at
+    chat creation time so every new chat starts with explicit rows.
+
+    Args:
+        conn: Open SQLite connection.
+        conversation_id: Id of the newly-created conversation.
+        tool_names: All currently-registered tool names (from TOOLS.keys()).
+        enabled_names: When provided, only these names are seeded as
+            enabled=1. All others get enabled=0. None → all tools enabled.
+    """
+    with conn:
+        for name in tool_names:
+            is_on = 1 if (enabled_names is None or name in enabled_names) else 0
+            conn.execute(
+                "INSERT OR IGNORE INTO chat_tool_settings"
+                " (conversation_id, tool_name, enabled) VALUES (?, ?, ?);",
+                (conversation_id, name, is_on),
+            )
+
+
+def get_chat_tool_states(
+    conn: sqlite3.Connection,
+    conversation_id: int,
+    all_tool_names: list[str],
+) -> list[ChatToolState]:
+    """Return enabled/disabled state for every tool in all_tool_names.
+
+    Tools with no row (unseeded conversations) default to enabled=True so
+    existing chats behave as if all tools are on without needing a migration.
+
+    Args:
+        conn: Open SQLite connection.
+        conversation_id: Conversation to look up.
+        all_tool_names: Canonical list from TOOLS.keys().
+
+    Returns:
+        One ChatToolState per entry in all_tool_names, in the same order.
+    """
+    rows = conn.execute(
+        "SELECT tool_name, enabled FROM chat_tool_settings"
+        " WHERE conversation_id = ?;",
+        (conversation_id,),
+    ).fetchall()
+    stored = {row["tool_name"]: bool(row["enabled"]) for row in rows}
+    return [
+        ChatToolState(tool_name=name, enabled=stored.get(name, True))
+        for name in all_tool_names
+    ]
+
+
+def toggle_chat_tool(
+    conn: sqlite3.Connection,
+    conversation_id: int,
+    tool_name: str,
+) -> bool:
+    """Flip the enabled state of one tool for one conversation.
+
+    Unseeded tools are treated as currently on, so the first toggle
+    inserts a disabled row (on → off). Subsequent toggles XOR-flip the
+    stored value.
+
+    Args:
+        conn: Open SQLite connection.
+        conversation_id: Conversation whose tool to toggle.
+        tool_name: Name of the tool to toggle.
+
+    Returns:
+        True if the tool is now enabled, False if now disabled.
+    """
+    with conn:
+        row = conn.execute(
+            "INSERT INTO chat_tool_settings (conversation_id, tool_name, enabled)"
+            " VALUES (?, ?, 0)"
+            " ON CONFLICT(conversation_id, tool_name)"
+            " DO UPDATE SET enabled = 1 - enabled"
+            " RETURNING enabled;",
+            (conversation_id, tool_name),
+        ).fetchone()
+    return bool(row["enabled"])
+
+
+def get_enabled_tool_names(
+    conn: sqlite3.Connection,
+    conversation_id: int,
+    all_tool_names: list[str],
+) -> list[str]:
+    """Return only the tool names that are enabled for a conversation.
+
+    Used by _run_generation to build the filtered tools payload. Unseeded
+    tools are treated as enabled.
+
+    Args:
+        conn: Open SQLite connection.
+        conversation_id: Conversation to look up.
+        all_tool_names: Canonical list from TOOLS.keys().
+
+    Returns:
+        Subset of all_tool_names where enabled (including unseeded tools).
+    """
+    states = get_chat_tool_states(conn, conversation_id, all_tool_names)
+    return [s.tool_name for s in states if s.enabled]
