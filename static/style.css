@@ -296,9 +296,7 @@ body {
   color: var(--text-primary);
   text-decoration: none;
   font-size: 14px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  word-break: break-word;
   padding: var(--space-xs) var(--space-sm);
 }
 
