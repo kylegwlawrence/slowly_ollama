@@ -14,8 +14,8 @@ end-user setup and `docs/plans/PLAN.md` for the build-time roadmap.
 | Question | Read this |
 |---|---|
 | What are we building and why? | `docs/plans/PLAN.md` |
-| What's the latest shipped phase? | `docs/plans/phase13-agentic-loop.md` + retro |
-| What did we learn from prior phases? | `docs/retros/` (per-phase, 6 through 13) |
+| What's the latest shipped phase? | `docs/plans/phase16-invokable-agents.md` + retro |
+| What did we learn from prior phases? | `docs/retros/` (per-phase, 6 through 16) |
 | Accumulated conventions + gotchas | `docs/CONVENTIONS.md` |
 | Recent code reviews + cleanup notes | `docs/code_reviews/` |
 | Test strategy + how to run | `tests/README.md` |
@@ -43,34 +43,32 @@ controlled artifacts, not workspace scratch.
   of `_run_generation`, moved tool-card OOB rendering into
   `app/render.py`, and added `encode_tool_call` / `decode_tool_call`
   envelopes — all dependencies for the phase 13 integration.
-- **Phase 13 (agentic multi-agent loop) complete.** Opt-in
-  research → review → generation loop behind a global toggle in
-  `/settings`. Sub-phases 13a → 13g shipped: `app_settings` table +
-  Role expansion for `research_findings` / `review_verdict`; the
-  `app/agents/` module with hardcoded system prompts; verdict tools
-  (`mark_passed` / `request_more_research`) in a separate registry
-  so research can't short-circuit the loop; `_run_agentic_generation`
-  orchestrator with 3-iteration cap and 5-tool-call-per-pass cap;
-  agentic dispatcher in `start_generation` that picks between
-  single-agent and agentic producers based on toggle + model tool
-  capability; `/settings` toggle + read-only prompt display;
-  historic-replay `AgenticToolBatchBlock` with iteration-scoped row
-  ids matching the live SSE path's DOM; agentic-skipped banner above
-  `#messages` when the toggle is on but the model can't do tools.
-  Single-agent path (toggle off) is byte-identical to phase 12. See
-  `docs/retros/phase13-agentic-loop.md` for the full retrospective.
-- **Phase 14 (per-agent toggles) complete.** Two new sub-toggles —
-  **Reviewer agent** and **Generator agent** — nested under the
-  existing master toggle in `/settings`. When reviewer is off,
-  research runs a single pass with no iteration or verdict. When
-  generator is off, research findings are used verbatim as the
-  assistant bubble (no synthesis pass). Both default on so enabling
-  the master toggle for the first time keeps Phase 13 full-loop
-  behavior. Storage: two new `app_settings` rows (`review_enabled`,
-  `generator_enabled`). Four toggle configurations are tested
-  end-to-end. See `docs/retros/phase14-per-agent-toggles.md`.
-- **419/419 tests passing**; coverage 97% on `app/` + `main.py`
-  (`app/render.py` at 100%, `app/queries.py` at 100%).
+- **Phases 13–14 (automatic agentic loop) — REMOVED in Phase 16.** The
+  opt-in research → review → generation loop, its global + per-agent
+  (`review_enabled` / `generator_enabled`) toggles, verdict tools, agentic
+  SSE events / render blocks, and the `research_findings` / `review_verdict`
+  roles were all deleted when Phase 16 replaced the concept. The retros
+  (`docs/retros/phase13-agentic-loop.md`, `phase14-per-agent-toggles.md`)
+  remain as history; none of that code still exists.
+- **Phase 15 / 15b (per-chat tool + RAG-server chips) complete.** Per-chat
+  chips toggle which tools and which RAG servers a chat may use
+  (`chat_tool_settings` / `chat_rag_settings`). `query_rag` is gated solely
+  by the per-server chips (≥1 enabled server), not a tool chip. See
+  `docs/retros/phase15b-per-rag-server-chips.md`.
+- **Phase 16 (user-invoked agents) complete.** Replaced the automatic loop
+  with named agents the user invokes by hand from a composer dropdown;
+  "Normal" (plain chat) is the default. Code registry in `app/agents/`
+  (`AgentSpec` + `AGENTS`): an agent = model + system prompt + tool allowlist
+  + Ollama `think` flag. Shipped roster: **Research** (`granite4.1:8b`, tools
+  `current_time` + `query_rag`) and **Content Generator** (`granite4.1:8b`,
+  no tools); both `think=False`. An invoked agent reuses `_run_generation`
+  parameterized by those four things — no new SSE events, roles, or render
+  blocks. Per-chat `active_agent` persisted (+ migration), resolved per turn
+  via `_agent_overrides`; new `POST /chats/{id}/agent`; header indicator +
+  composer picker (greys the model select). Agents hand off through shared
+  conversation history. See `docs/retros/phase16-invokable-agents.md`.
+- **425/425 tests passing**; coverage 98% on `app/` + `main.py`
+  (`app/agents`, `app/render.py`, `app/queries.py` at 100%).
 
 ## Working rules (override Claude defaults where they conflict)
 
@@ -133,20 +131,18 @@ app/
   config.py              # .env-backed accessors (OLLAMA_HOST, DB_PATH)
   connection.py          # SQLite connection opener (WAL, foreign_keys)
   db.py                  # Schema init + idempotent migrations
-  queries.py             # All SQL queries; `Role` literal enforces validity; app_settings helpers (phase 13a)
+  queries.py             # All SQL queries; `Role` literal; active_agent + per-chat chip + app_settings helpers
   dependencies.py        # `DB` / `OllamaClient` Annotated[..., Depends(...)] aliases
   ollama.py              # httpx client + streaming /api/chat + /api/tags + /api/show
   rag_servers.py         # RAG server CRUD queries (phase 12c)
   rag_health.py          # /health probe for newly-added RAG servers (phase 12e)
   templates.py           # Jinja2 instance + markdown filter (shared by routes/generation/render)
   routes.py              # Thin HTTP layer — every route returns HTML or SSE-of-HTML
-  generation.py          # Background-task producer for single-agent SSE (phase 12g) + dispatcher (phase 13d.3) + shared helpers (emit_ollama_error, maybe_persist_partial, signal_done)
-  render.py              # Render-shaped views + tool-card OOB HTML helpers (single-agent + agentic-mode variants)
-  agents/                # Phase 13 multi-agent loop
-    __init__.py          # Re-exports + shared `AGENTIC_ITERATION_CAP` (3)
-    prompts.py           # Hardcoded research / review / generation system prompts
-    verdict_tools.py     # mark_passed / request_more_research tool specs + parse_verdict; separate registry from app.tools
-    loop.py              # `_run_agentic_generation` orchestrator
+  generation.py          # Single-agent SSE producer; start_generation/_run_generation take per-agent overrides (model/prompt/tools/think); shared helpers (emit_ollama_error, maybe_persist_partial, signal_done)
+  render.py              # Render-shaped views + tool-card OOB HTML helpers
+  agents/                # Phase 16 user-invoked agent registry
+    __init__.py          # AgentSpec + AGENTS registry + get_agent / list_agents
+    prompts.py           # Hardcoded per-agent system prompts (research, content generator)
   tools/
     __init__.py          # @tool decorator, ToolSpec, registry, run_tool, tool_specs_for_ollama, encode/decode_tool_call, encode/decode_tool_result
     builtins.py          # current_time tool
@@ -155,10 +151,10 @@ templates/               # Jinja fragments — every endpoint returns one of the
 static/                  # Pico, HTMX, htmx-ext-sse, Material Symbols, style.css
 tests/
   conftest.py            # Autouse module-state isolation (live_generations, capability cache)
-  test_*.py              # Per-module unit tests + integration journeys (single-agent + agentic happy paths)
+  test_*.py              # Per-module unit tests + integration journeys (single-agent + agent-invocation)
 docs/
-  plans/                 # PLAN.md + per-phase plans (phase8 through phase13)
-  retros/                # Per-phase retrospectives (phase6 through phase13)
+  plans/                 # PLAN.md + per-phase plans (phase8 through phase16)
+  retros/                # Per-phase retrospectives (phase6 through phase16)
   code_reviews/          # Dated cleanup reviews (e.g., pre-phase-13)
   CONVENTIONS.md         # Distilled lessons — conventions, gotchas, patterns
 ```
@@ -182,24 +178,21 @@ The lifespan in `main.py` opens one SQLite connection and one `httpx.AsyncClient
 and stores both on `app.state`. Routes get them via the `DB` / `OllamaClient`
 `Annotated` aliases in `app/dependencies.py`. Every endpoint returns either an
 HTML fragment (HTMX swaps it in) or an SSE stream of named events
-(`token` / `tool-call` / `tool-result` / `title` / `done` / `error`, plus
-phase 13's `iteration-start` / `research-findings` / `review-verdict` /
-`max-iterations`) carrying HTML payloads. The chat-send flow is split into
-POST (save user message, start a background `asyncio.Task` via
-`start_generation` in `app/generation.py`, return assistant placeholder) +
-GET (attach as a consumer via `consume_generation`). `start_generation` is
-the dispatcher (phase 13d.3): it routes to `_run_agentic_generation` in
-`app/agents/loop.py` when the global `agentic_mode` setting is on AND the
-chat's model advertises `tools` capability, else to `_run_generation`
-(unchanged single-agent path). The producer task is owned by the
-module-level `live_generations` dict, NOT the HTTP request — a page reload
-cancels the consumer but the producer keeps running, so reloads attach as
-fresh consumers that replay the event log from index 0. Each turn persists
-its own message row (`role` is one of `user` / `assistant` / `tool_call` /
-`tool_result` / `research_findings` / `review_verdict`); the producer emits
-events for the placeholder to consume. Single-agent tool execution caps at
-5 iterations per turn; agentic mode caps at 3 research↔review iterations
-with 5 tool calls per pass.
+(`token` / `tool-call` / `tool-result` / `title` / `done` / `error`)
+carrying HTML payloads. The chat-send flow is split into POST (save user
+message, start a background `asyncio.Task` via `start_generation` in
+`app/generation.py`, return assistant placeholder) + GET (attach as a
+consumer via `consume_generation`). `start_generation` always spawns the
+single-agent producer `_run_generation`; when the user has invoked a named
+agent (phase 16), the route passes that agent's model, system prompt, tool
+allowlist, and `think` flag through as overrides (resolved by
+`_agent_overrides`), otherwise it's plain chat. The producer task is owned
+by the module-level `live_generations` dict, NOT the HTTP request — a page
+reload cancels the consumer but the producer keeps running, so reloads
+attach as fresh consumers that replay the event log from index 0. Each turn
+persists its own message row (`role` is one of `user` / `assistant` /
+`tool_call` / `tool_result`); the producer emits events for the placeholder
+to consume. Tool execution caps at 5 iterations per turn.
 
 ## Key gotchas (one-liners; deep dives in `docs/CONVENTIONS.md`)
 
@@ -224,19 +217,10 @@ with 5 tool calls per pass.
   — `.clear()` wipes overrides added by other fixtures.
 - **Tests pin contracts (`data-*` attrs, `hx-*` attrs), not implementations**
   (DOM tree shape). Substring assertions are surprisingly robust.
-- **Live and historic DOM ids must match** for the agentic tool card.
-  The live SSE path emits row ids `{card_id}-iter-{N}-row-{M}`; the
-  historic-render template reconstructs the same format from persisted
-  rows so a mid-turn reload's reconstructed DOM lines up with any
-  not-yet-consumed SSE events still arriving from the live producer.
-- **The max-iterations marker is a SIBLING of the summary span**, not a
-  child. The summary span gets outerHTML-swapped on the `done` event; a
-  child marker would vanish. The marker has its own `<span id="…-max-marker">`
-  planted at shell-render time and filled by an OOB swap when the cap
-  hits — sibling position means the badge survives all later swaps.
-- **Shared constants belong in `app/agents/__init__.py`**, not in
-  `loop.py`. `AGENTIC_ITERATION_CAP` is read by both `loop.py` and
-  `render.py`; putting it in `loop.py` would cycle (loop imports render).
+- **Agent `think=True` 400s on a non-thinking model.** Ollama rejects
+  `think: true` for a model without the capability; `think: false` is safe
+  anywhere. So `AgentSpec.think` defaults False — set True only when the
+  agent's assigned model is thinking-capable (phase 16).
 - **Coverage's 99% ceiling is intentional.** `get_ollama_client`'s body is
   structurally unreachable in tests because every test overrides it via
   `app.dependency_overrides`. Don't chase 100%; document the ceiling instead
