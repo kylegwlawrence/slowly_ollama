@@ -1503,3 +1503,89 @@ async def test_generation_filters_query_rag_source_desc_to_enabled_servers(
     )
     assert "arxiv" in source_desc
     assert "pubmed" not in source_desc
+
+
+@pytest.mark.asyncio
+async def test_query_rag_sent_even_when_tool_chip_disabled(
+    tmp_path, monkeypatch
+):
+    """query_rag is gated ONLY by the per-server chips, never by its
+    chat_tool_settings flag.
+
+    Regression for the phase-15b gap: the composer has no query_rag chip,
+    so it always seeds query_rag as disabled in chat_tool_settings — which
+    previously filtered it out of EVERY browser-created chat even though
+    the per-server chips were on. This pins that a disabled tool-chip flag
+    no longer suppresses query_rag when ≥1 RAG server is enabled.
+    """
+    from app import rag_servers as _rs
+    from app.tools import TOOLS
+
+    db_path = tmp_path / "chats.db"
+    conv_id = _setup_chat(db_path)
+    monkeypatch.setenv("DB_PATH", str(db_path))
+
+    with open_connection(db_path) as conn:
+        _rs.create_server(conn, "arxiv", "http://fake/arxiv")
+        # Mimic the browser composer exactly: seed every tool, but only
+        # current_time enabled — query_rag lands as enabled=0. RAG servers
+        # are left unseeded for the chat, which counts as enabled.
+        from app.tools.rag import refresh_query_rag_registration
+        refresh_query_rag_registration()  # registers query_rag now arxiv exists
+        queries.seed_chat_tools(
+            conn, conv_id, list(TOOLS.keys()), enabled_names={"current_time"}
+        )
+
+    # Sanity: the tool chip really is off for this chat.
+    with open_connection(db_path) as conn:
+        enabled = queries.get_enabled_tool_names(
+            conn, conv_id, list(TOOLS.keys())
+        )
+    assert "query_rag" not in enabled, "precondition: query_rag chip is off"
+
+    captured_tools: list[list] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content or b"{}")
+        if not body.get("stream"):
+            captured_tools.append(body.get("tools") or [])
+            return httpx.Response(
+                200, json={"message": {"content": "", "tool_calls": []}}
+            )
+        return httpx.Response(
+            200,
+            content=(
+                b'{"message":{"content":"ok"},"done":false}\n'
+                b'{"message":{"content":""},"done":true}\n'
+            ),
+        )
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://test"
+    )
+
+    async def _capable(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr(ollama, "model_supports_tools", _capable)
+
+    with open_connection(db_path) as db:
+        state = await generation.start_generation(
+            client=client,
+            db=db,
+            conversation_id=conv_id,
+            model="llama3",
+            history=queries.list_messages(db, conv_id),
+            on_complete="append",
+        )
+        await state.task
+
+    assert captured_tools, "expected at least one non-stream probe"
+    tool_names_sent = [
+        t["function"]["name"]
+        for call_tools in captured_tools
+        for t in call_tools
+    ]
+    # Despite the disabled tool chip, query_rag is sent because arxiv is
+    # enabled for the chat.
+    assert "query_rag" in tool_names_sent

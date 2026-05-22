@@ -580,9 +580,12 @@ async def _run_generation(
     _enabled_specs: list[dict] = []
     for _spec in tool_specs_for_ollama():
         _name = _spec["function"]["name"]
-        if _name not in _enabled_names:
-            continue
         if _name == RAG_TOOL_NAME:
+            # query_rag has no tool-chip of its own (phase 15b moved RAG
+            # control to the per-server chips), so it must NOT be gated on
+            # `_enabled_names` — the composer never seeds it enabled, which
+            # would otherwise filter it out of every chat. Its sole gate is
+            # whether any RAG server is enabled for this chat.
             if not _enabled_rag_servers:
                 continue  # All server chips off → exclude query_rag
             # Deep-copy so we don't mutate the global registry entry.
@@ -590,6 +593,10 @@ async def _run_generation(
             _spec["function"]["parameters"]["properties"]["source"]["description"] = (
                 build_source_description(_enabled_rag_servers)
             )
+            _enabled_specs.append(_spec)
+            continue
+        if _name not in _enabled_names:
+            continue
         _enabled_specs.append(_spec)
 
     tools_payload = (
