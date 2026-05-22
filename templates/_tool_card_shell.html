@@ -17,19 +17,11 @@
    The single-source-of-truth design (one helper renders the summary
    text in both contexts) keeps verb / plural / ellipsis aligned. The
    row template handles its own state branching from the ToolRowView. #}
-{# `agentic` (phase 13d, defaults to false) adds the `tool-card--agentic`
-   modifier class for CSS hooks AND a sentinel `<span id="{card_id}-max-marker">`
-   inside the summary. The orchestrator fills the sentinel via a tiny
-   outerHTML OOB swap when the loop hits its iteration cap, so the
-   max-iterations badge surfaces without re-rendering the whole card. #}
-<details id="{{ card_id }}" class="tool-card{% if agentic|default(false) %} tool-card--agentic{% endif %}"
+<details id="{{ card_id }}" class="tool-card"
          {%- if swap_oob %} hx-swap-oob="{{ swap_oob }}"{% endif %}>
   <summary class="tool-card__summary">
     <span class="material-symbols-outlined">build</span>
     <span id="{{ summary_id }}">{{ summary_text }}</span>
-    {%- if agentic|default(false) %}
-    <span id="{{ card_id }}-max-marker"></span>
-    {%- endif %}
     <span class="tool-card__chevron material-symbols-outlined">chevron_right</span>
   </summary>
   <ul id="{{ list_id }}" class="tool-card__list">

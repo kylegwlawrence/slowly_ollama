@@ -5,7 +5,7 @@
 <section class="chat-panel" data-chat-id="{{ conversation.id }}">
   <header class="chat-panel__header">
     <h2 class="chat-panel__name">{{ conversation.name }}</h2>
-    <span class="chat-panel__model">{{ conversation.model }}</span>
+    {% include "_agent_indicator.html" %}
     <form class="chat-panel__chip-form"
           hx-patch="/chats/{{ conversation.id }}/temperature"
           hx-trigger="change"
@@ -37,34 +37,14 @@
       </div>
     </form>
     {% endif %}
-    {# Phase 15: per-chat tool chips. Only rendered when the model
-       supports tools; hidden entirely for non-tool-capable models.
-       Phase 15b: rag_server_states adds per-server RAG chips alongside
-       the non-RAG tool chips. #}
-    {% if supports_tools and (tool_states or rag_server_states) %}
-    <div id="chat-tool-chips">
-      {% set is_composer = false %}
-      {% include "_tool_chips.html" %}
-    </div>
+    {# Per-chat tool chips, rendered only when the model supports tools.
+       Wrapped in _chat_tool_chips.html so the agent-picker endpoint can
+       OOB-swap the whole #chat-tool-chips bar: the chips when Normal, the
+       active agent's read-only tool list while an agent is invoked. #}
+    {% if supports_tools %}
+    {% include "_chat_tool_chips.html" %}
     {% endif %}
   </header>
-
-  {# Phase 13g: agentic-mode silent-fallback signal. The dispatcher in
-     app/generation.py picks single-agent when the conversation's
-     pinned model can't do tools, even with agentic mode on globally.
-     This banner tells the user why this chat isn't running the
-     research → review → generation loop. Computed at render time so
-     it reacts to model swaps without persisting state per message. #}
-  {% if agentic_skipped|default(false) %}
-  <div class="chat-panel__agentic-skipped" role="status">
-    <span class="material-symbols-outlined">info</span>
-    <span>
-      Agentic mode is on, but
-      <code>{{ conversation.model }}</code>
-      doesn't support tool calls. This chat uses single-agent mode.
-    </span>
-  </div>
-  {% endif %}
 
   {# app.js keeps the bottom of the conversation in view via a
      delegated `htmx:afterSwap` listener: any swap whose target is
@@ -87,12 +67,6 @@
         {% set rows = block.rows %}
         {% set swap_oob = none %}
         {% include "_tool_card_shell.html" %}
-      {% elif block.kind == "agentic_tool_batch" %}
-        {# Phase 13f: agentic turns render via their own template.
-           Same outer <details> shell (so `.tool-card` styling
-           applies) plus iteration headers, findings rows, verdict
-           rows, and the max-iterations badge when applicable. #}
-        {% include "_agentic_tool_card.html" %}
       {% else %}
         {% set message = block.message %}
         {% include "_message.html" %}
@@ -123,6 +97,19 @@
      (textarea + send button + auto-grow / Enter-to-submit handlers)
      is in _input_pill.html so the in-chat and empty-state composers
      stay in sync. #}
+  {# Phase 16: agent picker. Its OWN form, a sibling ABOVE .message-form —
+     NOT nested inside it. If it were nested, the message form's
+     hx-post="/chats/{id}/messages" + hx-target="#messages" would inherit
+     onto the <select> (HTMX attribute inheritance). On change it posts the
+     selection; the server persists it and OOB-swaps the header indicator +
+     chip bar, so hx-swap="none" here. #}
+  <form class="message-form__agent"
+        hx-post="/chats/{{ conversation.id }}/agent"
+        hx-trigger="change"
+        hx-swap="none">
+    {% set selected_agent = conversation.active_agent %}
+    {% include "_agent_select.html" %}
+  </form>
   <form class="message-form"
         hx-post="/chats/{{ conversation.id }}/messages"
         hx-target="#messages"

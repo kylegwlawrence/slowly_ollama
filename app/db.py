@@ -42,9 +42,11 @@ CREATE TABLE IF NOT EXISTS conversations (
     -- Per-chat temperature passed to Ollama's options dict (0.0–2.0).
     -- Ollama's own default is 0.8.
     temperature  REAL NOT NULL DEFAULT 0.8,
-    -- Per-chat cap on single-agent tool-call iterations per turn (1–10).
-    -- The agentic loop's caps are separate and not stored here.
+    -- Per-chat cap on tool-call iterations per turn (1–10).
     tool_iteration_cap INTEGER NOT NULL DEFAULT 5,
+    -- Phase 16: name of the user-invoked agent active for this chat
+    -- (a key in app.agents.AGENTS), or NULL for Normal plain chat.
+    active_agent TEXT,
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL
 );
@@ -78,11 +80,11 @@ CREATE TABLE IF NOT EXISTS rag_servers (
     updated_at  TEXT NOT NULL
 );
 
--- Phase 13: global key/value app settings. One row per setting.
--- Currently the only key is `agentic_mode` ("on" or "off"); future
--- settings reuse the table. No schema migration needed when adding
--- new keys — they appear/disappear via INSERT/DELETE. Purely
--- additive on existing DBs (CREATE TABLE IF NOT EXISTS).
+-- Global key/value app settings. One row per setting (e.g.
+-- `default_temperature`). Settings reuse this table — no schema
+-- migration needed when adding new keys; they appear/disappear via
+-- INSERT/DELETE. Purely additive on existing DBs (CREATE TABLE IF
+-- NOT EXISTS).
 CREATE TABLE IF NOT EXISTS app_settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -164,6 +166,26 @@ def _ensure_conversations_tool_iteration_cap_column(conn: sqlite3.Connection) ->
         conn.execute(
             "ALTER TABLE conversations"
             " ADD COLUMN tool_iteration_cap INTEGER NOT NULL DEFAULT 5;"
+        )
+
+
+def _ensure_conversations_active_agent_column(conn: sqlite3.Connection) -> None:
+    """Backfill the ``active_agent`` column on conversations tables that pre-date phase 16.
+
+    Nullable with no default — existing chats come back as NULL, i.e. the
+    Normal (plain-chat) agent. Mirrors the temperature / tool_iteration_cap
+    backfills: ``PRAGMA table_info`` check first so the ``ALTER TABLE`` is a
+    no-op on fresh DBs where ``_SCHEMA_SQL`` already created the column.
+
+    Args:
+        conn: Open SQLite connection.
+    """
+    columns = {row[1] for row in conn.execute(
+        "PRAGMA table_info(conversations);"
+    )}
+    if "active_agent" not in columns:
+        conn.execute(
+            "ALTER TABLE conversations ADD COLUMN active_agent TEXT;"
         )
 
 
@@ -286,5 +308,8 @@ def initialize_database(path: Path | None = None) -> Path:
         # Per-chat tool-iteration cap: backfill the tool_iteration_cap
         # column on conversations tables created before this phase.
         _ensure_conversations_tool_iteration_cap_column(conn)
+        # Phase 16: backfill the active_agent column on conversations
+        # tables created before user-invoked agents existed.
+        _ensure_conversations_active_agent_column(conn)
 
     return target

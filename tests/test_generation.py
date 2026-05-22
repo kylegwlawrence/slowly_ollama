@@ -515,6 +515,198 @@ async def test_generation_injects_system_prompt_when_tools_present(
 
 
 @pytest.mark.asyncio
+async def test_generation_agent_path_injects_agent_prompt_and_filters_tools(
+    tmp_path, monkeypatch
+):
+    """An agent turn (tool_allowlist set) leads every /api/chat body with the
+    agent's own system prompt and offers only its allowlisted tools."""
+    from app.tools import builtins  # noqa: F401 — registers current_time
+
+    db_path = tmp_path / "chats.db"
+    conv_id = _setup_chat(db_path)
+    monkeypatch.setenv("DB_PATH", str(db_path))
+    with open_connection(db_path) as conn:
+        queries.rename_conversation(conn, conv_id, "locked")
+
+    captured_bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content or b"{}")
+        captured_bodies.append(body)
+        if body.get("stream"):
+            return httpx.Response(
+                200,
+                content=(
+                    b'{"message":{"content":"hi"},"done":false}\n'
+                    b'{"message":{"content":""},"done":true}\n'
+                ),
+            )
+        return httpx.Response(
+            200, json={"message": {"content": "", "tool_calls": []}}
+        )
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://test"
+    )
+
+    async def _capable(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr(ollama, "model_supports_tools", _capable)
+
+    with open_connection(db_path) as db:
+        state = await generation.start_generation(
+            client=client,
+            db=db,
+            conversation_id=conv_id,
+            model="agent-model",
+            history=queries.list_messages(db, conv_id),
+            on_complete="append",
+            system_prompt_override="You are the test agent.",
+            tool_allowlist=frozenset({"current_time"}),
+        )
+        await state.task
+
+    assert captured_bodies, "expected at least one /api/chat call"
+    probe = captured_bodies[0]
+    assert probe["messages"][0] == {
+        "role": "system",
+        "content": "You are the test agent.",
+    }
+    # Only the allowlisted tool is offered.
+    offered = {t["function"]["name"] for t in probe.get("tools") or []}
+    assert offered == {"current_time"}
+
+
+@pytest.mark.asyncio
+async def test_generation_no_tools_agent_still_injects_prompt(
+    tmp_path, monkeypatch
+):
+    """A no-tools agent (empty allowlist, e.g. Content Generator) sends no
+    tools but STILL leads with its system prompt — unlike Normal chat, which
+    omits the prompt when toolless."""
+    db_path = tmp_path / "chats.db"
+    conv_id = _setup_chat(db_path)
+    monkeypatch.setenv("DB_PATH", str(db_path))
+    with open_connection(db_path) as conn:
+        queries.rename_conversation(conn, conv_id, "locked")
+
+    captured_bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content or b"{}")
+        captured_bodies.append(body)
+        if body.get("stream"):
+            return httpx.Response(
+                200,
+                content=(
+                    b'{"message":{"content":"hi"},"done":false}\n'
+                    b'{"message":{"content":""},"done":true}\n'
+                ),
+            )
+        return httpx.Response(
+            200, json={"message": {"content": "", "tool_calls": []}}
+        )
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://test"
+    )
+
+    async def _capable(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr(ollama, "model_supports_tools", _capable)
+
+    with open_connection(db_path) as db:
+        state = await generation.start_generation(
+            client=client,
+            db=db,
+            conversation_id=conv_id,
+            model="agent-model",
+            history=queries.list_messages(db, conv_id),
+            on_complete="append",
+            system_prompt_override="Content agent here.",
+            tool_allowlist=frozenset(),
+        )
+        await state.task
+
+    assert captured_bodies
+    for body in captured_bodies:
+        assert body["messages"][0] == {
+            "role": "system",
+            "content": "Content agent here.",
+        }
+        # No tools advertised for a no-tools agent.
+        assert "tools" not in body or not body["tools"]
+
+
+def test_agent_tool_specs_empty_allowlist_returns_no_tools(tmp_path) -> None:
+    """An empty allowlist (Content Generator) offers no tools."""
+    db_path = tmp_path / "chats.db"
+    _setup_chat(db_path)
+    with open_connection(db_path) as db:
+        assert generation._agent_tool_specs(db, frozenset()) == []
+
+
+def test_agent_tool_specs_excludes_tools_outside_allowlist(tmp_path) -> None:
+    """A registered tool not named in the allowlist is filtered out."""
+    from app.tools import builtins  # noqa: F401 — registers current_time
+
+    db_path = tmp_path / "chats.db"
+    _setup_chat(db_path)
+    with open_connection(db_path) as db:
+        # current_time is registered but not in this allowlist → excluded.
+        specs = generation._agent_tool_specs(db, frozenset({"query_rag"}))
+    assert specs == []
+
+
+def test_agent_tool_specs_includes_query_rag_when_servers_configured(
+    tmp_path,
+) -> None:
+    """query_rag is offered (with a sources description) when allowlisted AND
+    a RAG server is configured."""
+    from app import rag_servers as _rs
+    from app.tools.rag import refresh_query_rag_registration
+
+    db_path = tmp_path / "chats.db"
+    _setup_chat(db_path)
+    with open_connection(db_path) as db:
+        _rs.create_server(db, "arxiv", "http://fake/arxiv")
+        refresh_query_rag_registration()
+        try:
+            specs = generation._agent_tool_specs(
+                db, frozenset({"current_time", "query_rag"})
+            )
+        finally:
+            # Restore the global registry so other tests aren't polluted.
+            refresh_query_rag_registration()
+
+    names = {s["function"]["name"] for s in specs}
+    assert "query_rag" in names
+    rag_spec = next(s for s in specs if s["function"]["name"] == "query_rag")
+    desc = rag_spec["function"]["parameters"]["properties"]["source"][
+        "description"
+    ]
+    assert "arxiv" in desc
+
+
+def test_chat_tool_specs_excludes_disabled_tool(tmp_path) -> None:
+    """A per-chat tool toggled off is excluded from the Normal-path specs."""
+    from app.tools import builtins  # noqa: F401 — registers current_time
+
+    db_path = tmp_path / "chats.db"
+    initialize_database(db_path)
+    with open_connection(db_path) as db:
+        chat = queries.create_conversation(db, name="t", model="m")
+        queries.seed_chat_tools(
+            db, chat.id, ["current_time"], enabled_names=set()
+        )
+        specs = generation._chat_tool_specs(db, chat.id)
+    names = {s["function"]["name"] for s in specs}
+    assert "current_time" not in names
+
+
+@pytest.mark.asyncio
 async def test_generation_omits_system_prompt_when_no_tools(
     tmp_path, monkeypatch
 ):
@@ -568,6 +760,66 @@ async def test_generation_omits_system_prompt_when_no_tools(
         assert all(m.get("role") != "system" for m in msgs), (
             f"system prompt leaked into the no-tools path: {body}"
         )
+
+
+@pytest.mark.asyncio
+async def test_generation_passes_think_flag_into_ollama_payload(
+    tmp_path, monkeypatch
+):
+    """An agent's think flag rides into every /api/chat body; a Normal turn
+    (think=None) omits the key so Ollama keeps its default."""
+    db_path = tmp_path / "chats.db"
+    conv_id = _setup_chat(db_path)
+    monkeypatch.setenv("DB_PATH", str(db_path))
+    with open_connection(db_path) as conn:
+        queries.rename_conversation(conn, conv_id, "locked")
+
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content or b"{}")
+        bodies.append(body)
+        if body.get("stream"):
+            return httpx.Response(
+                200,
+                content=(
+                    b'{"message":{"content":"hi"},"done":false}\n'
+                    b'{"message":{"content":""},"done":true}\n'
+                ),
+            )
+        return httpx.Response(
+            200, json={"message": {"content": "", "tool_calls": []}}
+        )
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://test"
+    )
+
+    async def _capable(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr(ollama, "model_supports_tools", _capable)
+
+    # Agent turn, think=False → every body carries "think": false.
+    with open_connection(db_path) as db:
+        state = await generation.start_generation(
+            client=client, db=db, conversation_id=conv_id, model="agent-model",
+            history=queries.list_messages(db, conv_id), on_complete="append",
+            system_prompt_override="agent", tool_allowlist=frozenset(),
+            think=False,
+        )
+        await state.task
+    assert bodies and all(b.get("think") is False for b in bodies), bodies
+
+    # Normal turn, think=None → no "think" key at all.
+    bodies.clear()
+    with open_connection(db_path) as db:
+        state = await generation.start_generation(
+            client=client, db=db, conversation_id=conv_id, model="llama3",
+            history=queries.list_messages(db, conv_id), on_complete="append",
+        )
+        await state.task
+    assert bodies and all("think" not in b for b in bodies), bodies
 
 
 # ---------------------------------------------------------------------------
@@ -1143,69 +1395,34 @@ async def test_frozen_row_after_tool_result_carries_sources_in_oob_payload(
 
 
 # ---------------------------------------------------------------------------
-# Phase 13d.3: dispatcher branching in start_generation
-#
-# The dispatcher picks between _run_generation (single-agent) and
-# app.agents.loop._run_agentic_generation based on the agentic_mode
-# setting AND the chat's model tool-capability. These tests stub both
-# producers so the test only cares about which one start_generation
-# picked — the producer bodies themselves are exercised in
-# test_agentic_loop.py and the rest of this file.
+# start_generation: producer spawn + agent-override forwarding
 # ---------------------------------------------------------------------------
+# start_generation always spawns the single-agent producer _run_generation.
+# When a named agent is invoked, the route passes the agent's model +
+# system_prompt_override + tool_allowlist through; these tests stub the
+# producer and assert only what start_generation forwarded.
 
 
-def _capture_producer_calls(monkeypatch):
-    """Stub both producers; return dicts that record invocation counts.
-
-    Each stub immediately signals done so the test's task cleanup
-    works the same as a real run.
-    """
-    from app.agents import loop as agentic_loop
-
-    agentic_calls = {"count": 0, "last_kwargs": None}
-    single_calls = {"count": 0, "last_kwargs": None}
-
-    async def fake_agentic(**kwargs):
-        agentic_calls["count"] += 1
-        agentic_calls["last_kwargs"] = kwargs
-        await generation.signal_done(kwargs["state"])
+def _capture_single_producer(monkeypatch):
+    """Stub _run_generation; return a dict recording its invocation."""
+    calls = {"count": 0, "last_kwargs": None}
 
     async def fake_single(**kwargs):
-        single_calls["count"] += 1
-        single_calls["last_kwargs"] = kwargs
+        calls["count"] += 1
+        calls["last_kwargs"] = kwargs
         await generation.signal_done(kwargs["state"])
 
-    monkeypatch.setattr(
-        agentic_loop, "_run_agentic_generation", fake_agentic,
-    )
     monkeypatch.setattr(generation, "_run_generation", fake_single)
-
-    return agentic_calls, single_calls
+    return calls
 
 
 @pytest.mark.asyncio
-async def test_dispatcher_always_routes_to_single_agent(
-    tmp_path, monkeypatch,
-):
-    """Phase 15: dispatcher always uses single-agent regardless of agentic_mode.
-
-    Even with agentic_mode on and a tool-capable model, the dispatcher
-    never routes to _run_agentic_generation — the agentic path is
-    disabled (greyed out in the UI) until a future phase re-enables it.
-    """
+async def test_start_generation_spawns_single_producer(tmp_path, monkeypatch):
+    """The producer task is _run_generation; basic kwargs are forwarded, and
+    a Normal turn carries no agent overrides."""
     db_path = tmp_path / "chats.db"
     conv_id = _setup_chat(db_path)
-
-    # Enable agentic mode in the DB — should have no effect.
-    with open_connection(db_path) as conn:
-        queries.set_agentic_mode(conn, True)
-
-    # Model is tool-capable — should have no effect on dispatch.
-    async def _capable(_client, _name):
-        return True
-    monkeypatch.setattr(ollama, "model_supports_tools", _capable)
-
-    agentic_calls, single_calls = _capture_producer_calls(monkeypatch)
+    calls = _capture_single_producer(monkeypatch)
 
     with open_connection(db_path) as db:
         state = await generation.start_generation(
@@ -1216,107 +1433,58 @@ async def test_dispatcher_always_routes_to_single_agent(
         )
         await state.task
 
-    # Phase 15: agentic dispatch disabled — always single-agent.
-    assert agentic_calls["count"] == 0
-    assert single_calls["count"] == 1
-    assert single_calls["last_kwargs"]["conversation_id"] == conv_id
-    assert single_calls["last_kwargs"]["on_complete"] == "append"
+    assert calls["count"] == 1
+    assert calls["last_kwargs"]["conversation_id"] == conv_id
+    assert calls["last_kwargs"]["on_complete"] == "append"
+    assert calls["last_kwargs"]["system_prompt_override"] is None
+    assert calls["last_kwargs"]["tool_allowlist"] is None
+    # Normal turn: no think override (Ollama default).
+    assert calls["last_kwargs"]["think"] is None
 
 
 @pytest.mark.asyncio
-async def test_dispatcher_falls_back_to_single_agent_when_model_lacks_tools(
-    tmp_path, monkeypatch,
-):
-    """agentic_mode on + model_supports_tools False → single-agent.
-
-    Silent fallback per the locked decision. The route layer (13e)
-    is responsible for surfacing a "agentic mode skipped" badge to
-    the user; the dispatcher itself just routes."""
+async def test_start_generation_forwards_agent_overrides(tmp_path, monkeypatch):
+    """An invoked agent forwards its model + system prompt + tool allowlist
+    + think flag."""
     db_path = tmp_path / "chats.db"
     conv_id = _setup_chat(db_path)
-
-    with open_connection(db_path) as conn:
-        queries.set_agentic_mode(conn, True)
-
-    # Model is NOT tool-capable.
-    async def _not_capable(_client, _name):
-        return False
-    monkeypatch.setattr(ollama, "model_supports_tools", _not_capable)
-
-    agentic_calls, single_calls = _capture_producer_calls(monkeypatch)
+    calls = _capture_single_producer(monkeypatch)
 
     with open_connection(db_path) as db:
         state = await generation.start_generation(
             client=None, db=db,
-            conversation_id=conv_id, model="llama3",
+            conversation_id=conv_id, model="agent-model",
             history=queries.list_messages(db, conv_id),
             on_complete="append",
+            system_prompt_override="be an agent",
+            tool_allowlist=frozenset({"current_time"}),
+            think=False,
         )
         await state.task
 
-    assert agentic_calls["count"] == 0
-    assert single_calls["count"] == 1
+    assert calls["count"] == 1
+    assert calls["last_kwargs"]["model"] == "agent-model"
+    assert calls["last_kwargs"]["system_prompt_override"] == "be an agent"
+    assert calls["last_kwargs"]["tool_allowlist"] == frozenset({"current_time"})
+    assert calls["last_kwargs"]["think"] is False
 
 
 @pytest.mark.asyncio
-async def test_dispatcher_routes_to_single_agent_when_agentic_off(
+async def test_start_generation_in_flight_guard_fires_before_first_await(
     tmp_path, monkeypatch,
 ):
-    """agentic_mode off → single-agent regardless of tool capability.
-
-    The default state — agentic_mode defaults to off and existing
-    chats are unaffected by phase 13's machinery."""
+    """GenerationInProgress raises SYNCHRONOUSLY before the first await, so a
+    caller's `except GenerationInProgress` still catches it even though
+    start_generation is async. The producer must never spawn in this case."""
     db_path = tmp_path / "chats.db"
     conv_id = _setup_chat(db_path)
 
-    # agentic_mode left at default (off).
-
-    # Tool-capable model — should NOT matter; the dispatcher gates
-    # on the toggle first.
-    async def _capable(_client, _name):
-        return True
-    monkeypatch.setattr(ollama, "model_supports_tools", _capable)
-
-    agentic_calls, single_calls = _capture_producer_calls(monkeypatch)
-
-    with open_connection(db_path) as db:
-        state = await generation.start_generation(
-            client=None, db=db,
-            conversation_id=conv_id, model="llama3",
-            history=queries.list_messages(db, conv_id),
-            on_complete="append",
-        )
-        await state.task
-
-    assert agentic_calls["count"] == 0
-    assert single_calls["count"] == 1
-
-
-@pytest.mark.asyncio
-async def test_dispatcher_in_flight_guard_fires_before_first_await(
-    tmp_path, monkeypatch,
-):
-    """GenerationInProgress raises SYNCHRONOUSLY before the agentic-
-    dispatch await. Pins that callers' `except GenerationInProgress`
-    still catches the exception even after start_generation became
-    async (the async change shouldn't reshape exception delivery to
-    upstream try/except blocks)."""
-    db_path = tmp_path / "chats.db"
-    conv_id = _setup_chat(db_path)
-
-    # Plant an in-flight sentinel state — same pattern as the
-    # existing test_start_generation_rejects_in_flight_duplicate.
     sentinel = generation.GenerationState(conversation_id=conv_id)
-    # Don't set done — leave it "in flight" so the guard fires.
     generation.live_generations[conv_id] = sentinel
 
-    # Make model_supports_tools raise if reached — pins that the
-    # guard truly fires BEFORE the dispatcher await.
-    async def _should_not_be_called(*args, **kwargs):
-        raise AssertionError(
-            "model_supports_tools called despite in-flight guard"
-        )
-    monkeypatch.setattr(ollama, "model_supports_tools", _should_not_be_called)
+    async def _should_not_be_called(**kwargs):
+        raise AssertionError("producer reached despite in-flight guard")
+    monkeypatch.setattr(generation, "_run_generation", _should_not_be_called)
 
     with open_connection(db_path) as db:
         with pytest.raises(generation.GenerationInProgress):
@@ -1326,44 +1494,6 @@ async def test_dispatcher_in_flight_guard_fires_before_first_await(
                 history=[],
                 on_complete="append",
             )
-
-
-@pytest.mark.asyncio
-async def test_dispatcher_ignores_subagent_flags(
-    tmp_path, monkeypatch,
-):
-    """Phase 15: subagent flags have no effect; dispatcher always uses single-agent.
-
-    review_enabled/generator_enabled in the DB are preserved for when
-    the agentic loop is re-enabled, but start_generation no longer
-    reads or passes them.
-    """
-    db_path = tmp_path / "chats.db"
-    conv_id = _setup_chat(db_path)
-
-    with open_connection(db_path) as conn:
-        queries.set_agentic_mode(conn, True)
-        queries.set_review_enabled(conn, False)
-        queries.set_generator_enabled(conn, True)
-
-    async def _capable(_client, _name):
-        return True
-    monkeypatch.setattr(ollama, "model_supports_tools", _capable)
-
-    agentic_calls, single_calls = _capture_producer_calls(monkeypatch)
-
-    with open_connection(db_path) as db:
-        state = await generation.start_generation(
-            client=None, db=db,
-            conversation_id=conv_id, model="llama3",
-            history=queries.list_messages(db, conv_id),
-            on_complete="append",
-        )
-        await state.task
-
-    # Agentic path never fires regardless of settings.
-    assert agentic_calls["count"] == 0
-    assert single_calls["count"] == 1
 
 
 @pytest.mark.asyncio

@@ -816,6 +816,62 @@ body {
   padding: var(--space-md) var(--space-xl) var(--space-xl);
 }
 
+/* ===== Agent picker (phase 16) =========================================== */
+
+/* In-chat agent picker — its own form directly above .message-form, aligned
+   to the same horizontal padding as the input pill below it. */
+.message-form__agent {
+  padding: var(--space-md) var(--space-xl) 0;
+  margin: 0;
+}
+
+/* The picker <select>, shared by the composer toolbar and the in-chat form.
+   Compact to match the toolbar baseline (Pico's default select is tall). */
+.agent-select {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-xs) var(--space-md);
+  background: var(--bg);
+  color: var(--text-primary);
+  font-size: 13px;
+  height: auto;
+  margin: 0;
+}
+
+/* Locked model dropdown: a non-Normal agent is selected in the composer, so
+   the model choice is moot. Kept ENABLED (a disabled <select> submits no
+   value, and the chat still persists a Normal model) but styled + made
+   non-interactive so it reads as disabled. */
+.composer__model--locked {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* Header indicator when an agent is active (icon + "Agent: X (model)"). */
+.chat-panel__model--agent {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.chat-panel__model--agent .material-symbols-outlined {
+  font-size: 16px;
+}
+
+/* Read-only list of an agent's allowlisted tools, shown in place of the
+   per-chat tool chips while an agent is active. */
+.agent-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.agent-tools .material-symbols-outlined {
+  font-size: 16px;
+}
+
 /* ===== Input pill (shared by composer + in-chat message form) ============
    The pill wraps a textarea and a circular send button. Both the
    empty-state composer and the in-chat message form use this — the

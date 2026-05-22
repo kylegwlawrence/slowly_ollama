@@ -16,19 +16,15 @@ from datetime import datetime, timezone
 from typing import Literal
 
 # Role values are constrained at the type level here. The schema-level
-# CHECK was dropped in phase 12a — the role set grows over time (12a
-# adds tool_call/tool_result; 13a adds research_findings/review_verdict
-# for the agentic loop's internal artifacts) and SQLite can't ALTER
-# CHECK constraints, so we enforce here in Python instead. The Literal
-# alias documents intent and lets a type checker catch wrong-role bugs
-# before they hit SQLite.
+# CHECK was dropped in phase 12a (12a added tool_call/tool_result) and
+# SQLite can't ALTER CHECK constraints, so we enforce here in Python
+# instead. The Literal alias documents intent and lets a type checker
+# catch wrong-role bugs before they hit SQLite.
 Role = Literal[
     "user",
     "assistant",
     "tool_call",
     "tool_result",
-    "research_findings",  # phase 13: research agent's per-iteration synthesis
-    "review_verdict",     # phase 13: review agent's pass/fail verdict (JSON)
 ]
 
 
@@ -47,6 +43,10 @@ class Conversation:
         updated_at: When the row was last touched — bumped by rename, by
             appending a message, or by replacing the last assistant message.
             Used as the sort key for the sidebar so active chats float up.
+        active_agent: Name of the user-invoked agent currently active for this
+            chat (a key in `app.agents.AGENTS`), or None for the default
+            "Normal" plain-chat behavior. Persisted so the picker + indicator
+            survive reloads.
     """
 
     id: int
@@ -57,6 +57,7 @@ class Conversation:
     tool_iteration_cap: int
     created_at: datetime
     updated_at: datetime
+    active_agent: str | None = None
 
 
 @dataclass(frozen=True)
@@ -110,6 +111,7 @@ def _row_to_conversation(row: sqlite3.Row) -> Conversation:
         tool_iteration_cap=int(row["tool_iteration_cap"]),
         created_at=datetime.fromisoformat(row["created_at"]),
         updated_at=datetime.fromisoformat(row["updated_at"]),
+        active_agent=row["active_agent"],
     )
 
 
@@ -135,6 +137,7 @@ def create_conversation(
     model: str,
     temperature: float = 0.8,
     tool_iteration_cap: int = 5,
+    active_agent: str | None = None,
 ) -> Conversation:
     """Insert a new conversation row.
 
@@ -145,6 +148,8 @@ def create_conversation(
         temperature: Sampling temperature passed to Ollama (0.0–2.0).
         tool_iteration_cap: Per-turn cap on single-agent tool-call
             iterations (caller should clamp to 1–10).
+        active_agent: Name of the user-invoked agent to start the chat with
+            (a key in `app.agents.AGENTS`), or None for Normal plain chat.
 
     Returns:
         The newly created Conversation, populated with its assigned id and
@@ -158,11 +163,11 @@ def create_conversation(
         # free to refresh the placeholder until the user manually renames.
         row = conn.execute(
             "INSERT INTO conversations"
-            " (name, model, name_locked, temperature, tool_iteration_cap, created_at, updated_at)"
-            " VALUES (?, ?, 0, ?, ?, ?, ?)"
+            " (name, model, name_locked, temperature, tool_iteration_cap, active_agent, created_at, updated_at)"
+            " VALUES (?, ?, 0, ?, ?, ?, ?, ?)"
             " RETURNING id, name, model, name_locked, temperature, tool_iteration_cap,"
-            "          created_at, updated_at;",
-            (name, model, temperature, tool_iteration_cap, now, now),
+            "          active_agent, created_at, updated_at;",
+            (name, model, temperature, tool_iteration_cap, active_agent, now, now),
         ).fetchone()
     return _row_to_conversation(row)
 
@@ -187,7 +192,8 @@ def get_conversation(
         LookupError: If no conversation exists with that id.
     """
     row = conn.execute(
-        "SELECT id, name, model, name_locked, temperature, tool_iteration_cap, created_at, updated_at"
+        "SELECT id, name, model, name_locked, temperature, tool_iteration_cap,"
+        " active_agent, created_at, updated_at"
         " FROM conversations WHERE id = ?;",
         (conversation_id,),
     ).fetchone()
@@ -207,7 +213,8 @@ def list_conversations(conn: sqlite3.Connection) -> list[Conversation]:
         this order so the chat the user just touched is on top.
     """
     rows = conn.execute(
-        "SELECT id, name, model, name_locked, temperature, tool_iteration_cap, created_at, updated_at"
+        "SELECT id, name, model, name_locked, temperature, tool_iteration_cap,"
+        " active_agent, created_at, updated_at"
         " FROM conversations"
         " ORDER BY updated_at DESC, id DESC;"
     ).fetchall()
@@ -243,7 +250,7 @@ def rename_conversation(
             " SET name = ?, name_locked = 1, updated_at = ?"
             " WHERE id = ?"
             " RETURNING id, name, model, name_locked, temperature, tool_iteration_cap,"
-            "          created_at, updated_at;",
+            "          active_agent, created_at, updated_at;",
             (new_name, now, conversation_id),
         ).fetchone()
     if row is None:
@@ -280,7 +287,7 @@ def set_name_auto(
             " SET name = ?, updated_at = ?"
             " WHERE id = ? AND name_locked = 0"
             " RETURNING id, name, model, name_locked, temperature, tool_iteration_cap,"
-            "          created_at, updated_at;",
+            "          active_agent, created_at, updated_at;",
             (new_name, now, conversation_id),
         ).fetchone()
     return _row_to_conversation(row) if row is not None else None
@@ -326,7 +333,7 @@ def set_conversation_temperature(
             " SET temperature = ?"
             " WHERE id = ?"
             " RETURNING id, name, model, name_locked, temperature, tool_iteration_cap,"
-            "          created_at, updated_at;",
+            "          active_agent, created_at, updated_at;",
             (temperature, conversation_id),
         ).fetchone()
     if row is None:
@@ -356,8 +363,44 @@ def set_conversation_tool_iteration_cap(
             " SET tool_iteration_cap = ?"
             " WHERE id = ?"
             " RETURNING id, name, model, name_locked, temperature, tool_iteration_cap,"
-            "          created_at, updated_at;",
+            "          active_agent, created_at, updated_at;",
             (tool_iteration_cap, conversation_id),
+        ).fetchone()
+    if row is None:
+        raise LookupError(f"Conversation {conversation_id} not found.")
+    return _row_to_conversation(row)
+
+
+def set_active_agent(
+    conn: sqlite3.Connection, conversation_id: int, agent_name: str | None
+) -> Conversation:
+    """Set (or clear) the user-invoked agent active for a conversation.
+
+    Does NOT bump ``updated_at`` — switching agents isn't a message event and
+    shouldn't reorder the sidebar (same convention as the temperature / tool-
+    cap setters above).
+
+    Args:
+        conn: Open SQLite connection.
+        conversation_id: Id of the conversation to update.
+        agent_name: An agent key from `app.agents.AGENTS`, or None to return
+            the chat to Normal plain-chat behavior. Caller validates the name
+            (routes resolve it via `app.agents.get_agent`).
+
+    Returns:
+        The updated Conversation.
+
+    Raises:
+        LookupError: If no conversation exists with that id.
+    """
+    with conn:
+        row = conn.execute(
+            "UPDATE conversations"
+            " SET active_agent = ?"
+            " WHERE id = ?"
+            " RETURNING id, name, model, name_locked, temperature, tool_iteration_cap,"
+            "          active_agent, created_at, updated_at;",
+            (agent_name, conversation_id),
         ).fetchone()
     if row is None:
         raise LookupError(f"Conversation {conversation_id} not found.")
@@ -527,7 +570,7 @@ def get_setting(
 
     Args:
         conn: Open SQLite connection.
-        key: Setting key (e.g. ``"agentic_mode"``).
+        key: Setting key (e.g. ``"default_temperature"``).
         default: Returned when no row exists for the key.
 
     Returns:
@@ -558,113 +601,6 @@ def set_setting(
             " ON CONFLICT(key) DO UPDATE SET value = excluded.value;",
             (key, value),
         )
-
-
-_AGENTIC_MODE_KEY = "agentic_mode"
-
-
-def get_agentic_mode(conn: sqlite3.Connection) -> bool:
-    """Return True when the multi-agent loop is enabled globally.
-
-    Default (no row): False. Any value other than the literal string
-    ``"on"`` also returns False, defensively.
-
-    Args:
-        conn: Open SQLite connection.
-    """
-    return get_setting(conn, _AGENTIC_MODE_KEY, default="off") == "on"
-
-
-def set_agentic_mode(conn: sqlite3.Connection, enabled: bool) -> None:
-    """Toggle the global agentic-mode setting.
-
-    Args:
-        conn: Open SQLite connection.
-        enabled: True for ``"on"``, False for ``"off"``. Must be a real
-            bool — strings like ``"off"`` would be truthy and write
-            ``"on"``, silently flipping the setting the wrong way.
-
-    Raises:
-        TypeError: When ``enabled`` is not a bool. Cheap guard against
-            the foot-gun above.
-    """
-    if not isinstance(enabled, bool):
-        raise TypeError(
-            f"set_agentic_mode requires a bool; got {type(enabled).__name__}"
-        )
-    set_setting(conn, _AGENTIC_MODE_KEY, "on" if enabled else "off")
-
-
-_REVIEW_ENABLED_KEY = "review_enabled"
-_GENERATOR_ENABLED_KEY = "generator_enabled"
-
-
-def get_review_enabled(conn: sqlite3.Connection) -> bool:
-    """Return True when the review agent participates in the loop.
-
-    Default (no row): True. The reviewer is on by default so the
-    first-time experience after master-toggle-on matches Phase 13's
-    full-loop behavior. Any value other than the literal string
-    ``"off"`` returns True.
-
-    Only meaningful when ``get_agentic_mode`` is True; the single-
-    agent path ignores this setting.
-
-    Args:
-        conn: Open SQLite connection.
-    """
-    return get_setting(conn, _REVIEW_ENABLED_KEY, default="on") != "off"
-
-
-def set_review_enabled(conn: sqlite3.Connection, enabled: bool) -> None:
-    """Toggle the reviewer-participation setting.
-
-    Args:
-        conn: Open SQLite connection.
-        enabled: True for ``"on"``, False for ``"off"``. Must be a
-            real bool — same foot-gun guard as ``set_agentic_mode``.
-
-    Raises:
-        TypeError: When ``enabled`` is not a bool.
-    """
-    if not isinstance(enabled, bool):
-        raise TypeError(
-            f"set_review_enabled requires a bool; got {type(enabled).__name__}"
-        )
-    set_setting(conn, _REVIEW_ENABLED_KEY, "on" if enabled else "off")
-
-
-def get_generator_enabled(conn: sqlite3.Connection) -> bool:
-    """Return True when the generator agent participates in the loop.
-
-    Default (no row): True. Same first-time-experience rationale as
-    ``get_review_enabled``.
-
-    Only meaningful when ``get_agentic_mode`` is True.
-
-    Args:
-        conn: Open SQLite connection.
-    """
-    return get_setting(conn, _GENERATOR_ENABLED_KEY, default="on") != "off"
-
-
-def set_generator_enabled(conn: sqlite3.Connection, enabled: bool) -> None:
-    """Toggle the generator-participation setting.
-
-    Args:
-        conn: Open SQLite connection.
-        enabled: True for ``"on"``, False for ``"off"``. Must be a
-            real bool.
-
-    Raises:
-        TypeError: When ``enabled`` is not a bool.
-    """
-    if not isinstance(enabled, bool):
-        raise TypeError(
-            f"set_generator_enabled requires a bool; got "
-            f"{type(enabled).__name__}"
-        )
-    set_setting(conn, _GENERATOR_ENABLED_KEY, "on" if enabled else "off")
 
 
 _DEFAULT_TEMPERATURE_KEY = "default_temperature"

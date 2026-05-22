@@ -14,12 +14,10 @@ re-groups them into blocks, templates consume blocks.
 """
 
 import html
-import json
 import time
 from dataclasses import dataclass, field
 from typing import ClassVar, Union
 
-from app.agents import AGENTIC_ITERATION_CAP
 from app.queries import Message
 from app.templates import templates
 from app.tools import (
@@ -334,187 +332,40 @@ class ToolBatchBlock:
         return summary_text(len(self.calls), done=True)
 
 
-@dataclass(frozen=True)
-class AgenticIteration:
-    """One research → review iteration in a historic agentic turn.
-
-    Mirrors the live-SSE iteration grouping: research runs tool calls,
-    produces findings, review verdicts the findings. Each iteration's
-    pieces are persisted as separate `messages` rows; this dataclass
-    re-collects them for the historic-render template.
-
-    Attributes:
-        index: 1-based iteration number. Drives the
-            `data-iteration` attribute on the rendered header.
-        tool_calls: (call, result) pairs from research's tool-calling
-            inner loop. Same shape as :attr:`ToolBatchBlock.calls`.
-        findings: The `research_findings` row for this iteration, or
-            None when the iteration never produced one (defensive —
-            shouldn't happen for completed turns).
-        verdict: The `review_verdict` row, or None for the same reason
-            (e.g. process crashed between findings persist and verdict
-            persist).
-    """
-
-    index: int
-    tool_calls: list[tuple[Message, Message | None]]
-    findings: Message | None
-    verdict: Message | None
-
-    @property
-    def verdict_status(self) -> str:
-        """`"passed"` / `"failed"` / `"unknown"` (no verdict row)."""
-        if self.verdict is None:
-            return "unknown"
-        try:
-            payload = json.loads(self.verdict.content)
-        except (json.JSONDecodeError, TypeError):
-            return "unknown"
-        status = payload.get("verdict") if isinstance(payload, dict) else None
-        if status in ("passed", "failed"):
-            return status
-        return "unknown"
-
-    @property
-    def verdict_message(self) -> str:
-        """Human-readable verdict text. Empty when no verdict row or
-        when the persisted JSON is malformed."""
-        if self.verdict is None:
-            return ""
-        try:
-            payload = json.loads(self.verdict.content)
-        except (json.JSONDecodeError, TypeError):
-            return ""
-        if isinstance(payload, dict):
-            message = payload.get("message", "")
-            return str(message) if message is not None else ""
-        return ""
-
-    def row_views(self, card_id: str) -> list["ToolRowView"]:
-        """Materialize ToolRowViews for this iteration's (call, result) pairs.
-
-        Row ids embed the iteration index AND the call-within-iteration
-        index, matching the format the live SSE path uses
-        (`{card_id}-iter-{N}-row-{M}`). Same-id parity matters for a
-        mid-turn reload: the reconstructed historic DOM lines up with
-        any not-yet-consumed SSE events still arriving from the live
-        producer.
-
-        Args:
-            card_id: The owning AgenticToolBatchBlock's card_id, so
-                the row ids are scoped to the same DOM subtree.
-
-        Returns:
-            One ToolRowView per (call, result) pair, in invocation
-            order.
-        """
-        return [
-            _row_view_from_pair(
-                call, result,
-                f"{card_id}-iter-{self.index}-row-{i}",
-            )
-            for i, (call, result) in enumerate(self.tool_calls)
-        ]
+Block = Union[MessageBlock, ToolBatchBlock]
 
 
-@dataclass(frozen=True)
-class AgenticToolBatchBlock:
-    """One assistant turn's full agentic loop, grouped for historic replay.
-
-    The companion to :class:`ToolBatchBlock` for the multi-agent flow.
-    The template (`_agentic_tool_card.html`) renders the same outer
-    `<details>` shell as the single-agent card but interleaves
-    iteration headers, findings rows, and verdict rows with the
-    tool-row list.
-
-    Attributes:
-        iterations: AgenticIteration entries in chronological order.
-            At least one entry; max :data:`AGENTIC_ITERATION_CAP` (the
-            orchestrator's hard cap).
-        turn_id: Stable id for DOM ids; `f"hist-{first_row_id}"` so
-            historic and live paths can produce matching card ids when
-            the same turn is re-rendered.
-        kind: Template discriminator. Class-level constant.
-    """
-
-    iterations: list[AgenticIteration] = field(default_factory=list)
-    turn_id: str = ""
-    kind: ClassVar[str] = "agentic_tool_batch"
-
-    @property
-    def max_iterations_reached(self) -> bool:
-        """True when the loop exhausted the cap without a passed verdict.
-
-        The live producer renders a "(max reached)" badge in this case
-        via :func:`render_max_iterations_badge`; the historic template
-        looks at this flag to render the same DOM shape from
-        persisted rows. The condition mirrors the orchestrator's
-        for-else branch — `AGENTIC_ITERATION_CAP` iterations elapsed
-        and the last one's verdict was not `"passed"`.
-        """
-        if len(self.iterations) < AGENTIC_ITERATION_CAP:
-            return False
-        return self.iterations[-1].verdict_status != "passed"
-
-    @property
-    def card_id(self) -> str:
-        return card_id_for(self.turn_id)
-
-    @property
-    def list_id(self) -> str:
-        return f"{self.card_id}-list"
-
-    @property
-    def summary_id(self) -> str:
-        return f"{self.card_id}-summary"
-
-    @property
-    def summary(self) -> str:
-        """Past-tense summary phrase. The "(max reached)" tag is NOT
-        included here — it lives in the sibling max-marker span on
-        the live path; historic replay surfaces it the same way via
-        the template, not by appending to this string."""
-        return agentic_summary_text(
-            len(self.iterations), done=True
-        )
-
-
-Block = Union[MessageBlock, ToolBatchBlock, AgenticToolBatchBlock]
-
-
-_AGENTIC_ROLES = frozenset(
-    {"tool_call", "tool_result", "research_findings", "review_verdict"}
-)
+_TOOL_ROLES = frozenset({"tool_call", "tool_result"})
+_RENDERABLE_MESSAGE_ROLES = frozenset({"user", "assistant"})
 
 
 def group_messages_for_render(messages: list[Message]) -> list[Block]:
-    """Walk messages, folding tool-related runs into the right block type.
+    """Walk messages, folding tool-call/result runs into ToolBatchBlocks.
 
-    Each contiguous run of tool-related rows (`tool_call` / `tool_result`
-    plus phase 13's `research_findings` / `review_verdict`) is flushed
-    as either a :class:`ToolBatchBlock` (the run has only tool calls
-    and results — single-agent turn) or an :class:`AgenticToolBatchBlock`
-    (the run contains at least one findings or verdict row — agentic
-    turn). The first non-tool row (`user` / `assistant`) flushes the
-    pending run ahead of itself.
+    Each contiguous run of `tool_call` / `tool_result` rows is flushed as a
+    :class:`ToolBatchBlock` — the aggregated card above the assistant turn
+    that used the tools. A `user` / `assistant` row flushes the pending run
+    ahead of itself and emits a :class:`MessageBlock`. Any other role is
+    silently skipped: this defends against legacy rows left by removed
+    features (e.g. the old agentic loop's `research_findings` /
+    `review_verdict`) so they neither render as stray bubbles nor get folded
+    into a tool card.
 
     Rules:
-        - Tool-related rows accumulate into a pending run; a non-tool
-          row triggers a flush + emits a MessageBlock.
-        - End-of-list flush handles crashed-mid-turn conversations
-          (no closing assistant row).
-        - A `tool_result` without a preceding `tool_call` is treated
-          as an orphan and skipped — the streaming loop only writes
-          results after calls, but historic DB corruption shouldn't
-          break the panel render.
+        - Tool rows accumulate into a pending run; a renderable message row
+          triggers a flush + emits a MessageBlock.
+        - End-of-list flush handles crashed-mid-turn conversations (no
+          closing assistant row).
+        - A `tool_result` without a preceding `tool_call` is treated as an
+          orphan and skipped — the streaming loop only writes results after
+          calls, but historic DB corruption shouldn't break the panel render.
 
     Args:
         messages: Rows from `queries.list_messages`, oldest-first.
 
     Returns:
-        A list of `MessageBlock` / `ToolBatchBlock` /
-        `AgenticToolBatchBlock` instances in display order. Empty
-        input yields empty output.
+        A list of `MessageBlock` / `ToolBatchBlock` instances in display
+        order. Empty input yields empty output.
     """
     blocks: list[Block] = []
     pending_rows: list[Message] = []
@@ -523,27 +374,20 @@ def group_messages_for_render(messages: list[Message]) -> list[Block]:
         nonlocal pending_rows
         if not pending_rows:
             return
-        has_agentic = any(
-            r.role in ("research_findings", "review_verdict")
-            for r in pending_rows
-        )
-        if has_agentic:
-            blocks.append(_build_agentic_block(pending_rows))
-        else:
-            block = _build_classic_tool_batch(pending_rows)
-            # _build_classic_tool_batch returns None when the run
-            # contained only orphan tool_result rows — see its
-            # docstring. Drop instead of appending an empty card.
-            if block is not None:
-                blocks.append(block)
+        block = _build_classic_tool_batch(pending_rows)
+        # Returns None when the run held only orphan tool_result rows — see
+        # its docstring. Drop instead of appending an empty card.
+        if block is not None:
+            blocks.append(block)
         pending_rows = []
 
     for m in messages:
-        if m.role in _AGENTIC_ROLES:
+        if m.role in _TOOL_ROLES:
             pending_rows.append(m)
-        else:
+        elif m.role in _RENDERABLE_MESSAGE_ROLES:
             flush_batch()
             blocks.append(MessageBlock(message=m))
+        # else: unknown/legacy role — skip without flushing.
 
     flush_batch()  # end-of-list
 
@@ -589,83 +433,12 @@ def _build_classic_tool_batch(
     return ToolBatchBlock(calls=calls, turn_id=turn_id)
 
 
-def _build_agentic_block(rows: list[Message]) -> AgenticToolBatchBlock:
-    """Slice rows into AgenticIteration entries.
-
-    Iteration boundaries are `review_verdict` rows: each verdict
-    closes an iteration. Tool calls / results between the previous
-    verdict (or start) and the next `research_findings` row belong to
-    that iteration's `tool_calls` list; the `research_findings` row
-    immediately following the calls becomes the iteration's
-    `findings`; the `review_verdict` row that follows becomes its
-    `verdict`.
-
-    Defensive behaviour for partial rows: if the run ends with
-    pending tool calls, findings, or both — but no closing verdict —
-    we still emit a final iteration with whatever pieces we have
-    (verdict=None). This shouldn't happen on completed turns but
-    keeps the panel rendering robust if a process died mid-loop.
-
-    Args:
-        rows: Tool-related rows in chronological order. Caller has
-            verified that at least one findings or verdict row is
-            present (otherwise this would be a classic batch).
-    """
-    iterations: list[AgenticIteration] = []
-    pending_calls: list[tuple[Message, Message | None]] = []
-    pending_call: Message | None = None
-    current_findings: Message | None = None
-
-    def commit_iteration(verdict: Message | None) -> None:
-        nonlocal pending_calls, pending_call, current_findings
-        if pending_call is not None:
-            pending_calls.append((pending_call, None))
-            pending_call = None
-        iterations.append(AgenticIteration(
-            index=len(iterations) + 1,
-            tool_calls=list(pending_calls),
-            findings=current_findings,
-            verdict=verdict,
-        ))
-        pending_calls = []
-        current_findings = None
-
-    for m in rows:
-        if m.role == "tool_call":
-            if pending_call is not None:
-                pending_calls.append((pending_call, None))
-            pending_call = m
-        elif m.role == "tool_result":
-            if pending_call is not None:
-                pending_calls.append((pending_call, m))
-                pending_call = None
-            # else: orphan result — drop silently.
-        elif m.role == "research_findings":
-            current_findings = m
-        elif m.role == "review_verdict":
-            commit_iteration(m)
-
-    # End-of-rows: if any iteration material is still pending without
-    # a closing verdict, commit it with verdict=None so the panel
-    # surfaces what work the model did before the crash.
-    if (
-        pending_call is not None
-        or pending_calls
-        or current_findings is not None
-    ):
-        commit_iteration(verdict=None)
-
-    turn_id = f"hist-{rows[0].id}"
-    return AgenticToolBatchBlock(iterations=iterations, turn_id=turn_id)
-
-
 # ---------------------------------------------------------------------------
 # Tool-card OOB rendering — emitted by the producer layer at each phase of
 # the tool-calling turn. Kept here (rather than in app/generation.py) so the
-# template-render dance lives next to the view dataclasses, and so phase 13's
-# agentic-loop producer can call the same helpers instead of duplicating the
-# string-building logic. The producer stays in charge of WHEN to emit; render
-# owns WHAT the OOB fragment looks like.
+# template-render dance lives next to the view dataclasses. The producer
+# stays in charge of WHEN to emit; render owns WHAT the OOB fragment looks
+# like.
 # ---------------------------------------------------------------------------
 
 
@@ -799,231 +572,3 @@ def render_done_card_oobs(
         )
         frozen_rows_html += render_tool_card_row_freeze(frozen_row)
     return summary_html + frozen_rows_html
-
-
-# ---------------------------------------------------------------------------
-# Agentic-mode render helpers (phase 13d)
-#
-# Companion to the single-agent tool-card helpers above. The agentic
-# orchestrator emits one card per assistant turn with the same outer
-# <details> shell but with iteration headers, findings rows, and
-# verdict rows inside instead of a flat tool-row list. The historic
-# replay path lands in 13f (AgenticToolBatchBlock + its template);
-# these helpers cover the live SSE path.
-# ---------------------------------------------------------------------------
-
-
-def agentic_summary_text(iterations_run: int, *, done: bool) -> str:
-    """Render the agentic-card summary phrase.
-
-    Two states:
-
-    - **live** (done=False): ``"researching…"`` for the empty shell
-      (iterations_run==0); ``"researching (iteration N)…"`` once an
-      iteration starts.
-    - **done**: ``"ran N iteration(s)"`` — plural beyond 1.
-
-    The max-iterations-reached signal is NOT part of the summary text;
-    it lives in the sibling ``<span id="…-max-marker">`` so the
-    visible "(max reached)" badge appears at cap-hit time (before
-    generation streams) and survives the done-event's outerHTML swap
-    on the summary span (the marker is a sibling, not a child).
-
-    Args:
-        iterations_run: Count for the past-tense phrasing. Pass 0 for
-            the initial shell render (yields ``"researching…"``).
-        done: False during the live loop; True for the final summary
-            swap that rides along with the ``done`` SSE event.
-
-    Returns:
-        Plain text for the ``<span id="…-summary">`` element. Callers
-        wrap it in the outerHTML OOB swap; HTML-escape at the boundary.
-    """
-    if not done:
-        if iterations_run == 0:
-            return "researching…"
-        return f"researching (iteration {iterations_run})…"
-    plural = "iteration" if iterations_run == 1 else "iterations"
-    return f"ran {iterations_run} {plural}"
-
-
-def render_agentic_card_shell(
-    *,
-    card_id: str,
-    list_id: str,
-    summary_id: str,
-    conversation_id: int,
-) -> str:
-    """Render the empty agentic card shell — emitted once per turn.
-
-    Subsequent iteration-start / tool-call / findings / verdict
-    events OOB-append into ``#{list_id}`` and OOB-swap the summary
-    span and the max-marker span. The shell is the swap unit only on
-    first emission (``beforebegin:#assistant-stream-…``); after that
-    the card lives in the DOM and downstream events target its
-    children.
-    """
-    return templates.get_template("_tool_card_shell.html").render(
-        card_id=card_id,
-        list_id=list_id,
-        summary_id=summary_id,
-        summary_text=agentic_summary_text(0, done=False),
-        rows=[],
-        agentic=True,
-        swap_oob=f"beforebegin:#assistant-stream-{conversation_id}",
-    )
-
-
-def render_iteration_start(
-    *,
-    iteration_index: int,
-    list_id: str,
-    summary_id: str,
-) -> str:
-    """Render the iteration-start OOB: header row + summary update.
-
-    Two OOB fragments concatenated:
-
-    - ``<li class="tool-card__iteration-header">`` appended to the
-      card's <ul> via ``beforeend:#{list_id}``. The header is purely
-      decorative; CSS hides the bullet via ``list-style: none``.
-    - ``<span id="{summary_id}">`` replaces the current summary span
-      with one reading ``"researching (iteration N)…"``.
-
-    Built inline (no template) because each fragment is one element
-    and the OOB attributes are the whole payload — a template would
-    be more noise than signal.
-    """
-    header_html = (
-        f'<li hx-swap-oob="beforeend:#{list_id}"'
-        f' class="tool-card__iteration-header"'
-        f' data-iteration="{iteration_index}">'
-        f'Iteration {iteration_index}'
-        f'</li>'
-    )
-    summary_html = (
-        f'<span id="{summary_id}" hx-swap-oob="outerHTML">'
-        f'{html.escape(agentic_summary_text(iteration_index, done=False))}'
-        f'</span>'
-    )
-    return header_html + summary_html
-
-
-def render_agentic_tool_row_append(
-    *,
-    live_row: ToolRowView,
-    list_id: str,
-) -> str:
-    """Append a live tool row inside an agentic iteration.
-
-    Mirrors :func:`render_tool_card_row_append` but emits ONLY the
-    row HTML — no summary span swap. The iteration-start event
-    already swapped the summary to ``"researching (iteration N)…"``
-    and downstream tool rows within the same iteration don't change
-    that phrasing. Same row template + swap target as the single-
-    agent variant, so the JS tick driver picks the live row up the
-    same way.
-    """
-    return templates.get_template("_tool_row.html").render(
-        row=live_row,
-        swap_oob=f"beforeend:#{list_id}",
-    )
-
-
-def render_findings_row(
-    *,
-    findings: str,
-    iteration_index: int,
-    list_id: str,
-) -> str:
-    """Render the research-findings OOB for one iteration.
-
-    OOB-appends a ``<li class="tool-card__findings">`` to the card's
-    <ul>. The text is markdown-rendered via the Jinja filter so the
-    model's natural prose comes out formatted; the historic-replay
-    template (sub-phase 13f) renders the same shape from the
-    persisted ``research_findings`` row.
-    """
-    return templates.get_template("_findings_row.html").render(
-        findings=findings,
-        iteration_index=iteration_index,
-        swap_oob=f"beforeend:#{list_id}",
-    )
-
-
-def render_verdict_row(
-    *,
-    verdict_status: str,
-    verdict_message: str,
-    iteration_index: int,
-    list_id: str,
-) -> str:
-    """Render the review-verdict OOB for one iteration.
-
-    OOB-appends a ``<li class="tool-card__verdict tool-card__verdict--{status}">``
-    to the card's <ul>. ``verdict_status`` is ``"passed"`` or
-    ``"failed"`` — the class modifier drives the border + background
-    colour in CSS (added in 13f).
-    """
-    return templates.get_template("_verdict_row.html").render(
-        verdict_status=verdict_status,
-        verdict_message=verdict_message,
-        iteration_index=iteration_index,
-        swap_oob=f"beforeend:#{list_id}",
-    )
-
-
-def render_max_iterations_badge(card_id: str) -> str:
-    """Fill the max-iterations sentinel span with visible badge text.
-
-    Emitted only when ``_run_agentic_generation`` exhausted its
-    iteration cap without a "passed" verdict. Targets the
-    ``<span id="{card_id}-max-marker">`` placeholder
-    ``render_agentic_card_shell`` planted inside the summary —
-    avoiding a full ``<details>`` re-render that would clobber the
-    rows already in the DOM.
-
-    The marker is a SIBLING of ``#{card_id}-summary``, not a child,
-    so the done-event's outerHTML swap on the summary span leaves
-    the badge intact. That's how the "(max reached)" text stays
-    visible from cap-hit through generation streaming into the
-    final done state — without any double-rendering and without the
-    summary text itself needing to know about max-iterations.
-
-    ``data-max-iterations="true"`` doubles as a CSS hook for
-    colouring the badge (added in 13f).
-    """
-    return (
-        f'<span id="{card_id}-max-marker"'
-        f' hx-swap-oob="outerHTML"'
-        f' data-max-iterations="true">'
-        f' (max reached)'
-        f'</span>'
-    )
-
-
-def render_agentic_done_summary(
-    *,
-    summary_id: str,
-    iterations_run: int,
-) -> str:
-    """OuterHTML swap on the summary span for the agentic ``done`` event.
-
-    Flips ``"researching (iteration N)…"`` to past tense. Mirrors
-    ``render_done_card_oobs`` for the single-agent flow but the
-    summary phrasing is different (iterations vs. tool count) and
-    there are no in-flight rows to freeze (research_findings and
-    review_verdict rows are emitted with their final shape and
-    don't need a freeze pass).
-
-    The max-iterations-reached signal lives in the sibling
-    ``#{card_id}-max-marker`` span, populated by
-    :func:`render_max_iterations_badge` at cap-hit time. This swap
-    targets the summary span only, so the marker (if present) stays
-    visible alongside the past-tense summary.
-    """
-    return (
-        f'<span id="{summary_id}" hx-swap-oob="outerHTML">'
-        f'{html.escape(agentic_summary_text(iterations_run, done=True))}'
-        f'</span>'
-    )

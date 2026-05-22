@@ -282,6 +282,7 @@ async def stream_chat(
     model: str,
     messages: list[dict[str, str]],
     temperature: float = 0.8,
+    think: bool | None = None,
 ) -> AsyncIterator[ChatChunk]:
     """Stream a chat completion from Ollama, yielding chunks as they arrive.
 
@@ -296,6 +297,10 @@ async def stream_chat(
             dataclasses.
         temperature: Sampling temperature (0.0–2.0). Passed in Ollama's
             ``options`` dict; Ollama's own default is 0.8.
+        think: When not ``None``, sets Ollama's ``think`` flag — ``False``
+            suppresses a thinking model's reasoning phase (safe on any
+            model), ``True`` requires a thinking-capable model (else Ollama
+            400s). ``None`` omits the key, leaving Ollama's default.
 
     Yields:
         One ``ChatChunk`` per line of Ollama's NDJSON stream. The final
@@ -314,6 +319,8 @@ async def stream_chat(
         "stream": True,
         "options": {"temperature": temperature},
     }
+    if think is not None:
+        payload["think"] = think
     try:
         async with client.stream(
             "POST", "/api/chat", json=payload
@@ -353,6 +360,7 @@ async def maybe_tool_call(
     messages: list[dict],
     tools: list[dict] | None,
     temperature: float = 0.8,
+    think: bool | None = None,
 ) -> tuple[list[dict], str]:
     """Single non-streaming /api/chat to detect tool calls.
 
@@ -410,6 +418,8 @@ async def maybe_tool_call(
     # gate cleanly without us second-guessing.
     if tools:
         payload["tools"] = tools
+    if think is not None:
+        payload["think"] = think
 
     try:
         response = await client.post("/api/chat", json=payload)
