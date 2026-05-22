@@ -126,6 +126,36 @@ can't satisfy.
   When it's re-enabled, it will need the same `_enabled_rag_servers` logic
   that `_run_generation` now has.
 
+## Post-ship fix — `query_rag` was filtered out of every browser chat
+
+A gap surfaced after ship: retrieval silently never ran for any
+browser-created chat. Root cause was a seeding-vs-gating mismatch
+introduced by this phase:
+
+- The composer dropped `query_rag` from the tool chips (RAG is now
+  controlled by the per-server chips), so the composer's
+  `enabled_tools` form field never includes `query_rag`.
+- But `seed_chat_tools` still seeds `query_rag` (it's in
+  `_ALL_TOOL_NAMES`), and with `query_rag` absent from `enabled_tools`
+  it lands as `enabled=0`.
+- `_run_generation` then gated `query_rag` on `_enabled_names` (the
+  tool-chip flag) *before* the per-server check — so it was filtered
+  out one gate too early, every time. The per-server chips being "on"
+  was pure illusion; the model never saw `query_rag`.
+
+Tests didn't catch it because they call `seed_chat_tools` with
+`enabled_names=None` (enables everything); only the real composer form
+triggers the disabled-by-omission path.
+
+**Fix:** `_run_generation` now special-cases `query_rag` *before* the
+tool-chip gate. Its sole gate is whether ≥1 RAG server is enabled for
+the chat — matching the UX where the per-server chips are the only RAG
+control. The stale `query_rag=0` rows in `chat_tool_settings` are now
+vestigial: written by `seed_chat_tools` but never read. Left in place
+(harmless, and not writing them would add complexity for no behavior
+change). Regression test:
+`test_query_rag_sent_even_when_tool_chip_disabled`.
+
 ## Notes for future phases
 
 - `chat_rag_settings` rows are keyed by `server_name` (a string), not by
@@ -142,7 +172,11 @@ can't satisfy.
   unfiltered call that also skips the per-chat **tool** chip filtering
   (`_enabled_names` in `_run_generation`), not just RAG-server filtering —
   port BOTH gates, otherwise the agentic loop ignores every per-chat chip
-  toggle (tools and RAG sources alike).
+  toggle (tools and RAG sources alike). **Important:** port them the way
+  `_run_generation` does *after* the post-ship fix above — `query_rag`
+  must be gated ONLY on the per-server chips, never on `_enabled_names`
+  (it has no tool chip, so the chip flag is always 0). Apply the
+  `_enabled_names` gate to non-RAG tools only.
 - `_chip_states`'s `servers=` kwarg is a caller-side optimization only —
   it does not change behavior. Any new call site that doesn't already hold
   the list can omit the kwarg and let `_chip_states` fetch it.
