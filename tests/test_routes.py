@@ -1638,14 +1638,14 @@ def test_settings_renders_default_temperature_input(
     make_client: ClientFactory,
 ) -> None:
     """GET /settings shows the default-temperature control seeded with
-    the production default (0.7) before the user changes it."""
+    the production default (0.2) before the user changes it."""
     with make_client(_ollama_unreachable) as client:
         response = client.get("/settings", headers={"HX-Request": "true"})
 
     assert response.status_code == 200
     assert 'hx-patch="/settings/default-temperature"' in response.text
     assert 'id="default-temperature"' in response.text
-    assert 'value="0.7"' in response.text
+    assert 'value="0.2"' in response.text
 
 
 def test_set_default_temperature_persists(
@@ -1687,6 +1687,61 @@ def test_new_composer_reflects_default_temperature(
         composer = client.get("/new")
     assert 'id="composer-temperature"' in composer.text
     assert 'value="0.3"' in composer.text
+
+
+def test_settings_renders_default_tool_cap_input(
+    make_client: ClientFactory,
+) -> None:
+    """GET /settings shows the default-tool-cap control seeded with
+    the production default (5) before the user changes it."""
+    with make_client(_ollama_unreachable) as client:
+        response = client.get("/settings", headers={"HX-Request": "true"})
+
+    assert response.status_code == 200
+    assert 'hx-patch="/settings/default-tool-cap"' in response.text
+    assert 'id="default-tool-cap"' in response.text
+    assert 'value="5"' in response.text
+
+
+def test_set_default_tool_cap_persists(
+    make_client: ClientFactory,
+) -> None:
+    """PATCH /settings/default-tool-cap returns 204 and the new value
+    is reflected on a subsequent /settings render."""
+    with make_client(_ollama_unreachable) as client:
+        patch = client.patch(
+            "/settings/default-tool-cap", data={"tool_iteration_cap": "7"}
+        )
+        assert patch.status_code == 204
+
+        settings = client.get("/settings", headers={"HX-Request": "true"})
+    assert 'value="7"' in settings.text
+
+
+def test_set_default_tool_cap_clamps(
+    make_client: ClientFactory,
+) -> None:
+    """An out-of-range PATCH is clamped to [1, 10] before storage."""
+    with make_client(_ollama_unreachable) as client:
+        client.patch(
+            "/settings/default-tool-cap", data={"tool_iteration_cap": "99"}
+        )
+        settings = client.get("/settings", headers={"HX-Request": "true"})
+    assert 'value="10"' in settings.text
+
+
+def test_new_composer_reflects_default_tool_cap(
+    make_client: ClientFactory,
+) -> None:
+    """The empty-state composer seeds its Tool cap input from the stored
+    global default, so a new chat starts at the configured value."""
+    with make_client(_ollama_unreachable) as client:
+        client.patch(
+            "/settings/default-tool-cap", data={"tool_iteration_cap": "3"}
+        )
+        composer = client.get("/new")
+    assert 'id="composer-tool-iteration-cap"' in composer.text
+    assert 'value="3"' in composer.text
 
 
 def test_new_composer_renders_tool_iteration_cap_input(

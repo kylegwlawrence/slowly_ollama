@@ -91,10 +91,65 @@
       <div class="tool-chip tool-chip--on temp-chip">
         <span class="tool-chip__label">Temp</span>
         <input id="default-temperature" type="number" name="temperature"
-               value="{{ default_temperature | default(0.7) }}"
+               value="{{ default_temperature | default(0.2) }}"
                min="0" max="2" step="0.1"
                class="temp-chip__input">
       </div>
     </form>
+  </section>
+
+  <section class="settings__section">
+    <h2 class="settings__section-title">Default tool cap</h2>
+    <p class="settings__section-help">
+      The maximum tool-call iterations per turn for new chats (1–10).
+      Limits runaway tool loops. Changing it doesn't affect existing chats.
+    </p>
+    <form class="settings__default-tool-cap"
+          hx-patch="/settings/default-tool-cap"
+          hx-trigger="change"
+          hx-swap="none">
+      <div class="tool-chip tool-chip--on temp-chip">
+        <span class="tool-chip__label">Tool cap</span>
+        <input id="default-tool-cap" type="number" name="tool_iteration_cap"
+               value="{{ default_tool_iteration_cap | default(5) }}"
+               min="1" max="10" step="1"
+               class="temp-chip__input">
+      </div>
+    </form>
+  </section>
+
+  {# Read-only view of each agent's system prompt so they're easy to locate
+     without digging through source files. Normal has no system prompt (plain
+     chat), so only the registered agents appear here. #}
+  <section class="settings__section">
+    <h2 class="settings__section-title">Agent prompts</h2>
+    <p class="settings__section-help">
+      Read-only. Edit <code>app/agents/prompts.py</code> to change prompts;
+      restart the server to pick up changes.
+    </p>
+
+    <details class="agentic-prompts">
+      <summary>Normal — no system prompt</summary>
+      <div class="agentic-prompts__group">
+        <p class="settings__section-help" style="margin:0">
+          Normal mode is plain chat with no system message. Tools depend on
+          per-chat chip settings.
+        </p>
+      </div>
+    </details>
+
+    {% for agent in agents %}
+    <details class="agentic-prompts">
+      <summary>
+        {{ agent.label }}
+        {% if agent.tools %} · tools: {{ agent.tools | sort | join(", ") }}{% else %} · no tools{% endif %}
+        · {{ agent.model }}
+      </summary>
+      <div class="agentic-prompts__group">
+        <h3>System prompt</h3>
+        <pre class="agentic-prompts__text">{{ agent.system_prompt }}</pre>
+      </div>
+    </details>
+    {% endfor %}
   </section>
 </section>

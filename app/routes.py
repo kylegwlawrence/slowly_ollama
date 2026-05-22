@@ -163,6 +163,7 @@ def index_endpoint(request: Request, db: DB) -> Response:
             "default_tool_states": _default_tool_states(),
             "default_rag_server_states": _default_rag_server_states(db),
             "default_temperature": queries.get_default_temperature(db),
+            "default_tool_iteration_cap": queries.get_default_tool_iteration_cap(db),
             "agents": list_agents(),
         },
     )
@@ -186,6 +187,7 @@ def new_chat_endpoint(request: Request, db: DB) -> Response:
             "default_tool_states": _default_tool_states(),
             "default_rag_server_states": _default_rag_server_states(db),
             "default_temperature": queries.get_default_temperature(db),
+            "default_tool_iteration_cap": queries.get_default_tool_iteration_cap(db),
             "agents": list_agents(),
         },
     )
@@ -198,7 +200,7 @@ def new_chat_endpoint(request: Request, db: DB) -> Response:
 
 @router.get("/settings", response_class=HTMLResponse)
 def settings_endpoint(request: Request, db: DB) -> Response:
-    """Standalone settings page — RAG servers + default temperature.
+    """Standalone settings page — RAG servers + default temperature + default tool cap.
 
     Direct browser hits return the full index shell with the settings
     fragment preloaded in the main slot (so reload / bookmarks land on
@@ -208,6 +210,8 @@ def settings_endpoint(request: Request, db: DB) -> Response:
     """
     servers = _rag_servers_module.list_servers(db)
     default_temperature = queries.get_default_temperature(db)
+    default_tool_iteration_cap = queries.get_default_tool_iteration_cap(db)
+    agents = list_agents()
     if request.headers.get("HX-Request"):
         return templates.TemplateResponse(
             request=request,
@@ -215,6 +219,8 @@ def settings_endpoint(request: Request, db: DB) -> Response:
             context={
                 "servers": servers,
                 "default_temperature": default_temperature,
+                "default_tool_iteration_cap": default_tool_iteration_cap,
+                "agents": agents,
             },
         )
     return templates.TemplateResponse(
@@ -231,6 +237,8 @@ def settings_endpoint(request: Request, db: DB) -> Response:
             # the included _settings.html fragment.
             "rag_servers": servers,
             "default_temperature": default_temperature,
+            "default_tool_iteration_cap": default_tool_iteration_cap,
+            "agents": agents,
         },
     )
 
@@ -548,7 +556,7 @@ async def create_chat_endpoint(
     # the caller omits it (non-browser clients); clamp to 1–10 so a
     # hand-crafted request can't drive a runaway or no-op tool loop.
     if tool_iteration_cap is None:
-        tool_iteration_cap = 5
+        tool_iteration_cap = queries.get_default_tool_iteration_cap(db)
     tool_iteration_cap = max(1, min(10, tool_iteration_cap))
     # Resolve the picked agent (None / unknown → Normal). Persist its name so
     # the picker + indicator survive reloads and subsequent turns resolve the
@@ -1245,4 +1253,27 @@ async def set_default_temperature_endpoint(
     value, so no swap is needed.
     """
     queries.set_default_temperature(db, temperature)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.patch(
+    "/settings/default-tool-cap",
+    response_class=Response,
+)
+async def set_default_tool_iteration_cap_endpoint(
+    db: DB,
+    tool_iteration_cap: Annotated[int, Form()],
+) -> Response:
+    """Persist the global default per-turn tool-iteration cap for new chats.
+
+    Called by the default-tool-cap ``<input>`` in ``_settings.html``
+    via ``hx-patch`` on the ``change`` event. Clamps to [1, 10]
+    server-side so a hand-crafted request can't store an out-of-range
+    value. Only affects chats created after the change; existing chats
+    keep their own per-chat cap.
+
+    Returns 204 No Content — the browser input already shows the typed
+    value, so no swap is needed.
+    """
+    queries.set_default_tool_iteration_cap(db, tool_iteration_cap)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

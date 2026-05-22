@@ -25,6 +25,7 @@ from app.queries import (
     get_chat_tool_states,
     get_conversation,
     get_default_temperature,
+    get_default_tool_iteration_cap,
     get_enabled_rag_server_names,
     get_enabled_tool_names,
     get_setting,
@@ -38,6 +39,7 @@ from app.queries import (
     set_conversation_temperature,
     set_conversation_tool_iteration_cap,
     set_default_temperature,
+    set_default_tool_iteration_cap,
     set_name_auto,
     set_setting,
     toggle_chat_rag_server,
@@ -411,10 +413,10 @@ def test_set_setting_upserts(conn: sqlite3.Connection) -> None:
     assert get_setting(conn, "k") == "v2"
 
 
-def test_default_temperature_default_is_0_7(conn: sqlite3.Connection) -> None:
-    """No row → 0.7. Production default before the user touches
+def test_default_temperature_default_is_0_2(conn: sqlite3.Connection) -> None:
+    """No row → 0.2. Production default before the user touches
     /settings."""
-    assert get_default_temperature(conn) == 0.7
+    assert get_default_temperature(conn) == 0.2
 
 
 def test_default_temperature_round_trip(conn: sqlite3.Connection) -> None:
@@ -437,11 +439,40 @@ def test_set_default_temperature_clamps_out_of_range(
 def test_get_default_temperature_falls_back_on_malformed_row(
     conn: sqlite3.Connection,
 ) -> None:
-    """A non-numeric value (hand-edited or legacy DB) reads as 0.7
+    """A non-numeric value (hand-edited or legacy DB) reads as 0.2
     rather than raising, so a corrupt setting can't break chat
     creation."""
     set_setting(conn, "default_temperature", "not-a-number")
-    assert get_default_temperature(conn) == 0.7
+    assert get_default_temperature(conn) == 0.2
+
+
+def test_default_tool_iteration_cap_default_is_5(conn: sqlite3.Connection) -> None:
+    """No row → 5. Production default before the user touches /settings."""
+    assert get_default_tool_iteration_cap(conn) == 5
+
+
+def test_default_tool_iteration_cap_round_trip(conn: sqlite3.Connection) -> None:
+    """A set value reads back unchanged on a subsequent read."""
+    set_default_tool_iteration_cap(conn, 3)
+    assert get_default_tool_iteration_cap(conn) == 3
+
+
+def test_set_default_tool_iteration_cap_clamps_out_of_range(
+    conn: sqlite3.Connection,
+) -> None:
+    """Values outside [1, 10] are clamped before storage."""
+    set_default_tool_iteration_cap(conn, 20)
+    assert get_default_tool_iteration_cap(conn) == 10
+    set_default_tool_iteration_cap(conn, 0)
+    assert get_default_tool_iteration_cap(conn) == 1
+
+
+def test_get_default_tool_iteration_cap_falls_back_on_malformed_row(
+    conn: sqlite3.Connection,
+) -> None:
+    """A non-numeric value reads as 5 rather than raising."""
+    set_setting(conn, "default_tool_iteration_cap", "not-a-number")
+    assert get_default_tool_iteration_cap(conn) == 5
 
 
 # ---------------------------------------------------------------------------
