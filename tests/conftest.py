@@ -23,6 +23,9 @@ import pytest
 
 from app import generation, ollama
 from app.tools import TOOLS
+from app.tools import builtins as _builtins  # noqa: F401 — registers file tools
+
+_FILE_TOOL_NAMES = ("read_file", "write_file")
 
 
 @pytest.fixture(autouse=True)
@@ -52,6 +55,15 @@ def _isolate_module_state() -> Iterator[None]:
     generation.live_generations.clear()
     ollama.reset_capability_cache()
     saved_query_rag = TOOLS.get("query_rag")
+    # The file tools register at import (via the @tool decorator) but
+    # FILE_TOOL_ROOT is unset under test, so production would have popped
+    # them at lifespan startup. Snapshot, then pop, so the default test
+    # tool universe is {current_time, query_rag} — matching an
+    # unconfigured install. File-tool tests opt back in by setting
+    # FILE_TOOL_ROOT and calling refresh_file_tools_registration().
+    saved_file_tools = {n: TOOLS.get(n) for n in _FILE_TOOL_NAMES}
+    for name in _FILE_TOOL_NAMES:
+        TOOLS.pop(name, None)
     yield
     generation.live_generations.clear()
     generation.live_generations.update(saved_gens)
@@ -60,3 +72,8 @@ def _isolate_module_state() -> Iterator[None]:
         TOOLS["query_rag"] = saved_query_rag
     else:
         TOOLS.pop("query_rag", None)
+    for name, spec in saved_file_tools.items():
+        if spec is not None:
+            TOOLS[name] = spec
+        else:
+            TOOLS.pop(name, None)

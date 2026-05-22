@@ -25,6 +25,7 @@ from app.routes import router
 # explicitly so the startup hook below is obvious in the lifespan — the
 # alternative (digging through `routes.refresh_query_rag_registration`)
 # would hide a side effect inside an HTTP module.
+from app.tools.builtins import refresh_file_tools_registration
 from app.tools.rag import refresh_query_rag_registration
 
 # Static assets live alongside `main.py` at the project root. Resolving
@@ -51,6 +52,11 @@ async def lifespan(app: FastAPI):
     # Runs AFTER initialize_database so the rag_servers table is
     # guaranteed to exist before we SELECT from it.
     refresh_query_rag_registration()
+
+    # Sync the file tools (read_file / write_file) to FILE_TOOL_ROOT:
+    # present when a workspace dir is configured, removed otherwise so
+    # the model never sees a tool with nowhere to operate.
+    refresh_file_tools_registration()
 
     db = open_connection()
     ollama_client = create_client()

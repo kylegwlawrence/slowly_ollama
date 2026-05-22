@@ -87,7 +87,10 @@ def _default_tool_states() -> list[queries.ChatToolState]:
     return [
         queries.ChatToolState(tool_name=name, enabled=True)
         for name in _ALL_TOOL_NAMES
-        if name != RAG_TOOL_NAME
+        # `name in TOOLS` excludes tools the lifespan gating popped (e.g.
+        # the file tools when FILE_TOOL_ROOT is unset) so a misconfigured
+        # install doesn't seed chips for a tool the model can't see.
+        if name != RAG_TOOL_NAME and name in TOOLS
     ]
 
 
@@ -121,7 +124,13 @@ def _chip_states(
     """
     tool_states = [
         s
-        for s in queries.get_chat_tool_states(db, conversation_id, _ALL_TOOL_NAMES)
+        for s in queries.get_chat_tool_states(
+            db,
+            conversation_id,
+            # Live-filter so gating-popped tools (e.g. file tools when
+            # FILE_TOOL_ROOT is unset) don't surface as chips.
+            [n for n in _ALL_TOOL_NAMES if n in TOOLS],
+        )
         if s.tool_name != RAG_TOOL_NAME
     ]
     if servers is None:

@@ -51,3 +51,29 @@ def db_path() -> Path:
         KeyError: If `DB_PATH` is not set.
     """
     return Path(os.environ["DB_PATH"]).expanduser()
+
+
+def file_tool_root() -> Path | None:
+    """Return the workspace directory the file tools are confined to, or None.
+
+    The ``read_file`` / ``write_file`` tools resolve every path relative
+    to this directory and reject anything that escapes it. Unlike
+    :func:`ollama_host` and :func:`db_path`, a missing value is NOT an
+    error: when ``FILE_TOOL_ROOT`` is unset the file tools are removed
+    from the registry entirely (see
+    ``app.tools.builtins.refresh_file_tools_registration``), so the chat
+    model is never offered a tool with nowhere to operate.
+
+    ``expanduser()`` lets a ``~``-prefixed value resolve to the current
+    user's home; ``resolve()`` collapses symlinks and ``..`` so the
+    sandbox containment check inside the tools compares two
+    fully-resolved paths.
+
+    Returns:
+        Absolute, resolved ``Path`` to the workspace root, or ``None``
+        when ``FILE_TOOL_ROOT`` is unset (or set to an empty string).
+    """
+    raw = os.environ.get("FILE_TOOL_ROOT")
+    if not raw:
+        return None
+    return Path(raw).expanduser().resolve()
