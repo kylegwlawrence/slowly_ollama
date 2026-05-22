@@ -344,7 +344,7 @@ async def test_generate_title_uses_passed_model_and_appends_title_request() -> N
     assert msgs[0] == {"role": "user", "content": "Hi"}
     assert msgs[1] == {"role": "assistant", "content": "Hello!"}
     assert msgs[2]["role"] == "user"
-    assert "Title" in msgs[2]["content"]
+    assert "title" in msgs[2]["content"].lower()
 
 
 @pytest.mark.asyncio
@@ -387,8 +387,8 @@ async def test_generate_title_strips_quotes_and_preambles() -> None:
 
 
 @pytest.mark.asyncio
-async def test_generate_title_caps_at_six_words() -> None:
-    """Titles get capped at 6 words — smaller models routinely
+async def test_generate_title_caps_at_four_words() -> None:
+    """Titles get capped at 4 words — smaller models routinely
     overshoot the prompt's word-count instruction."""
     overshoot = "one two three four five six seven eight nine ten"
 
@@ -400,13 +400,13 @@ async def test_generate_title_caps_at_six_words() -> None:
     async with _client_with(handler) as client:
         title = await generate_title(client, "llama3", [])
 
-    assert title == "one two three four five six"
-    assert len(title.split()) == 6
+    assert title == "one two three four"
+    assert len(title.split()) == 4
 
 
 @pytest.mark.asyncio
 async def test_generate_title_short_titles_pass_through() -> None:
-    """Titles already at or under the 6-word cap are returned unchanged."""
+    """Titles already at or under the 4-word cap are returned unchanged."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -419,10 +419,10 @@ async def test_generate_title_short_titles_pass_through() -> None:
 
 @pytest.mark.asyncio
 async def test_generate_title_char_cap_is_final_safety_net() -> None:
-    """When the 6 words are themselves absurdly long, the 80-char cap
+    """When the 4 words are themselves absurdly long, the 30-char cap
     truncates the result so the sidebar row can't explode."""
     huge_word = "X" * 100
-    payload = " ".join([huge_word] * 6)  # 605 chars, 6 words
+    payload = " ".join([huge_word] * 4)  # 403 chars, 4 words
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"message": {"content": payload}})
@@ -430,7 +430,7 @@ async def test_generate_title_char_cap_is_final_safety_net() -> None:
     async with _client_with(handler) as client:
         title = await generate_title(client, "llama3", [])
 
-    assert len(title) == 80
+    assert len(title) == 30
 
 
 # ---------------------------------------------------------------------------
