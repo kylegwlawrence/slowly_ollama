@@ -264,7 +264,7 @@ def agent_client(
         if request.url.path == "/api/tags":
             return httpx.Response(
                 200,
-                json={"models": [{"name": "qwen3.5:9b"}, {"name": "llama3"}]},
+                json={"models": [{"name": "granite4.1:8b"}, {"name": "llama3"}]},
             )
         if request.url.path == "/api/show":
             return httpx.Response(
@@ -298,7 +298,7 @@ def test_invoked_agent_journey(agent_client: TestClient) -> None:
     Content Generator, then back to Normal — asserting the header indicator
     (and thus the persisted active agent) at each step.
 
-    The agent runs on its own model (qwen3.5:9b), overriding the chat's
+    The agent runs on its own model (granite4.1:8b), overriding the chat's
     pinned Normal model (llama3) only while it's active.
     """
     client = agent_client
@@ -312,7 +312,7 @@ def test_invoked_agent_journey(agent_client: TestClient) -> None:
     chat_id = int(re.search(r'data-chat-id="(\d+)"', created.text).group(1))
     # Header indicator names the agent + its assigned model.
     assert "Agent: Research" in created.text
-    assert "qwen3.5:9b" in created.text
+    assert "granite4.1:8b" in created.text
 
     # 2. Drive the research turn's stream to completion.
     stream = client.get(f"/chats/{chat_id}/stream")

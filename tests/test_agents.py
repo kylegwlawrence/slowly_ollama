@@ -32,17 +32,27 @@ def test_research_agent_has_tools_content_generator_has_none() -> None:
     assert content.tools == frozenset()
 
 
-def test_think_defaults_off_and_research_opts_in() -> None:
-    """`think` defaults False (safe on any model). Research opts in (it runs
-    on a thinking-capable model); the Content Generator stays off so qwen
-    answers directly instead of over-reasoning."""
+def test_think_defaults_off_and_is_settable() -> None:
+    """`think` defaults False (safe on any model) and is opt-in.
+
+    Both shipped agents currently run on non-thinking models, so both are
+    False — Research on granite4.1:8b (which 400s on think=true) and the
+    Content Generator for directness. The flag is still settable to True for
+    a future agent assigned a thinking-capable model."""
     # Default is the safe value.
     bare = AgentSpec(
         name="x", label="X", description="d", model="m", system_prompt="p"
     )
     assert bare.think is False
 
-    assert AGENTS["research"].think is True
+    # ...but opt-in still works for a thinking-capable model.
+    opted_in = AgentSpec(
+        name="y", label="Y", description="d", model="m",
+        system_prompt="p", think=True,
+    )
+    assert opted_in.think is True
+
+    assert AGENTS["research"].think is False
     assert AGENTS["content_generator"].think is False
 
 

@@ -57,22 +57,24 @@ AGENTS: dict[str, AgentSpec] = {
         name="research",
         label="Research",
         description="Gathers information with tools and reports findings.",
-        model="qwen3.5:9b",
+        model="granite4.1:8b",
         system_prompt=RESEARCH_AGENT_PROMPT,
         tools=frozenset({"current_time", "query_rag"}),
-        # qwen3.5:9b is thinking-capable; research benefits from reasoning
-        # about which tools to call, so leave thinking on.
-        think=True,
+        # granite4.1:8b is tool-capable and fast on 16GB. It is NOT a
+        # thinking model, so think MUST stay False — Ollama 400s on
+        # think=true for a model without the capability.
+        think=False,
     ),
     "content_generator": AgentSpec(
         name="content_generator",
         label="Content Generator",
         description="Writes a polished piece from the conversation so far.",
-        model="qwen3.5:9b",
+        model="granite4.1:8b",
         system_prompt=CONTENT_GENERATOR_PROMPT,
         tools=frozenset(),
-        # Pure synthesis — no multi-step reasoning needed. Thinking off so
-        # qwen answers directly instead of over-reasoning the write-up.
+        # Pure synthesis — no tools, no thinking. Shares Research's model
+        # (granite4.1:8b) so the Research -> Content hand-off needs no model
+        # swap/reload on a 16GB machine.
         think=False,
     ),
 }
