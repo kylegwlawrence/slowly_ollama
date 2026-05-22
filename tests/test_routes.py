@@ -1529,11 +1529,10 @@ def test_stream_stops_title_after_third_assistant_reply(
         # Stream the assistant reply (count → 1, title fires).
         client.get(f"/chats/{chat_id}/stream")
 
-        # Rounds 2 and 3: send + stream. Title fires each time
-        # (count → 2 then 3).
-        for _ in range(2):
+        # Rounds 2–3: send + stream. Title fires each time (count → 2, 3).
+        for i in range(2):
             client.post(
-                f"/chats/{chat_id}/messages", data={"content": "ping"}
+                f"/chats/{chat_id}/messages", data={"content": f"ping{i+2}"}
             )
             client.get(f"/chats/{chat_id}/stream")
 
