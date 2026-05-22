@@ -29,3 +29,5 @@ __pycache__/
 
 # Claude Code's per-project local settings (e.g. tool permissions)
 .claude/
+
+workspace/
