@@ -23,13 +23,13 @@ def test_agentspec_fields_are_populated() -> None:
         assert isinstance(spec.tools, frozenset)
 
 
-def test_research_agent_has_tools_content_generator_has_none() -> None:
-    """Least-privilege: research can retrieve; content generator cannot."""
+def test_shipped_agent_allowlists() -> None:
+    """Research retrieves; the content generator reads/writes workspace files."""
     research = AGENTS["research"]
     assert research.tools == frozenset({"current_time", "query_rag"})
 
     content = AGENTS["content_generator"]
-    assert content.tools == frozenset()
+    assert content.tools == frozenset({"read_file", "write_file"})
 
 
 def test_think_defaults_off_and_is_settable() -> None:
@@ -61,9 +61,10 @@ def test_shipped_agent_tools_are_real_registered_tools() -> None:
     typo can't silently produce an agent that offers a non-existent tool."""
     from app.tools import TOOLS
 
-    # query_rag is registered only when a RAG server is configured, so allow
-    # it even if absent from TOOLS in a bare test env.
-    known = set(TOOLS) | {"query_rag"}
+    # query_rag is registered only when a RAG server is configured, and the
+    # file tools only when FILE_TOOL_ROOT is set — both are absent from TOOLS
+    # in a bare test env, so allow them explicitly.
+    known = set(TOOLS) | {"query_rag", "read_file", "write_file"}
     for spec in AGENTS.values():
         assert spec.tools <= known, spec.tools - known
 

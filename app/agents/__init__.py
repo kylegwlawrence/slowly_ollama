@@ -71,10 +71,14 @@ AGENTS: dict[str, AgentSpec] = {
         description="Writes a polished piece from the conversation so far.",
         model="granite4.1:8b",
         system_prompt=CONTENT_GENERATOR_PROMPT,
-        tools=frozenset(),
-        # Pure synthesis — no tools, no thinking. Shares Research's model
-        # (granite4.1:8b) so the Research -> Content hand-off needs no model
-        # swap/reload on a 16GB machine.
+        # read_file / write_file let it draft into and revise files in the
+        # workspace. Gated on FILE_TOOL_ROOT: when that's unset both are
+        # absent from TOOLS, and _run_generation's allowlist filter simply
+        # drops them — the agent degrades to tool-less synthesis.
+        tools=frozenset({"read_file", "write_file"}),
+        # Shares Research's model (granite4.1:8b) so the Research -> Content
+        # hand-off needs no model swap/reload on a 16GB machine. Not a
+        # thinking model, so think stays False.
         think=False,
     ),
 }
