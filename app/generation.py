@@ -472,7 +472,7 @@ async def _maybe_emit_title(
     db: sqlite3.Connection,
     conversation_id: int,
 ) -> None:
-    """Fire the auto-titler after the 1st, 2nd, or 3rd assistant reply.
+    """Fire the auto-titler after the 1st through 3rd assistant reply.
 
     Phase 11d behavior, ported to the new producer architecture.
     Emits zero or one `title` SSE event via `_emit` (consumers see
@@ -499,14 +499,17 @@ async def _maybe_emit_title(
             conversation.model,
             _build_history_payload(full_history),
         )
-    except (OllamaUnavailable, OllamaProtocolError):
+    except (OllamaUnavailable, OllamaProtocolError) as e:
+        logger.warning("Title generation failed for conv %d: %s", conversation_id, e)
         return
 
     if not title:
+        logger.warning("Title generation returned empty for conv %d", conversation_id)
         return
 
     updated = queries.set_name_auto(db, conversation_id, title)
     if updated is None:
+        logger.debug("Title set_name_auto skipped for conv %d (locked?)", conversation_id)
         return
 
     # Bare `hx-swap-oob="true"` tells HTMX to match by id and swap in
