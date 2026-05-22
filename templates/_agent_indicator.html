@@ -1,0 +1,22 @@
+{# Header indicator (phase 16): which agent (if any) is driving this chat and
+   on which model.
+
+   - Normal (no active agent): just the chat's pinned model, exactly as the
+     pre-phase-16 `chat-panel__model` span showed.
+   - Agent active: the agent label + its assigned model.
+
+   Stable id so the agent-picker endpoint can OOB-swap it on change. Pass
+   `oob=True` from that endpoint to add `hx-swap-oob`; the initial header
+   render leaves it off.
+
+   Context: `conversation`, `active_agent_spec` (an AgentSpec or None). #}
+<span id="agent-indicator-{{ conversation.id }}"
+      class="chat-panel__model{% if active_agent_spec %} chat-panel__model--agent{% endif %}"
+      {% if oob %}hx-swap-oob="true" {% endif %}data-role="agent-indicator">
+  {%- if active_agent_spec -%}
+    <span class="material-symbols-outlined">smart_toy</span>
+    Agent: {{ active_agent_spec.label }} ({{ active_agent_spec.model }})
+  {%- else -%}
+    {{ conversation.model }}
+  {%- endif -%}
+</span>

@@ -71,7 +71,9 @@ SINGLE_AGENT_SYSTEM_PROMPT = (
     "question depends on information in the user's configured knowledge "
     "sources, call the retrieval tool to ground your answer instead of "
     "relying on memory. Do not call tools speculatively or for things you "
-    "already know — call a tool only when its result would change your answer."
+    "already know — call a tool only when its result would change your answer. "
+    "If the user explicitly asks you to use a specific tool, call that tool "
+    "even if you would not have chosen to call it on your own."
 )
 
 
@@ -154,10 +156,7 @@ async def emit_ollama_error(
     """Emit an SSE ``error`` event describing an Ollama-layer failure.
 
     Replaces four near-identical ``except`` blocks across
-    ``_run_generation``. Pulled out as a top-level (no leading
-    underscore) because phase 13's agentic-loop producer in
-    ``app/agents/loop.py`` will need the same error-emission shape
-    and importing a private name would be a footgun.
+    ``_run_generation``.
     """
     label = (
         "Ollama unavailable"
@@ -187,9 +186,8 @@ def maybe_persist_partial(
     bubble — or the partial token buffer if any tokens streamed —
     so the chat panel has *something* to render after a reload.
 
-    Pulled out for the same reason as ``emit_ollama_error``: phase 13's
-    agentic producer needs the same safety-net shape and a duplicate
-    finally-body would drift the moment one side is touched.
+    Pulled out for the same reason as ``emit_ollama_error``: keeping the
+    safety-net shape in one place so a duplicate finally-body can't drift.
     """
     if persisted_or_errored:
         return
@@ -289,35 +287,35 @@ async def start_generation(
     tool_iteration_cap: int = _TOOL_ITERATION_CAP,
     history: list,
     on_complete: Literal["append", "replace"],
+    system_prompt_override: str | None = None,
+    tool_allowlist: frozenset[str] | None = None,
+    think: bool | None = None,
 ) -> GenerationState:
     """Register a GenerationState and spawn the producer task.
 
-    Phase 13d.3: now ``async`` so the dispatcher can await
-    ``model_supports_tools`` before deciding whether to route to
-    the agentic loop. Single-agent callers are unaffected — they
-    still get a ``GenerationState`` back, the producer task is
-    still spawned via ``asyncio.create_task``.
+    Always runs the single-agent producer ``_run_generation``. When the
+    caller is invoking a named agent (phase 16), it passes the agent's
+    ``model`` (as ``model``), ``system_prompt_override``, and
+    ``tool_allowlist``; otherwise those default to None and the producer
+    runs the ordinary per-chat-chips plain-chat path.
 
-    Producer selection:
-
-    - **agentic** (phase 13d): when the global ``agentic_mode``
-      setting is on AND the chat's model advertises ``tools``
-      capability. Routes to ``app.agents.loop._run_agentic_generation``.
-    - **single-agent**: every other case. Routes to
-      ``_run_generation`` (unchanged behavior).
-
-    The capability check is the silent-fallback path locked in the
-    plan: agentic mode is on but the chat's pinned model isn't
-    tool-capable → run single-agent instead of 400ing. The route
-    layer (phase 13e) adds an inline badge so the user sees the
-    fallback happened.
+    Args:
+        system_prompt_override: The invoked agent's system prompt, injected
+            on every turn. None for Normal chat (the producer falls back to
+            its tool-use nudge, and only when tools are present).
+        tool_allowlist: The invoked agent's permitted tool names. None for
+            Normal chat (the producer filters by the per-chat tool/RAG
+            chips). An empty frozenset means "agent with no tools".
+        think: The invoked agent's Ollama ``think`` flag (True/False), or
+            None for Normal chat (omit the flag → Ollama default). Passed
+            straight through to the chat calls.
 
     Raises:
         GenerationInProgress: if a generation is already running for
             this conversation. Raised SYNCHRONOUSLY before the first
             ``await``, so callers' ``except GenerationInProgress``
-            still catches it before any agentic-dispatch work fires.
-            The route maps this to HTTP 409.
+            still catches it before any dispatch work fires. The route
+            maps this to HTTP 409.
     """
     # In-flight guard must fire BEFORE the first await — callers'
     # try/except GenerationInProgress depends on it raising
@@ -329,10 +327,6 @@ async def start_generation(
         raise GenerationInProgress(
             f"Conversation {conversation_id} already has a generation in flight"
         )
-
-    # Phase 15: agentic dispatch disabled; always single-agent.
-    # _run_agentic_generation stays in the codebase but is unreachable
-    # until the agentic loop is re-enabled in a future phase.
 
     state = GenerationState(conversation_id=conversation_id)
     # Register BEFORE create_task so the registry is populated by
@@ -355,6 +349,9 @@ async def start_generation(
             tool_iteration_cap=tool_iteration_cap,
             history=history,
             on_complete=on_complete,
+            system_prompt_override=system_prompt_override,
+            tool_allowlist=tool_allowlist,
+            think=think,
         )
     )
     state.task.add_done_callback(_make_done_callback(conversation_id))
@@ -457,19 +454,15 @@ def _build_history_payload(
                 "role": "tool",
                 "content": decode_tool_result(m.content).text,
             })
-        elif m.role in ("research_findings", "review_verdict"):
-            # Phase 13 internal artifacts of the agentic loop. They
-            # belong to the tool-card UI and to the orchestrator's
-            # per-iteration history (built separately in
-            # app/agents/loop.py), NOT to the wire-format history we
-            # ship to Ollama for unrelated calls like title
-            # generation. Drop them silently so a chat that used
-            # agentic mode still title-generates cleanly.
-            skip_next_result = False
-            continue
-        else:
+        elif m.role in ("user", "assistant"):
             skip_next_result = False
             out.append({"role": m.role, "content": m.content})
+        else:
+            # Unknown/legacy role (e.g. research_findings / review_verdict
+            # rows left by the removed agentic loop). Drop silently so a
+            # chat that used a since-removed feature still serializes into
+            # a valid Ollama payload instead of shipping an invalid role.
+            skip_next_result = False
     return out
 
 
@@ -527,6 +520,92 @@ async def _maybe_emit_title(
     await _emit(state, "title", row_html)
 
 
+def _chat_tool_specs(
+    db: sqlite3.Connection, conversation_id: int
+) -> list[dict]:
+    """Tool specs for a Normal (non-agent) turn — per-chat chips filter them.
+
+    The per-chat tool chips (phase 15) and per-server RAG chips (phase 15b)
+    select which registered tools the model sees. ``query_rag`` has no chip of
+    its own — its sole gate is whether any RAG server is enabled for the chat;
+    when at least one is, its ``source`` description is rebuilt from the
+    enabled servers.
+
+    Args:
+        db: Open SQLite connection.
+        conversation_id: Chat whose chip state filters the registry.
+
+    Returns:
+        Ollama-shaped tool specs, possibly empty.
+    """
+    enabled_names = set(
+        queries.get_enabled_tool_names(db, conversation_id, list(TOOLS.keys()))
+    )
+    all_rag_servers = _rag_module.list_servers(db)
+    enabled_rag_names = set(
+        queries.get_enabled_rag_server_names(
+            db, conversation_id, [s.name for s in all_rag_servers]
+        )
+    )
+    enabled_rag_servers = [
+        s for s in all_rag_servers if s.name in enabled_rag_names
+    ]
+
+    specs: list[dict] = []
+    for spec in tool_specs_for_ollama():
+        name = spec["function"]["name"]
+        if name == RAG_TOOL_NAME:
+            if not enabled_rag_servers:
+                continue  # All server chips off → exclude query_rag.
+            spec = copy.deepcopy(spec)  # Don't mutate the global registry.
+            spec["function"]["parameters"]["properties"]["source"][
+                "description"
+            ] = build_source_description(enabled_rag_servers)
+            specs.append(spec)
+            continue
+        if name not in enabled_names:
+            continue
+        specs.append(spec)
+    return specs
+
+
+def _agent_tool_specs(
+    db: sqlite3.Connection, allowlist: frozenset[str]
+) -> list[dict]:
+    """Tool specs for an invoked agent — its allowlist is the only gate.
+
+    The agent's per-chat chips do NOT apply; the allowlist alone decides which
+    registered tools are offered. ``query_rag`` is included only when it's in
+    the allowlist AND at least one RAG server is configured (using all
+    configured servers for the ``source`` description — there are no per-agent
+    server chips).
+
+    Args:
+        db: Open SQLite connection.
+        allowlist: Tool names the agent may call. Empty → no tools.
+
+    Returns:
+        Ollama-shaped tool specs, possibly empty.
+    """
+    if not allowlist:
+        return []
+    all_rag_servers = _rag_module.list_servers(db)
+    specs: list[dict] = []
+    for spec in tool_specs_for_ollama():
+        name = spec["function"]["name"]
+        if name not in allowlist:
+            continue
+        if name == RAG_TOOL_NAME:
+            if not all_rag_servers:
+                continue
+            spec = copy.deepcopy(spec)  # Don't mutate the global registry.
+            spec["function"]["parameters"]["properties"]["source"][
+                "description"
+            ] = build_source_description(all_rag_servers)
+        specs.append(spec)
+    return specs
+
+
 async def _run_generation(
     *,
     state: GenerationState,
@@ -538,6 +617,9 @@ async def _run_generation(
     tool_iteration_cap: int = _TOOL_ITERATION_CAP,
     history: list,
     on_complete: Literal["append", "replace"],
+    system_prompt_override: str | None = None,
+    tool_allowlist: frozenset[str] | None = None,
+    think: bool | None = None,
 ) -> None:
     """Producer body — runs the LLM and writes events to the state.
 
@@ -556,48 +638,19 @@ async def _run_generation(
     `319dd40`) for loop semantics — they're unchanged.
     """
     working_history = list(history)
-    # Phase 15: filter to only this chat's enabled tools, then gate on
-    # model capability. Unseeded chats default to all tools enabled.
-    # `model_supports_tools` returns False on cache/network failure,
-    # which collapses to tools_payload = None (omits the key entirely).
-    _all_names = list(TOOLS.keys())
-    _enabled_names = set(
-        queries.get_enabled_tool_names(db, conversation_id, _all_names)
-    )
-
-    # Phase 15b: per-chat RAG server filtering. Build the enabled server
-    # list once, then apply it when constructing the query_rag spec so
-    # the model only sees the sources the user toggled on for this chat.
-    # If all servers are toggled off, query_rag is excluded entirely.
-    _all_rag_servers = _rag_module.list_servers(db)
-    _enabled_rag_names = set(
-        queries.get_enabled_rag_server_names(
-            db, conversation_id, [s.name for s in _all_rag_servers]
-        )
-    )
-    _enabled_rag_servers = [s for s in _all_rag_servers if s.name in _enabled_rag_names]
-
-    _enabled_specs: list[dict] = []
-    for _spec in tool_specs_for_ollama():
-        _name = _spec["function"]["name"]
-        if _name == RAG_TOOL_NAME:
-            # query_rag has no tool-chip of its own (phase 15b moved RAG
-            # control to the per-server chips), so it must NOT be gated on
-            # `_enabled_names` — the composer never seeds it enabled, which
-            # would otherwise filter it out of every chat. Its sole gate is
-            # whether any RAG server is enabled for this chat.
-            if not _enabled_rag_servers:
-                continue  # All server chips off → exclude query_rag
-            # Deep-copy so we don't mutate the global registry entry.
-            _spec = copy.deepcopy(_spec)
-            _spec["function"]["parameters"]["properties"]["source"]["description"] = (
-                build_source_description(_enabled_rag_servers)
-            )
-            _enabled_specs.append(_spec)
-            continue
-        if _name not in _enabled_names:
-            continue
-        _enabled_specs.append(_spec)
+    # Build the candidate tool specs, then gate on model capability.
+    # `model_supports_tools` returns False on cache/network failure, which
+    # collapses to tools_payload = None (omits the key entirely).
+    #
+    # Two paths:
+    #   - Agent turn (phase 16, `tool_allowlist is not None`): the invoked
+    #     agent's allowlist governs the specs (an empty frozenset → no tools).
+    #   - Normal turn (`tool_allowlist is None`): the per-chat tool/RAG chips
+    #     filter the registry, exactly as before.
+    if tool_allowlist is not None:
+        _enabled_specs = _agent_tool_specs(db, tool_allowlist)
+    else:
+        _enabled_specs = _chat_tool_specs(db, conversation_id)
 
     tools_payload = (
         _enabled_specs
@@ -605,11 +658,18 @@ async def _run_generation(
         else None
     )
 
-    # Inject the tool-use system prompt ONLY when tools are actually sent
-    # this turn. With no tools available, a "use your tools" policy is just
-    # noise — and omitting it keeps the plain-chat path byte-identical to
-    # the pre-phase-15 behavior.
-    system_prompt = SINGLE_AGENT_SYSTEM_PROMPT if tools_payload is not None else None
+    # System prompt selection:
+    #   - Agent turn: always inject the agent's prompt — it's the agent's
+    #     identity, and a no-tools agent (Content Generator) still needs it.
+    #   - Normal turn: inject the tool-use nudge ONLY when tools are actually
+    #     sent. With no tools, a "use your tools" policy is just noise — and
+    #     omitting it keeps plain chat byte-identical to pre-phase-15.
+    if tool_allowlist is not None:
+        system_prompt = system_prompt_override
+    else:
+        system_prompt = (
+            SINGLE_AGENT_SYSTEM_PROMPT if tools_payload is not None else None
+        )
 
     turn_id = str(time.monotonic_ns())
     card_id = render.card_id_for(turn_id)
@@ -634,6 +694,7 @@ async def _run_generation(
                     _build_history_payload(working_history, system_prompt),
                     tools=tools_payload,
                     temperature=temperature,
+                    think=think,
                 )
             except (OllamaUnavailable, OllamaProtocolError) as e:
                 # Set BEFORE the await — await is a cancellation point;
@@ -748,6 +809,7 @@ async def _run_generation(
                 client, model,
                 _build_history_payload(working_history, system_prompt),
                 temperature=temperature,
+                think=think,
             ):
                 if chunk.content:
                     chunks.append(chunk.content)

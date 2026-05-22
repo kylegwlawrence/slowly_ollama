@@ -44,6 +44,15 @@
        option blocks submission via the `required` attribute until /models
        responds (or until the user manually picks). #}
     <div class="composer__toolbar">
+      {# Phase 16: agent picker, to the LEFT of the model selector. Picking a
+         non-Normal agent greys the model dropdown (app.js) since each agent
+         runs on its own assigned model; the chat still persists the (greyed)
+         Normal model for when the user switches back. The selection submits as
+         the `agent` form field with POST /chats. #}
+      <label class="composer__toolbar-label" for="composer-agent">Agent</label>
+      {% set selected_agent = "" %}
+      {% set select_id = "composer-agent" %}
+      {% include "_agent_select.html" %}
       <label class="composer__toolbar-label" for="composer-model">Model</label>
       <select id="composer-model" name="model" required
               hx-get="/models"

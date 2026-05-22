@@ -1,55 +1,102 @@
-"""Phase 13: multi-agent research → review → generation loop.
+"""Phase 16: registry of user-invoked agents.
 
-Three discrete agents, each invoked via Ollama with its own system
-prompt and tool scope:
+An agent is a named bundle of (system prompt, assigned Ollama model, tool
+allowlist). The user picks one from the composer dropdown; that agent's turn
+runs the ordinary single-agent producer (`app.generation._run_generation`)
+parameterized by those three things. "Normal" (plain chat) is the *absence* of
+an agent — see `get_agent`.
 
-- **research** sees full chat history + the current user message and
-  has access to every registered tool. It runs a tool-calling
-  inner loop until it stops calling tools; the last text response
-  is captured as the iteration's "findings".
-- **review** sees only the original user message and the latest
-  findings, with two custom tools (mark_passed,
-  request_more_research) that encode its verdict.
-- **generation** sees only the original user message and the final
-  findings, no tools. It writes the final assistant response.
-
-The orchestrator (`loop._run_agentic_generation`) wires them
-together with a 3-iteration cap. See
-`docs/plans/phase13-agentic-loop.md` for the architecture diagram.
+Code-defined on purpose (mirrors `app/tools/__init__.py` and the hardcoded
+prompts): adding an agent is a few lines here plus a restart, version-controlled
+and testable, with no runtime CRUD surface to maintain. New agents are expected
+to be added over time by editing `AGENTS`.
 """
 
-from app.agents.prompts import (
-    GENERATION_SYSTEM_PROMPT,
-    RESEARCH_SYSTEM_PROMPT,
-    REVIEW_SYSTEM_PROMPT,
-)
+from dataclasses import dataclass, field
 
-# Phase 13f: the iteration cap is shared by the live orchestrator
-# (`app.agents.loop`) and the historic-render path (`app.render`).
-# Both modules need to agree on "did this turn hit the cap?" — the
-# orchestrator decides when to render the max-iterations badge live,
-# and historic render derives the same flag from the persisted
-# iteration count.
-#
-# Lives in this package's __init__ rather than in `loop.py` because
-# `loop.py` already imports `app.render`; if render imported from
-# loop the import graph would cycle. The __init__ is dependency-free
-# (only pulls in `prompts`, which is pure constants) and is the
-# natural shared surface for the agents package.
-AGENTIC_ITERATION_CAP = 3
+from app.agents.prompts import CONTENT_GENERATOR_PROMPT, RESEARCH_AGENT_PROMPT
 
-# NOTE: `app.agents.verdict_tools` is deliberately NOT re-exported
-# from this package's __init__. The commit order in
-# docs/plans/phase13-agentic-loop.md lets 13b (this module + prompts)
-# ship before 13c (verdict_tools); pulling verdict_tools into the
-# package surface would couple the two and force them into a single
-# commit. Call sites import directly:
-#
-#     from app.agents.verdict_tools import REVIEW_TOOL_SPECS, parse_verdict
 
-__all__ = [
-    "AGENTIC_ITERATION_CAP",
-    "GENERATION_SYSTEM_PROMPT",
-    "RESEARCH_SYSTEM_PROMPT",
-    "REVIEW_SYSTEM_PROMPT",
-]
+@dataclass(frozen=True)
+class AgentSpec:
+    """A user-invokable agent definition.
+
+    Attributes:
+        name: Stable identifier persisted on the conversation
+            (`conversations.active_agent`) and used as the dropdown's option
+            value. Lowercase snake_case.
+        label: Human-readable name shown in the UI.
+        description: One-line summary for the dropdown / tooltip.
+        model: Ollama model id this agent always runs on, regardless of the
+            chat's pinned model. Must be installed; tool-using agents need a
+            tool-capable model.
+        system_prompt: The ``system``-role message prepended to every turn.
+        tools: Allowlist of tool names (keys in `app.tools.TOOLS`) this agent
+            may call. An empty set means the agent runs with no tools.
+        think: Whether to enable the model's reasoning/"thinking" phase
+            (Ollama's ``think`` flag). Defaults to ``False``, which is safe on
+            ANY model and stops chatty models (e.g. qwen) from over-reasoning
+            before answering. Set ``True`` ONLY for an agent assigned a
+            thinking-capable model — Ollama returns a 400 for ``think: true``
+            on a model without the capability.
+    """
+
+    name: str
+    label: str
+    description: str
+    model: str
+    system_prompt: str
+    tools: frozenset[str] = field(default_factory=frozenset)
+    think: bool = False
+
+
+# Insertion order is the dropdown order. "Normal" is rendered by the UI as a
+# leading option and is NOT in this dict — it maps to `active_agent = None`.
+AGENTS: dict[str, AgentSpec] = {
+    "research": AgentSpec(
+        name="research",
+        label="Research",
+        description="Gathers information with tools and reports findings.",
+        model="qwen3.5:9b",
+        system_prompt=RESEARCH_AGENT_PROMPT,
+        tools=frozenset({"current_time", "query_rag"}),
+        # qwen3.5:9b is thinking-capable; research benefits from reasoning
+        # about which tools to call, so leave thinking on.
+        think=True,
+    ),
+    "content_generator": AgentSpec(
+        name="content_generator",
+        label="Content Generator",
+        description="Writes a polished piece from the conversation so far.",
+        model="qwen3.5:9b",
+        system_prompt=CONTENT_GENERATOR_PROMPT,
+        tools=frozenset(),
+        # Pure synthesis — no multi-step reasoning needed. Thinking off so
+        # qwen answers directly instead of over-reasoning the write-up.
+        think=False,
+    ),
+}
+
+
+def list_agents() -> list[AgentSpec]:
+    """Return all registered agents in dropdown order."""
+    return list(AGENTS.values())
+
+
+def get_agent(name: str | None) -> AgentSpec | None:
+    """Resolve an agent name to its spec.
+
+    Args:
+        name: The stored/submitted agent name, or None/"" for Normal.
+
+    Returns:
+        The matching `AgentSpec`, or None for Normal (empty/missing name) or an
+        unknown name (defensive — e.g. a name persisted before an agent was
+        removed from the registry). A None result means "run plain chat".
+    """
+    if not name:
+        return None
+    return AGENTS.get(name)
+
+
+__all__ = ["AgentSpec", "AGENTS", "list_agents", "get_agent"]

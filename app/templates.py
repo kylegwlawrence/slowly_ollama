@@ -1,10 +1,9 @@
 """Jinja2 templates + custom filters shared across the app.
 
 Lives in its own module (rather than inside ``app/routes.py``) so the
-producer layer in ``app/generation.py`` — and any future module that
-needs to render a fragment, like ``app/agents/loop.py`` in phase 13 —
-can import the ``templates`` instance without reaching across into the
-HTTP-routing layer. The pre-extraction shape (templates owned by
+producer layer in ``app/generation.py`` — and any other module that
+needs to render a fragment — can import the ``templates`` instance
+without reaching across into the HTTP-routing layer. The pre-extraction shape (templates owned by
 routes.py) forced ``generation.py`` into four function-body
 ``from app.routes import templates`` lazy imports to dodge a circular
 dependency; pulling the template setup down a layer removes the cycle

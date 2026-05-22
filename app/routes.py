@@ -42,17 +42,12 @@ import html
 import sqlite3
 from typing import Annotated
 
-import httpx
 from fastapi import APIRouter, Form, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, StreamingResponse
 
 from app import generation, ollama, queries, render
 from app import rag_servers as _rag_servers_module
-from app.agents.prompts import (
-    GENERATION_SYSTEM_PROMPT,
-    RESEARCH_SYSTEM_PROMPT,
-    REVIEW_SYSTEM_PROMPT,
-)
+from app.agents import get_agent, list_agents
 from app.dependencies import DB, OllamaClient
 from app.ollama import OllamaProtocolError, OllamaUnavailable
 from app.rag_health import probe_rag_health
@@ -77,18 +72,6 @@ router = APIRouter()
 # All currently-registered tool names, in registration order.
 # Computed once at import time. Used for seeding and generation filtering.
 _ALL_TOOL_NAMES: list[str] = list(TOOLS.keys())
-
-# Phase 15: agentic mode is disabled until re-enabled in a future phase.
-_AGENTIC_AVAILABLE = False
-
-# Read-only snapshot of the three agentic system prompts — referenced
-# in every context that renders `_settings_agentic_section.html` so a
-# prompt key change only needs to happen in one place.
-_AGENTIC_PROMPTS = {
-    "research": RESEARCH_SYSTEM_PROMPT,
-    "review": REVIEW_SYSTEM_PROMPT,
-    "generation": GENERATION_SYSTEM_PROMPT,
-}
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +154,7 @@ def index_endpoint(request: Request, db: DB) -> Response:
             "default_tool_states": _default_tool_states(),
             "default_rag_server_states": _default_rag_server_states(db),
             "default_temperature": queries.get_default_temperature(db),
+            "agents": list_agents(),
         },
     )
 
@@ -193,18 +177,19 @@ def new_chat_endpoint(request: Request, db: DB) -> Response:
             "default_tool_states": _default_tool_states(),
             "default_rag_server_states": _default_rag_server_states(db),
             "default_temperature": queries.get_default_temperature(db),
+            "agents": list_agents(),
         },
     )
 
 
 # ---------------------------------------------------------------------------
-# Settings — RAG servers (phase 12c) + agentic-mode toggle (phase 13e)
+# Settings — RAG servers (phase 12c)
 # ---------------------------------------------------------------------------
 
 
 @router.get("/settings", response_class=HTMLResponse)
 def settings_endpoint(request: Request, db: DB) -> Response:
-    """Standalone settings page — RAG servers + (phase 13) agentic mode.
+    """Standalone settings page — RAG servers + default temperature.
 
     Direct browser hits return the full index shell with the settings
     fragment preloaded in the main slot (so reload / bookmarks land on
@@ -213,9 +198,6 @@ def settings_endpoint(request: Request, db: DB) -> Response:
     ``get_chat_panel_endpoint``.
     """
     servers = _rag_servers_module.list_servers(db)
-    agentic_mode_on = queries.get_agentic_mode(db)
-    review_enabled = queries.get_review_enabled(db)
-    generator_enabled = queries.get_generator_enabled(db)
     default_temperature = queries.get_default_temperature(db)
     if request.headers.get("HX-Request"):
         return templates.TemplateResponse(
@@ -223,11 +205,6 @@ def settings_endpoint(request: Request, db: DB) -> Response:
             name="_settings.html",
             context={
                 "servers": servers,
-                "agentic_mode_on": agentic_mode_on,
-                "review_enabled": review_enabled,
-                "generator_enabled": generator_enabled,
-                "agentic_prompts": _AGENTIC_PROMPTS,
-                "agentic_available": _AGENTIC_AVAILABLE,
                 "default_temperature": default_temperature,
             },
         )
@@ -244,11 +221,6 @@ def settings_endpoint(request: Request, db: DB) -> Response:
             # `{% set servers = rag_servers %}` adapter resolves it for
             # the included _settings.html fragment.
             "rag_servers": servers,
-            "agentic_mode_on": agentic_mode_on,
-            "review_enabled": review_enabled,
-            "generator_enabled": generator_enabled,
-            "agentic_prompts": _AGENTIC_PROMPTS,
-            "agentic_available": _AGENTIC_AVAILABLE,
             "default_temperature": default_temperature,
         },
     )
@@ -388,96 +360,6 @@ def update_server_endpoint(
     )
 
 
-@router.post("/settings/agentic-mode", response_class=HTMLResponse)
-def toggle_agentic_mode_endpoint(
-    request: Request,
-    db: DB,
-    enabled: Annotated[str | None, Form()] = None,
-) -> Response:
-    """Toggle the global agentic-mode setting (phase 13e).
-
-    The checkbox sends ``enabled=on`` when checked; the field is absent
-    entirely when unchecked. This matches the standard HTML form
-    convention and lets us write the helper as a presence check rather
-    than a string compare.
-
-    Returns the agentic-mode section fragment so HTMX swaps it in place
-    (the toggle lives inside ``#settings-agentic-section``). The
-    read-only prompt block is included in the fragment so toggling on
-    reveals it without a follow-up round trip.
-    """
-    agentic_mode_on = enabled is not None
-    queries.set_agentic_mode(db, agentic_mode_on)
-    return templates.TemplateResponse(
-        request=request,
-        name="_settings_agentic_section.html",
-        context={
-            "agentic_mode_on": agentic_mode_on,
-            "review_enabled": queries.get_review_enabled(db),
-            "generator_enabled": queries.get_generator_enabled(db),
-            "agentic_prompts": _AGENTIC_PROMPTS,
-            "agentic_available": _AGENTIC_AVAILABLE,
-        },
-    )
-
-
-@router.post("/settings/agentic-review", response_class=HTMLResponse)
-def toggle_review_enabled_endpoint(
-    request: Request,
-    db: DB,
-    enabled: Annotated[str | None, Form()] = None,
-) -> Response:
-    """Toggle the reviewer-participation setting (phase 14).
-
-    Presence-check on the ``enabled`` form field — checkbox sends
-    ``enabled=on`` when checked, omits the field entirely when
-    unchecked. Same convention as ``toggle_agentic_mode_endpoint``.
-
-    Returns the agentic section fragment so HTMX swaps it in place;
-    the toggle UI reflects the new state on the next render.
-    """
-    review_enabled = enabled is not None
-    queries.set_review_enabled(db, review_enabled)
-    return templates.TemplateResponse(
-        request=request,
-        name="_settings_agentic_section.html",
-        context={
-            "agentic_mode_on": queries.get_agentic_mode(db),
-            "review_enabled": review_enabled,
-            "generator_enabled": queries.get_generator_enabled(db),
-            "agentic_prompts": _AGENTIC_PROMPTS,
-            "agentic_available": _AGENTIC_AVAILABLE,
-        },
-    )
-
-
-@router.post("/settings/agentic-generator", response_class=HTMLResponse)
-def toggle_generator_enabled_endpoint(
-    request: Request,
-    db: DB,
-    enabled: Annotated[str | None, Form()] = None,
-) -> Response:
-    """Toggle the generator-participation setting (phase 14).
-
-    Same shape as ``toggle_review_enabled_endpoint``. Route path is
-    ``agentic-generator`` (not ``agentic-generation``) to match the
-    user-facing label "Generator agent".
-    """
-    generator_enabled = enabled is not None
-    queries.set_generator_enabled(db, generator_enabled)
-    return templates.TemplateResponse(
-        request=request,
-        name="_settings_agentic_section.html",
-        context={
-            "agentic_mode_on": queries.get_agentic_mode(db),
-            "review_enabled": queries.get_review_enabled(db),
-            "generator_enabled": generator_enabled,
-            "agentic_prompts": _AGENTIC_PROMPTS,
-            "agentic_available": _AGENTIC_AVAILABLE,
-        },
-    )
-
-
 # ---------------------------------------------------------------------------
 # SSE helpers
 # ---------------------------------------------------------------------------
@@ -586,6 +468,31 @@ def list_chats_endpoint(request: Request, db: DB) -> Response:
     )
 
 
+def _agent_overrides(conversation: queries.Conversation) -> dict:
+    """Resolve a conversation's active agent into ``start_generation`` kwargs.
+
+    Returns the effective ``model`` plus ``system_prompt_override`` /
+    ``tool_allowlist`` / ``think``. For Normal chat (no agent, or an
+    unknown/removed agent name) this is the chat's pinned model with no
+    overrides and ``think=None`` (omit the flag) — i.e. today's plain-chat
+    behavior.
+    """
+    spec = get_agent(conversation.active_agent)
+    if spec is None:
+        return {
+            "model": conversation.model,
+            "system_prompt_override": None,
+            "tool_allowlist": None,
+            "think": None,
+        }
+    return {
+        "model": spec.model,
+        "system_prompt_override": spec.system_prompt,
+        "tool_allowlist": spec.tools,
+        "think": spec.think,
+    }
+
+
 @router.post(
     "/chats",
     response_class=HTMLResponse,
@@ -599,6 +506,7 @@ async def create_chat_endpoint(
     content: Annotated[str, Form()],
     temperature: Annotated[float | None, Form()] = None,
     tool_iteration_cap: Annotated[int | None, Form()] = None,
+    agent: Annotated[str | None, Form()] = None,
 ) -> Response:
     """Create a conversation AND save the first message in one request.
 
@@ -633,12 +541,17 @@ async def create_chat_endpoint(
     if tool_iteration_cap is None:
         tool_iteration_cap = 5
     tool_iteration_cap = max(1, min(10, tool_iteration_cap))
+    # Resolve the picked agent (None / unknown → Normal). Persist its name so
+    # the picker + indicator survive reloads and subsequent turns resolve the
+    # same agent from the conversation row.
+    agent_spec = get_agent(agent)
     chat = queries.create_conversation(
         db,
         name=_placeholder_name(content),
         model=model,
         temperature=temperature,
         tool_iteration_cap=tool_iteration_cap,
+        active_agent=agent_spec.name if agent_spec else None,
     )
     queries.append_message(db, chat.id, "user", content)
 
@@ -673,16 +586,18 @@ async def create_chat_endpoint(
     # Phase 12g: spawn the generation task now so it's already
     # running when the browser opens the SSE connection. A
     # brand-new chat can't have a generation in flight, so no
-    # GenerationInProgress catch needed here.
+    # GenerationInProgress catch needed here. `_agent_overrides`
+    # supplies the agent's model/prompt/tools (or the chat's pinned
+    # model + no overrides for Normal).
     await generation.start_generation(
         client=client,
         db=db,
         conversation_id=chat.id,
-        model=chat.model,
         temperature=chat.temperature,
         tool_iteration_cap=chat.tool_iteration_cap,
         history=messages,
         on_complete="append",
+        **_agent_overrides(chat),
     )
 
     supports_tools = await ollama.model_supports_tools(client, chat.model)
@@ -703,10 +618,11 @@ async def create_chat_endpoint(
         blocks=blocks,
         pending_stream_url=f"/chats/{chat.id}/stream",
         active_chat_id=chat.id,
-        agentic_skipped=False,
         supports_tools=supports_tools,
         tool_states=tool_states,
         rag_server_states=rag_server_states,
+        agents=list_agents(),
+        active_agent_spec=agent_spec,
     )
 
     # New sidebar row, OOB-prepended to `#chats-list`. The OOB attribute
@@ -728,29 +644,6 @@ async def create_chat_endpoint(
     response = HTMLResponse(content=body, status_code=status.HTTP_201_CREATED)
     response.headers["HX-Push-Url"] = f"/chats/{chat.id}"
     return response
-
-
-async def _compute_agentic_skipped(
-    *,
-    db: sqlite3.Connection,
-    client: httpx.AsyncClient,
-    model: str,
-) -> bool:
-    """Return True when agentic mode is on but ``model`` lacks tools.
-
-    Phase 13g surface for the no-tools-fallback signal: the dispatcher
-    in ``app/generation.py`` silently picks single-agent when this
-    condition holds; the chat panel renders a banner above #messages
-    so the user understands why they aren't seeing the agentic loop.
-
-    Cheap by design — when agentic mode is off, we short-circuit and
-    never call ``model_supports_tools``. With agentic mode on the
-    capability lookup is cached for ~60s, so reload spam doesn't
-    storm /api/tags.
-    """
-    if not queries.get_agentic_mode(db):
-        return False
-    return not await ollama.model_supports_tools(client, model)
 
 
 @router.get("/chats/{conversation_id}", response_class=HTMLResponse)
@@ -781,16 +674,11 @@ async def get_chat_panel_endpoint(
     blocks = render.group_messages_for_render(messages)
 
     # Phase 12g: if a generation is IN PROGRESS for this conv, the
-    # trailing ToolBatchBlock / AgenticToolBatchBlock (if any) belongs
-    # to the in-progress turn — exclude it from the panel render so
-    # the SSE replay can rebuild the card via OOB swaps. Setting
-    # `pending_stream_url` makes the chat-panel template render a
-    # streaming placeholder pointing at /stream, where
-    # consume_generation attaches as a fresh consumer.
-    #
-    # Phase 13f added the agentic kind; we drop it for the same
-    # reason. The replay path emits a fresh card shell + each row
-    # via SSE, so a server-side render would double up.
+    # trailing ToolBatchBlock (if any) belongs to the in-progress turn
+    # — exclude it from the panel render so the SSE replay can rebuild
+    # the card via OOB swaps. Setting `pending_stream_url` makes the
+    # chat-panel template render a streaming placeholder pointing at
+    # /stream, where consume_generation attaches as a fresh consumer.
     #
     # `live_generations` retains DONE entries for replay-on-slow-
     # reload, so the `not done` check matters — we don't want to
@@ -799,7 +687,7 @@ async def get_chat_panel_endpoint(
     pending_stream_url = None
     live = generation.live_generations.get(conversation_id)
     if live is not None and not live.done:
-        if blocks and blocks[-1].kind in ("tool_batch", "agentic_tool_batch"):
+        if blocks and blocks[-1].kind == "tool_batch":
             blocks = blocks[:-1]
         pending_stream_url = f"/chats/{conversation_id}/stream"
 
@@ -810,6 +698,10 @@ async def get_chat_panel_endpoint(
     else:
         tool_states, rag_server_states = [], []
 
+    # Phase 16: data for the agent picker dropdown + header indicator.
+    agents = list_agents()
+    active_agent_spec = get_agent(conversation.active_agent)
+
     if request.headers.get("HX-Request"):
         return templates.TemplateResponse(
             request=request,
@@ -818,10 +710,11 @@ async def get_chat_panel_endpoint(
                 "conversation": conversation,
                 "blocks": blocks,
                 "pending_stream_url": pending_stream_url,
-                "agentic_skipped": False,
                 "supports_tools": supports_tools,
                 "tool_states": tool_states,
                 "rag_server_states": rag_server_states,
+                "agents": agents,
+                "active_agent_spec": active_agent_spec,
             },
         )
     return templates.TemplateResponse(
@@ -832,10 +725,11 @@ async def get_chat_panel_endpoint(
             "conversation": conversation,
             "blocks": blocks,
             "pending_stream_url": pending_stream_url,
-            "agentic_skipped": False,
             "supports_tools": supports_tools,
             "tool_states": tool_states,
             "rag_server_states": rag_server_states,
+            "agents": agents,
+            "active_agent_spec": active_agent_spec,
             # The active row highlight lives in the sidebar; pass the
             # id so `_chat_item.html` can set `aria-current="page"`.
             "active_chat_id": conversation.id,
@@ -983,11 +877,11 @@ async def send_message_endpoint(
             client=client,
             db=db,
             conversation_id=conversation_id,
-            model=conversation.model,
             temperature=conversation.temperature,
             tool_iteration_cap=conversation.tool_iteration_cap,
             history=history,
             on_complete="append",
+            **_agent_overrides(conversation),
         )
     except generation.GenerationInProgress:
         # UI gate (placeholder keeps the send button disabled) makes
@@ -1085,11 +979,11 @@ async def regenerate_endpoint(
             client=client,
             db=db,
             conversation_id=conversation_id,
-            model=conversation.model,
             temperature=conversation.temperature,
             tool_iteration_cap=conversation.tool_iteration_cap,
             history=prompt_history,
             on_complete="replace",
+            **_agent_overrides(conversation),
         )
     except generation.GenerationInProgress:
         return HTMLResponse(
@@ -1104,6 +998,64 @@ async def regenerate_endpoint(
         stream_url=f"/chats/{conversation_id}/stream",
     )
     return HTMLResponse(content=placeholder_html)
+
+
+@router.post("/chats/{conversation_id}/agent", response_class=HTMLResponse)
+async def set_chat_agent_endpoint(
+    conversation_id: int,
+    db: DB,
+    client: OllamaClient,
+    agent: Annotated[str | None, Form()] = None,
+) -> Response:
+    """Set/clear the user-invoked agent for a chat; return OOB UI updates.
+
+    Called by the in-chat agent dropdown on change (``hx-post`` with
+    ``hx-swap="none"`` — the response is OOB-only). The selection is
+    persisted so it survives reloads and so subsequent turns resolve the
+    same agent. ``agent`` is the agent name, or empty/None for Normal.
+    An unknown name resolves to Normal (defensive).
+
+    OOB swaps returned:
+      - ``#agent-indicator-{id}``: the header indicator, updated to the
+        agent label + model (or the chat's pinned model for Normal).
+      - ``#chat-tool-chips``: refreshed so the per-chat chips are hidden
+        while an agent is active (its allowlist governs its tools) and
+        restored when switching back to Normal. Only emitted when the
+        chat's pinned model supports tools — otherwise there is no chip
+        bar in the DOM and the swap would be a no-op anyway.
+
+    Raises:
+        HTTPException 404: When the conversation is unknown.
+    """
+    try:
+        queries.get_conversation(db, conversation_id)
+    except LookupError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
+
+    spec = get_agent(agent)
+    conversation = queries.set_active_agent(
+        db, conversation_id, spec.name if spec else None
+    )
+
+    indicator_html = templates.get_template("_agent_indicator.html").render(
+        conversation=conversation,
+        active_agent_spec=spec,
+        oob=True,
+    )
+
+    chips_oob = ""
+    if await ollama.model_supports_tools(client, conversation.model):
+        tool_states, rag_server_states = _chip_states(db, conversation_id)
+        chips_oob = templates.get_template("_chat_tool_chips.html").render(
+            conversation=conversation,
+            active_agent_spec=spec,
+            supports_tools=True,
+            tool_states=tool_states,
+            rag_server_states=rag_server_states,
+            oob=True,
+        )
+
+    return HTMLResponse(content=indicator_html + chips_oob)
 
 
 # ---------------------------------------------------------------------------

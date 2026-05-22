@@ -2208,257 +2208,15 @@ def test_sidebar_includes_settings_link(
     assert 'hx-get="/settings"' in response.text
 
 
-# ---------------------------------------------------------------------------
-# Phase 13e: /settings agentic-mode toggle + read-only prompts
-# ---------------------------------------------------------------------------
-
-
-def test_settings_get_shows_agentic_toggle_off_by_default(
-    make_client: ClientFactory,
-) -> None:
-    """A fresh DB renders the agentic-mode section with the toggle off
-    and the prompt block hidden.
-
-    Off state is the v1 default — agentic mode is opt-in via this
-    toggle. Showing the prompts only when the toggle is on keeps the
-    page short for users who don't want the feature.
-    """
-    with make_client(_ollama_unreachable) as client:
-        response = client.get("/settings", headers={"HX-Request": "true"})
-
-    assert response.status_code == 200
-    # The section wrapper is present so the POST handler has something
-    # to swap into.
-    assert 'id="settings-agentic-section"' in response.text
-    # Toggle is unchecked: the input is rendered without the `checked`
-    # attribute. Looking at the small window of text immediately
-    # preceding `name="enabled"` is enough to assert this — full DOM
-    # parsing would be overkill.
-    name_idx = response.text.index('name="enabled"')
-    preceding = response.text[max(0, name_idx - 200):name_idx]
-    assert "checked" not in preceding
-    # Prompts <details> is gated on agentic_mode_on, so it must NOT
-    # render in the off state.
-    assert "agentic-prompts" not in response.text
-
-
-def test_settings_toggle_agentic_mode_on_returns_section_with_prompts(
-    make_client: ClientFactory,
-) -> None:
-    """POST /settings/agentic-mode with `enabled=on` flips the setting
-    and returns the section fragment with the prompt block visible.
-
-    The fragment replaces the section's children via
-    `hx-swap="innerHTML"`; we assert on its rendered shape (toggle is
-    now checked, all three prompts present) rather than on
-    `queries.get_agentic_mode` directly — that round-trip is covered
-    in test_queries.py. Here we care that the route persists the flip
-    AND the response carries the right HTML.
-    """
-    with make_client(_ollama_unreachable) as client:
-        response = client.post(
-            "/settings/agentic-mode",
-            data={"enabled": "on"},
-            headers={"HX-Request": "true"},
-        )
-
-    assert response.status_code == 200
-    # Toggle now reports checked.
-    assert "checked" in response.text
-    # Prompt block now rendered with all three agents labelled.
-    assert "agentic-prompts" in response.text
-    assert "Research agent" in response.text
-    assert "Review agent" in response.text
-    assert "Generation agent" in response.text
-    # Spot-check that the review-agent prompt body actually made it
-    # into the rendered HTML — guards against the template forgetting
-    # to interpolate one of the three slots.
-    assert "mark_passed" in response.text
-
-    db_path = os.environ["DB_PATH"]
-    with open_connection(db_path) as conn:
-        assert queries.get_agentic_mode(conn) is True
-
-
-def test_settings_toggle_agentic_mode_off(
-    make_client: ClientFactory,
-) -> None:
-    """POST without an `enabled` field flips the setting off again.
-
-    Browsers omit unchecked checkboxes entirely from form submissions,
-    so the POST body arrives empty when the user clicks an already-on
-    toggle. The route uses presence-vs-absence as the truth value;
-    this test pins that contract.
-    """
-    db_path = Path(os.environ["DB_PATH"])
-    # initialize_database is normally invoked by the FastAPI lifespan
-    # when `make_client(...)` constructs the TestClient. We pre-seed
-    # the setting BEFORE that, so init the schema ourselves first.
-    initialize_database(db_path)
-    with open_connection(db_path) as conn:
-        queries.set_agentic_mode(conn, True)
-
-    with make_client(_ollama_unreachable) as client:
-        response = client.post(
-            "/settings/agentic-mode",
-            data={},
-            headers={"HX-Request": "true"},
-        )
-
-    assert response.status_code == 200
-    # Toggle rendered unchecked again. Same windowed substring check
-    # as the default-off test above.
-    name_idx = response.text.index('name="enabled"')
-    preceding = response.text[max(0, name_idx - 200):name_idx]
-    assert "checked" not in preceding
-    # Prompt block hidden again.
-    assert "agentic-prompts" not in response.text
-
-    with open_connection(db_path) as conn:
-        assert queries.get_agentic_mode(conn) is False
-
-
-def test_settings_get_with_agentic_on_renders_prompts(
-    make_client: ClientFactory,
-) -> None:
-    """A page reload after enabling agentic mode shows the prompts
-    block — verifying GET /settings reads the persisted setting and
-    threads it into the template, not just the POST handler."""
-    db_path = Path(os.environ["DB_PATH"])
-    initialize_database(db_path)
-    with open_connection(db_path) as conn:
-        queries.set_agentic_mode(conn, True)
-
-    with make_client(_ollama_unreachable) as client:
-        response = client.get("/settings", headers={"HX-Request": "true"})
-
-    assert response.status_code == 200
-    assert "agentic-prompts" in response.text
-    assert "Research agent" in response.text
-
-
-# ---------------------------------------------------------------------------
-# Phase 14: per-agent sub-toggle endpoints + GET context
-# ---------------------------------------------------------------------------
-
-
-def test_toggle_review_enabled_on(make_client: ClientFactory) -> None:
-    """POST /settings/agentic-review with enabled=on → setting True,
-    section fragment returned with the sub-toggle present."""
-    db_path = Path(os.environ["DB_PATH"])
-    initialize_database(db_path)
-    with open_connection(db_path) as conn:
-        queries.set_agentic_mode(conn, True)
-
-    with make_client(_ollama_unreachable) as client:
-        response = client.post(
-            "/settings/agentic-review", data={"enabled": "on"},
-        )
-
-    assert response.status_code == 200
-    with open_connection(db_path) as conn:
-        assert queries.get_review_enabled(conn) is True
-    assert 'hx-post="/settings/agentic-review"' in response.text
-
-
-def test_toggle_review_enabled_off(make_client: ClientFactory) -> None:
-    """POST /settings/agentic-review without enabled → setting False."""
-    db_path = Path(os.environ["DB_PATH"])
-    initialize_database(db_path)
-    with open_connection(db_path) as conn:
-        queries.set_agentic_mode(conn, True)
-        queries.set_review_enabled(conn, True)
-
-    with make_client(_ollama_unreachable) as client:
-        response = client.post("/settings/agentic-review", data={})
-
-    assert response.status_code == 200
-    with open_connection(db_path) as conn:
-        assert queries.get_review_enabled(conn) is False
-
-
-def test_toggle_generator_enabled_on(make_client: ClientFactory) -> None:
-    """POST /settings/agentic-generator with enabled=on → setting True."""
-    db_path = Path(os.environ["DB_PATH"])
-    initialize_database(db_path)
-    with open_connection(db_path) as conn:
-        queries.set_agentic_mode(conn, True)
-
-    with make_client(_ollama_unreachable) as client:
-        response = client.post(
-            "/settings/agentic-generator", data={"enabled": "on"},
-        )
-
-    assert response.status_code == 200
-    with open_connection(db_path) as conn:
-        assert queries.get_generator_enabled(conn) is True
-    assert 'hx-post="/settings/agentic-generator"' in response.text
-
-
-def test_toggle_generator_enabled_off(make_client: ClientFactory) -> None:
-    """POST /settings/agentic-generator without enabled → setting False."""
-    db_path = Path(os.environ["DB_PATH"])
-    initialize_database(db_path)
-    with open_connection(db_path) as conn:
-        queries.set_agentic_mode(conn, True)
-        queries.set_generator_enabled(conn, True)
-
-    with make_client(_ollama_unreachable) as client:
-        response = client.post("/settings/agentic-generator", data={})
-
-    assert response.status_code == 200
-    with open_connection(db_path) as conn:
-        assert queries.get_generator_enabled(conn) is False
-
-
-def test_settings_renders_sub_toggles_when_master_on(
-    make_client: ClientFactory,
-) -> None:
-    """GET /settings with agentic_mode on → sub-toggle inputs present."""
-    db_path = Path(os.environ["DB_PATH"])
-    initialize_database(db_path)
-    with open_connection(db_path) as conn:
-        queries.set_agentic_mode(conn, True)
-
-    with make_client(_ollama_unreachable) as client:
-        response = client.get("/settings")
-
-    assert response.status_code == 200
-    assert 'hx-post="/settings/agentic-review"' in response.text
-    assert 'hx-post="/settings/agentic-generator"' in response.text
-
-
-def test_settings_hides_sub_toggles_when_master_off(
-    make_client: ClientFactory,
-) -> None:
-    """GET /settings with agentic_mode off → sub-toggle inputs absent."""
-    db_path = Path(os.environ["DB_PATH"])
-    initialize_database(db_path)
-    with open_connection(db_path) as conn:
-        queries.set_agentic_mode(conn, False)
-
-    with make_client(_ollama_unreachable) as client:
-        response = client.get("/settings")
-
-    assert response.status_code == 200
-    assert 'hx-post="/settings/agentic-review"' not in response.text
-    assert 'hx-post="/settings/agentic-generator"' not in response.text
-
-
-# ---------------------------------------------------------------------------
-# Phase 13g: agentic-skipped banner on chat panel
-# ---------------------------------------------------------------------------
-
-
 def _tool_capable_handler(
     request: httpx.Request,
 ) -> httpx.Response:
     """Stub that advertises ``"tools"`` capability for every model.
 
-    Used by banner tests that need GET /chats/{id} to complete its
-    `model_supports_tools` lookup without hitting the default
-    `_ollama_unreachable` (which would make the helper return False
-    and falsely trip the banner).
+    Used by tests that need GET /chats/{id} (or a chip/agent endpoint) to
+    complete its ``model_supports_tools`` lookup without hitting the default
+    ``_ollama_unreachable`` handler (which would return False and hide the
+    tool chips).
     """
     if request.url.path == "/api/tags":
         return httpx.Response(200, json={"models": [{"name": "llama3"}]})
@@ -2474,129 +2232,110 @@ def _tool_capable_handler(
     )
 
 
-def _non_tool_capable_handler(
-    request: httpx.Request,
-) -> httpx.Response:
-    """Sibling of ``_tool_capable_handler`` that flips the capability flag."""
-    if request.url.path == "/api/tags":
-        return httpx.Response(200, json={"models": [{"name": "llama3"}]})
-    if request.url.path == "/api/show":
-        return httpx.Response(
-            200, json={"capabilities": ["completion"]}
-        )
-    return httpx.Response(
-        200, json={"message": {"content": "", "tool_calls": []}}
-    )
+# ---------------------------------------------------------------------------
+# Phase 16: agent picker — POST /chats/{id}/agent + create-with-agent
+# ---------------------------------------------------------------------------
 
 
-async def _model_not_capable(_client: object, _name: str) -> bool:
-    """Stub for ``ollama.model_supports_tools`` that always returns False.
-
-    The route-test autouse fixture (``_default_tool_capable``) defaults
-    the same callable to True; tests that need the False branch
-    monkeypatch this in instead. Module-level so the two banner-on
-    tests share one definition.
-    """
-    return False
-
-
-def test_chat_panel_no_banner_when_agentic_mode_off(
+def test_set_chat_agent_persists_and_returns_indicator(
     make_client: ClientFactory,
 ) -> None:
-    """The off-by-default state is the happy path — no banner at all,
-    even when the model can't do tools. Toggle determines the signal,
-    not the model alone.
-    """
-    with make_client(_non_tool_capable_handler) as client:
-        chat_id = _create_chat_db_only()
-        response = client.get(
-            f"/chats/{chat_id}", headers={"HX-Request": "true"}
-        )
-
-    assert response.status_code == 200
-    assert "chat-panel__agentic-skipped" not in response.text
-
-
-def test_chat_panel_no_banner_when_model_supports_tools(
-    make_client: ClientFactory,
-) -> None:
-    """Agentic mode on + tool-capable model → loop will run normally,
-    so no fallback banner. Relies on the route-test autouse fixture
-    ``_default_tool_capable`` which stubs ``model_supports_tools`` to
-    True; this test exercises the banner-suppression branch through
-    that stub.
-    """
+    """POST /chats/{id}/agent stores the agent and OOB-swaps the indicator."""
     db_path = Path(os.environ["DB_PATH"])
     initialize_database(db_path)
     with open_connection(db_path) as conn:
-        queries.set_agentic_mode(conn, True)
+        chat = queries.create_conversation(conn, name="t", model="llama3")
 
     with make_client(_tool_capable_handler) as client:
-        chat_id = _create_chat_db_only()
-        response = client.get(
-            f"/chats/{chat_id}", headers={"HX-Request": "true"}
+        response = client.post(
+            f"/chats/{chat.id}/agent",
+            data={"agent": "research"},
+            headers={"HX-Request": "true"},
         )
 
     assert response.status_code == 200
-    assert "chat-panel__agentic-skipped" not in response.text
+    assert f'id="agent-indicator-{chat.id}"' in response.text
+    assert "hx-swap-oob" in response.text
+    assert "Research" in response.text
+    with open_connection(db_path) as conn:
+        assert queries.get_conversation(conn, chat.id).active_agent == "research"
 
 
-def test_chat_panel_shows_banner_when_agentic_on_but_model_lacks_tools(
+def test_set_chat_agent_normal_clears_active_agent(
     make_client: ClientFactory,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Phase 15: agentic-skipped banner is no longer shown. agentic_skipped
-    is hardcoded False so the banner never renders, even with agentic mode
-    on and a non-tool-capable model. The model name still appears in the
-    chat header."""
+    """Posting the empty (Normal) value clears the chat's active agent."""
     db_path = Path(os.environ["DB_PATH"])
     initialize_database(db_path)
     with open_connection(db_path) as conn:
-        queries.set_agentic_mode(conn, True)
         chat = queries.create_conversation(
-            conn, name="banner test", model="not-tool-capable"
+            conn, name="t", model="llama3", active_agent="research"
         )
-        queries.append_message(conn, chat.id, "user", "hi")
 
-    monkeypatch.setattr(ollama, "model_supports_tools", _model_not_capable)
-
-    with make_client(_non_tool_capable_handler) as client:
-        response = client.get(
-            f"/chats/{chat.id}", headers={"HX-Request": "true"}
+    with make_client(_tool_capable_handler) as client:
+        response = client.post(
+            f"/chats/{chat.id}/agent",
+            data={"agent": ""},
+            headers={"HX-Request": "true"},
         )
 
     assert response.status_code == 200
-    # Banner is gone — agentic_skipped is always False in phase 15.
-    assert "chat-panel__agentic-skipped" not in response.text
-    # Model name still appears in the header.
-    assert "not-tool-capable" in response.text
+    with open_connection(db_path) as conn:
+        assert queries.get_conversation(conn, chat.id).active_agent is None
 
 
-def test_chat_panel_banner_also_shows_on_direct_hit(
+def test_set_chat_agent_unknown_name_falls_back_to_normal(
     make_client: ClientFactory,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Phase 15: agentic-skipped banner is absent on direct hit too.
-    The full-page render hardcodes agentic_skipped=False so the banner
-    never appears in either render path."""
+    """An unknown agent name resolves to Normal (active_agent NULL)."""
     db_path = Path(os.environ["DB_PATH"])
     initialize_database(db_path)
     with open_connection(db_path) as conn:
-        queries.set_agentic_mode(conn, True)
-        chat = queries.create_conversation(
-            conn, name="direct hit", model="not-tool-capable"
+        chat = queries.create_conversation(conn, name="t", model="llama3")
+
+    with make_client(_tool_capable_handler) as client:
+        response = client.post(
+            f"/chats/{chat.id}/agent",
+            data={"agent": "does_not_exist"},
         )
-        queries.append_message(conn, chat.id, "user", "hi")
-
-    monkeypatch.setattr(ollama, "model_supports_tools", _model_not_capable)
-
-    with make_client(_non_tool_capable_handler) as client:
-        response = client.get(f"/chats/{chat.id}")
 
     assert response.status_code == 200
-    assert "<!DOCTYPE html>" in response.text
-    # Banner gone — agentic_skipped is always False in phase 15.
-    assert "chat-panel__agentic-skipped" not in response.text
+    with open_connection(db_path) as conn:
+        assert queries.get_conversation(conn, chat.id).active_agent is None
+
+
+def test_set_chat_agent_404_unknown_conversation(
+    make_client: ClientFactory,
+) -> None:
+    """POST /chats/999/agent → 404 when the conversation is missing."""
+    db_path = Path(os.environ["DB_PATH"])
+    initialize_database(db_path)
+    with make_client(_tool_capable_handler) as client:
+        response = client.post("/chats/999/agent", data={"agent": "research"})
+    assert response.status_code == 404
+
+
+def test_create_chat_with_agent_persists_active_agent(
+    make_client: ClientFactory,
+) -> None:
+    """POST /chats with an `agent` field starts the chat on that agent."""
+    db_path = Path(os.environ["DB_PATH"])
+    initialize_database(db_path)
+
+    with make_client(_tool_capable_handler) as client:
+        response = client.post(
+            "/chats",
+            data={"model": "llama3", "content": "hi", "agent": "research"},
+        )
+
+    assert response.status_code == 201
+    import re as _re
+
+    chat_id = int(_re.search(r'data-chat-id="(\d+)"', response.text).group(1))
+    with open_connection(db_path) as conn:
+        assert (
+            queries.get_conversation(conn, chat_id).active_agent == "research"
+        )
 
 
 # ---------------------------------------------------------------------------

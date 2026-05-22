@@ -21,15 +21,12 @@ from app.queries import (
     count_assistant_messages,
     create_conversation,
     delete_conversation,
-    get_agentic_mode,
     get_chat_rag_states,
     get_chat_tool_states,
     get_conversation,
     get_default_temperature,
     get_enabled_rag_server_names,
     get_enabled_tool_names,
-    get_generator_enabled,
-    get_review_enabled,
     get_setting,
     list_conversations,
     list_messages,
@@ -37,12 +34,11 @@ from app.queries import (
     replace_last_assistant_message,
     seed_chat_rag_servers,
     seed_chat_tools,
-    set_agentic_mode,
+    set_active_agent,
+    set_conversation_temperature,
     set_conversation_tool_iteration_cap,
     set_default_temperature,
-    set_generator_enabled,
     set_name_auto,
-    set_review_enabled,
     set_setting,
     toggle_chat_rag_server,
     toggle_chat_tool,
@@ -415,50 +411,6 @@ def test_set_setting_upserts(conn: sqlite3.Connection) -> None:
     assert get_setting(conn, "k") == "v2"
 
 
-def test_agentic_mode_default_off(conn: sqlite3.Connection) -> None:
-    """No row → agentic mode is off. Production default before the
-    user touches /settings."""
-    assert get_agentic_mode(conn) is False
-
-
-def test_agentic_mode_round_trip(conn: sqlite3.Connection) -> None:
-    """Toggle on, toggle off, both observable on subsequent reads."""
-    set_agentic_mode(conn, True)
-    assert get_agentic_mode(conn) is True
-    set_agentic_mode(conn, False)
-    assert get_agentic_mode(conn) is False
-
-
-def test_agentic_mode_treats_non_on_values_as_off(
-    conn: sqlite3.Connection,
-) -> None:
-    """Defensive: a row whose value isn't literally "on" reads False.
-    Guards against legacy or hand-edited DBs that wrote something other
-    than the two values set_agentic_mode produces. Case-sensitive: the
-    comparison is against lowercase "on" exactly."""
-    set_setting(conn, "agentic_mode", "yes")
-    assert get_agentic_mode(conn) is False
-    set_setting(conn, "agentic_mode", "")
-    assert get_agentic_mode(conn) is False
-    set_setting(conn, "agentic_mode", "ON")  # uppercase
-    assert get_agentic_mode(conn) is False
-    set_setting(conn, "agentic_mode", "On")  # title-case
-    assert get_agentic_mode(conn) is False
-
-
-def test_set_agentic_mode_rejects_non_bool(conn: sqlite3.Connection) -> None:
-    """`set_agentic_mode("off")` would silently write "on" (truthy
-    non-empty string). Guard against the foot-gun with a TypeError."""
-    with pytest.raises(TypeError):
-        set_agentic_mode(conn, "off")  # type: ignore[arg-type]
-    with pytest.raises(TypeError):
-        set_agentic_mode(conn, 1)  # type: ignore[arg-type]
-    with pytest.raises(TypeError):
-        set_agentic_mode(conn, None)  # type: ignore[arg-type]
-    # State unchanged — no row was written by any of the failed calls.
-    assert get_agentic_mode(conn) is False
-
-
 def test_default_temperature_default_is_0_7(conn: sqlite3.Connection) -> None:
     """No row → 0.7. Production default before the user touches
     /settings."""
@@ -490,56 +442,6 @@ def test_get_default_temperature_falls_back_on_malformed_row(
     creation."""
     set_setting(conn, "default_temperature", "not-a-number")
     assert get_default_temperature(conn) == 0.7
-
-
-# ---------------------------------------------------------------------------
-# Phase 14: review_enabled / generator_enabled helpers
-# ---------------------------------------------------------------------------
-
-
-def test_get_review_enabled_default_true(conn: sqlite3.Connection) -> None:
-    """Absent row → True. Reviewer is on by default so enabling agentic
-    mode for the first time keeps Phase 13's full-loop behavior."""
-    assert get_review_enabled(conn) is True
-
-
-def test_set_review_enabled_roundtrip(conn: sqlite3.Connection) -> None:
-    """Toggle off then back on; both reads reflect the new state."""
-    set_review_enabled(conn, False)
-    assert get_review_enabled(conn) is False
-    set_review_enabled(conn, True)
-    assert get_review_enabled(conn) is True
-
-
-def test_set_review_enabled_rejects_non_bool(conn: sqlite3.Connection) -> None:
-    """String "off" is truthy and would write "on"; guard with TypeError."""
-    with pytest.raises(TypeError):
-        set_review_enabled(conn, "off")  # type: ignore[arg-type]
-    # State unchanged.
-    assert get_review_enabled(conn) is True
-
-
-def test_get_generator_enabled_default_true(conn: sqlite3.Connection) -> None:
-    """Absent row → True. Same first-time-experience rationale as
-    review_enabled."""
-    assert get_generator_enabled(conn) is True
-
-
-def test_set_generator_enabled_roundtrip(conn: sqlite3.Connection) -> None:
-    """Toggle off then back on."""
-    set_generator_enabled(conn, False)
-    assert get_generator_enabled(conn) is False
-    set_generator_enabled(conn, True)
-    assert get_generator_enabled(conn) is True
-
-
-def test_set_generator_enabled_rejects_non_bool(
-    conn: sqlite3.Connection,
-) -> None:
-    """Guard against the truthy-string foot-gun."""
-    with pytest.raises(TypeError):
-        set_generator_enabled(conn, "off")  # type: ignore[arg-type]
-    assert get_generator_enabled(conn) is True
 
 
 # ---------------------------------------------------------------------------
@@ -746,3 +648,77 @@ def test_chat_rag_state_dataclass(conn: sqlite3.Connection) -> None:
     assert state.enabled is True
     with pytest.raises(Exception):
         state.enabled = False  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Phase 16: per-chat active agent
+# ---------------------------------------------------------------------------
+
+
+def test_create_conversation_defaults_active_agent_none(
+    conn: sqlite3.Connection,
+) -> None:
+    """A new chat starts on the Normal agent (active_agent NULL)."""
+    chat = create_conversation(conn, name="t", model="m")
+    assert chat.active_agent is None
+    assert get_conversation(conn, chat.id).active_agent is None
+
+
+def test_create_conversation_persists_active_agent(
+    conn: sqlite3.Connection,
+) -> None:
+    """Starting a chat with an agent stores its name."""
+    chat = create_conversation(
+        conn, name="t", model="m", active_agent="research"
+    )
+    assert chat.active_agent == "research"
+    assert get_conversation(conn, chat.id).active_agent == "research"
+
+
+def test_set_active_agent_sets_and_clears(conn: sqlite3.Connection) -> None:
+    """set_active_agent updates the row and round-trips through reads."""
+    chat = create_conversation(conn, name="t", model="m")
+    updated = set_active_agent(conn, chat.id, "content_generator")
+    assert updated.active_agent == "content_generator"
+    assert get_conversation(conn, chat.id).active_agent == "content_generator"
+    cleared = set_active_agent(conn, chat.id, None)
+    assert cleared.active_agent is None
+    assert get_conversation(conn, chat.id).active_agent is None
+
+
+def test_set_active_agent_unknown_conversation_raises(
+    conn: sqlite3.Connection,
+) -> None:
+    """Setting the agent on a missing chat raises LookupError."""
+    with pytest.raises(LookupError):
+        set_active_agent(conn, 9999, "research")
+
+
+def test_set_conversation_temperature_round_trip(
+    conn: sqlite3.Connection,
+) -> None:
+    """Per-chat temperature updates persist and round-trip through reads."""
+    chat = create_conversation(conn, name="t", model="m")
+    updated = set_conversation_temperature(conn, chat.id, 1.4)
+    assert updated.temperature == 1.4
+    assert get_conversation(conn, chat.id).temperature == 1.4
+
+
+def test_set_conversation_temperature_unknown_conversation_raises(
+    conn: sqlite3.Connection,
+) -> None:
+    """Updating a missing chat's temperature raises LookupError."""
+    with pytest.raises(LookupError):
+        set_conversation_temperature(conn, 9999, 1.0)
+
+
+def test_list_conversations_includes_active_agent(
+    conn: sqlite3.Connection,
+) -> None:
+    """The sidebar listing carries active_agent for each row."""
+    chat = create_conversation(
+        conn, name="t", model="m", active_agent="research"
+    )
+    rows = list_conversations(conn)
+    match = next(c for c in rows if c.id == chat.id)
+    assert match.active_agent == "research"

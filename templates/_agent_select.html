@@ -1,0 +1,20 @@
+{# Agent picker dropdown (phase 16). Shared by the empty-state composer
+   (new chat) and the in-chat message toolbar.
+
+   Context:
+   - `agents`: app.agents.list_agents() — the registered agents.
+   - `selected_agent`: the currently-selected agent name, or "" / None for
+     Normal. Always set by the includer.
+   - `select_id` (optional): DOM id for the <select>. The composer passes
+     "composer-agent" so app.js can grey the model dropdown on change; the
+     in-chat picker needs no id (its own form drives an hx-post).
+
+   The leading "Normal" option (value "") is the default plain-chat behavior;
+   picking it clears the chat's active agent. #}
+<select{% if select_id %} id="{{ select_id }}"{% endif %}
+        class="agent-select" name="agent" aria-label="Agent">
+  <option value=""{% if not selected_agent %} selected{% endif %}>Normal</option>
+  {% for a in agents %}
+  <option value="{{ a.name }}"{% if selected_agent == a.name %} selected{% endif %}>{{ a.label }}</option>
+  {% endfor %}
+</select>

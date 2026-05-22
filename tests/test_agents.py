@@ -1,152 +1,96 @@
-"""Phase 13: smoke tests for the agentic-loop module."""
+"""Phase 16: tests for the user-invoked agent registry."""
 
 from app import agents
-from app.agents import verdict_tools
+from app.agents import AGENTS, AgentSpec, get_agent, list_agents
 
 
-def test_prompts_are_non_empty_strings() -> None:
-    """Each prompt is a multi-line string with non-trivial content."""
-    for prompt in (
-        agents.RESEARCH_SYSTEM_PROMPT,
-        agents.REVIEW_SYSTEM_PROMPT,
-        agents.GENERATION_SYSTEM_PROMPT,
-    ):
-        assert isinstance(prompt, str)
-        assert len(prompt.strip()) > 100  # not a placeholder
+def test_registry_contains_expected_agents() -> None:
+    """The shipped roster is research + content_generator (Normal is implicit)."""
+    assert set(AGENTS) == {"research", "content_generator"}
+    for spec in AGENTS.values():
+        assert isinstance(spec, AgentSpec)
 
 
-def test_review_prompt_names_both_verdict_tools() -> None:
-    """The review prompt must mention both tool names verbatim — the
-    model needs to know what to call. Catches accidental renames in
-    one place but not the other."""
-    p = agents.REVIEW_SYSTEM_PROMPT
-    assert "mark_passed" in p
-    assert "request_more_research" in p
+def test_agentspec_fields_are_populated() -> None:
+    """Every agent has a label, description, model, prompt, and tools set."""
+    for spec in AGENTS.values():
+        assert spec.name and isinstance(spec.name, str)
+        assert spec.label and isinstance(spec.label, str)
+        assert spec.description and isinstance(spec.description, str)
+        assert spec.model and isinstance(spec.model, str)
+        assert isinstance(spec.system_prompt, str)
+        assert len(spec.system_prompt.strip()) > 100  # not a placeholder
+        assert isinstance(spec.tools, frozenset)
 
 
-# ---------------------------------------------------------------------------
-# verdict_tools — REVIEW_TOOL_SPECS + parse_verdict (phase 13c)
-# ---------------------------------------------------------------------------
+def test_research_agent_has_tools_content_generator_has_none() -> None:
+    """Least-privilege: research can retrieve; content generator cannot."""
+    research = AGENTS["research"]
+    assert research.tools == frozenset({"current_time", "query_rag"})
+
+    content = AGENTS["content_generator"]
+    assert content.tools == frozenset()
 
 
-def test_review_tool_specs_have_correct_names() -> None:
-    """Both verdict tools are present with the names the prompt references."""
-    names = {
-        spec["function"]["name"] for spec in verdict_tools.REVIEW_TOOL_SPECS
-    }
-    assert names == {"mark_passed", "request_more_research"}
+def test_think_defaults_off_and_research_opts_in() -> None:
+    """`think` defaults False (safe on any model). Research opts in (it runs
+    on a thinking-capable model); the Content Generator stays off so qwen
+    answers directly instead of over-reasoning."""
+    # Default is the safe value.
+    bare = AgentSpec(
+        name="x", label="X", description="d", model="m", system_prompt="p"
+    )
+    assert bare.think is False
+
+    assert AGENTS["research"].think is True
+    assert AGENTS["content_generator"].think is False
 
 
-def test_review_tool_specs_have_required_args() -> None:
-    """Each spec marks its arg as required so a misbehaving model
-    that calls mark_passed() with no reason gets a parse error from
-    Ollama rather than producing an empty-message verdict."""
-    by_name = {
-        spec["function"]["name"]: spec["function"] for spec in verdict_tools.REVIEW_TOOL_SPECS
-    }
-    assert by_name["mark_passed"]["parameters"]["required"] == ["reason"]
-    assert by_name["request_more_research"]["parameters"]["required"] == ["feedback"]
-
-
-def test_review_tool_specs_not_in_global_registry() -> None:
-    """The whole point of the separate registry: the research agent
-    must NOT see the verdict tools via `tool_specs_for_ollama()`.
-    Pin: if a future refactor accidentally @tool-decorates these,
-    this assertion fails loudly."""
+def test_shipped_agent_tools_are_real_registered_tools() -> None:
+    """An agent's allowlist must reference tools that actually exist, so a
+    typo can't silently produce an agent that offers a non-existent tool."""
     from app.tools import TOOLS
 
-    assert "mark_passed" not in TOOLS
-    assert "request_more_research" not in TOOLS
+    # query_rag is registered only when a RAG server is configured, so allow
+    # it even if absent from TOOLS in a bare test env.
+    known = set(TOOLS) | {"query_rag"}
+    for spec in AGENTS.values():
+        assert spec.tools <= known, spec.tools - known
 
 
-def test_parse_verdict_passed() -> None:
-    """mark_passed → VerdictDecision(verdict='passed', message=reason)."""
-    calls = [
-        {"name": "mark_passed", "arguments": {"reason": "looks good"}}
-    ]
-    d = verdict_tools.parse_verdict(calls)
-    assert d.verdict == "passed"
-    assert d.message == "looks good"
+def test_get_agent_resolves_names_and_normal() -> None:
+    """get_agent maps a name to its spec; None/""/unknown → None (Normal)."""
+    assert get_agent("research") is AGENTS["research"]
+    assert get_agent("content_generator") is AGENTS["content_generator"]
+    assert get_agent(None) is None
+    assert get_agent("") is None
+    assert get_agent("does_not_exist") is None
 
 
-def test_parse_verdict_failed() -> None:
-    """request_more_research → VerdictDecision(verdict='failed', ...)."""
-    calls = [
-        {
-            "name": "request_more_research",
-            "arguments": {"feedback": "missing source citations"},
-        }
-    ]
-    d = verdict_tools.parse_verdict(calls)
-    assert d.verdict == "failed"
-    assert d.message == "missing source citations"
+def test_list_agents_returns_registry_in_order() -> None:
+    """list_agents preserves insertion (dropdown) order."""
+    assert list_agents() == list(AGENTS.values())
 
 
-def test_parse_verdict_passed_wins_over_failed() -> None:
-    """If the model calls both, mark_passed takes precedence."""
-    calls = [
-        {"name": "request_more_research", "arguments": {"feedback": "x"}},
-        {"name": "mark_passed", "arguments": {"reason": "y"}},
-    ]
-    assert verdict_tools.parse_verdict(calls).verdict == "passed"
+def test_agentspec_is_frozen() -> None:
+    """Specs are immutable so a stray mutation can't corrupt the registry."""
+    import dataclasses
+
+    spec = AGENTS["research"]
+    try:
+        spec.model = "other"  # type: ignore[misc]
+    except dataclasses.FrozenInstanceError:
+        pass
+    else:  # pragma: no cover - defensive
+        raise AssertionError("AgentSpec should be frozen")
 
 
-def test_parse_verdict_no_verdict_tools_falls_through() -> None:
-    """No recognized tool call → treat as failed with a default message."""
-    d = verdict_tools.parse_verdict([])
-    assert d.verdict == "failed"
-    assert "did not call" in d.message
-    d2 = verdict_tools.parse_verdict(
-        [{"name": "random_tool", "arguments": {}}]
-    )
-    assert d2.verdict == "failed"
-
-
-def test_parse_verdict_missing_arguments_key_defaults_to_empty_message() -> None:
-    """Defensive: the model called the verdict tool but Ollama
-    dropped the arguments key (or the model emitted no args). Verdict
-    is still recognized; message is the empty string. Avoids a
-    KeyError that would surface to the user as a stack trace."""
-    d = verdict_tools.parse_verdict([{"name": "mark_passed"}])
-    assert d.verdict == "passed"
-    assert d.message == ""
-    d2 = verdict_tools.parse_verdict([{"name": "request_more_research"}])
-    assert d2.verdict == "failed"
-    assert d2.message == ""
-
-
-def test_parse_verdict_non_string_argument_coerced() -> None:
-    """If the model emits a non-string argument (rare but possible
-    with poorly-tuned models), the message is still stringified rather
-    than propagating a wrong-type value into persisted JSON."""
-    d = verdict_tools.parse_verdict(
-        [{"name": "mark_passed", "arguments": {"reason": 42}}]
-    )
-    assert d.verdict == "passed"
-    assert d.message == "42"
-
-
-def test_parse_verdict_non_dict_arguments_safe() -> None:
-    """A misbehaving model that emits `arguments` as a list (or any
-    non-dict) must NOT crash the loop. The verdict is still
-    recognized; message defaults to empty. Without this guard the
-    inline `.get("reason", "")` would AttributeError on a list."""
-    # arguments is a list — the kind of garbage a poorly-tuned model
-    # might emit if it interpreted the schema sloppily.
-    d = verdict_tools.parse_verdict(
-        [{"name": "mark_passed", "arguments": ["reason", "looks good"]}]
-    )
-    assert d.verdict == "passed"
-    assert d.message == ""
-    # arguments is a string.
-    d2 = verdict_tools.parse_verdict(
-        [{"name": "request_more_research", "arguments": "missing source"}]
-    )
-    assert d2.verdict == "failed"
-    assert d2.message == ""
-    # arguments is an int.
-    d3 = verdict_tools.parse_verdict(
-        [{"name": "mark_passed", "arguments": 42}]
-    )
-    assert d3.verdict == "passed"
-    assert d3.message == ""
+def test_old_loop_symbols_are_gone() -> None:
+    """The removed agentic loop must not be importable from app.agents."""
+    for name in (
+        "AGENTIC_ITERATION_CAP",
+        "RESEARCH_SYSTEM_PROMPT",
+        "REVIEW_SYSTEM_PROMPT",
+        "GENERATION_SYSTEM_PROMPT",
+    ):
+        assert not hasattr(agents, name), name
