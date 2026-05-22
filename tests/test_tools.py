@@ -743,3 +743,165 @@ def test_format_tool_invocation_generic_no_args() -> None:
     from app.tools import format_tool_invocation
 
     assert format_tool_invocation("ping", {}) == "calling ping()"
+
+
+# ---------------------------------------------------------------------------
+# File tools: read_file / write_file (sandboxed to FILE_TOOL_ROOT)
+# ---------------------------------------------------------------------------
+
+from app.tools import builtins as _file_builtins  # noqa: E402
+
+
+def test_read_file_reads_within_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """read_file returns the contents of a file inside the workspace root."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    (tmp_path / "note.txt").write_text("hello world", encoding="utf-8")
+    assert _file_builtins.read_file("note.txt") == "hello world"
+
+
+def test_read_file_missing_returns_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-existent path returns an explanatory message, not an exception."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    assert "No file" in _file_builtins.read_file("nope.txt")
+
+
+def test_read_file_rejects_parent_traversal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `..` path that escapes the root is rejected without leaking content."""
+    root = tmp_path / "ws"
+    root.mkdir()
+    (tmp_path / "secret.txt").write_text("top secret", encoding="utf-8")
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(root))
+    out = _file_builtins.read_file("../secret.txt")
+    assert "outside the allowed workspace" in out
+    assert "top secret" not in out
+
+
+def test_read_file_rejects_absolute_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An absolute path escapes the root and is rejected."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    assert "outside the allowed workspace" in _file_builtins.read_file("/etc/hosts")
+
+
+def test_read_file_truncates_at_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Output is hard-capped to _READ_FILE_CAP chars with an ellipsis."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    big = "x" * (_file_builtins._READ_FILE_CAP + 100)
+    (tmp_path / "big.txt").write_text(big, encoding="utf-8")
+    out = _file_builtins.read_file("big.txt")
+    assert len(out) == _file_builtins._READ_FILE_CAP
+    assert out.endswith("...")
+
+
+def test_read_file_no_root_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no root configured the tool reports the misconfiguration."""
+    monkeypatch.delenv("FILE_TOOL_ROOT", raising=False)
+    assert "not configured" in _file_builtins.read_file("note.txt")
+
+
+def test_read_file_non_utf8_returns_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-UTF-8 (e.g. binary) file surfaces a read error, not an exception."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    (tmp_path / "bin.dat").write_bytes(b"\xff\xfe\x00\x01")
+    assert "Could not read" in _file_builtins.read_file("bin.dat")
+
+
+def test_write_file_os_error_returns_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unwritable target (parent path is a file) surfaces a write error."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    (tmp_path / "blocker").write_text("i am a file", encoding="utf-8")
+    # mkdir(parents=True) under a path whose parent is a regular file
+    # raises NotADirectoryError (an OSError subclass).
+    assert "Could not write" in _file_builtins.write_file("blocker/child.txt", "x")
+
+
+def test_write_file_creates_dirs_and_reads_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """write_file creates missing parent dirs and writes the content."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    out = _file_builtins.write_file("sub/dir/out.txt", "payload")
+    assert "Wrote 7 characters" in out
+    assert (tmp_path / "sub/dir/out.txt").read_text(encoding="utf-8") == "payload"
+
+
+def test_write_file_overwrites_existing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An existing file is replaced (overwrite-only semantics)."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    (tmp_path / "f.txt").write_text("old", encoding="utf-8")
+    _file_builtins.write_file("f.txt", "new")
+    assert (tmp_path / "f.txt").read_text(encoding="utf-8") == "new"
+
+
+def test_write_file_rejects_traversal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `..` path that escapes the root is rejected and writes nothing."""
+    root = tmp_path / "ws"
+    root.mkdir()
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(root))
+    out = _file_builtins.write_file("../escape.txt", "x")
+    assert "outside the allowed workspace" in out
+    assert not (tmp_path / "escape.txt").exists()
+
+
+def test_write_file_marked_not_read_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """write_file is the only mutating tool; read_file stays read-only."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    _file_builtins.refresh_file_tools_registration()
+    assert TOOLS["write_file"].is_read_only is False
+    assert TOOLS["read_file"].is_read_only is True
+
+
+def test_refresh_registers_file_tools_when_root_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Gating adds both file tools to the registry when a root is configured."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    _file_builtins.refresh_file_tools_registration()
+    assert "read_file" in TOOLS
+    assert "write_file" in TOOLS
+
+
+def test_refresh_pops_file_tools_when_root_unset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Gating removes both file tools when the root is unset."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    _file_builtins.refresh_file_tools_registration()
+    monkeypatch.delenv("FILE_TOOL_ROOT", raising=False)
+    _file_builtins.refresh_file_tools_registration()
+    assert "read_file" not in TOOLS
+    assert "write_file" not in TOOLS
+
+
+@pytest.mark.asyncio
+async def test_run_tool_dispatches_write_then_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The registry dispatches both tools end-to-end via run_tool."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    _file_builtins.refresh_file_tools_registration()
+    written = await run_tool("write_file", {"path": "a.txt", "content": "data"})
+    assert "Wrote" in written.text
+    read_back = await run_tool("read_file", {"path": "a.txt"})
+    assert read_back.text == "data"
