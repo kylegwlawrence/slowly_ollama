@@ -604,15 +604,15 @@ def set_setting(
 
 
 _DEFAULT_TEMPERATURE_KEY = "default_temperature"
-_DEFAULT_TEMPERATURE_FALLBACK = 0.7
+_DEFAULT_TEMPERATURE_FALLBACK = 0.2
 
 
 def get_default_temperature(conn: sqlite3.Connection) -> float:
     """Return the global default sampling temperature for new chats.
 
-    Default (no row): ``0.7``. The stored value is clamped to the
+    Default (no row): ``0.2``. The stored value is clamped to the
     [0.0, 2.0] range Ollama accepts; a malformed row (non-numeric,
-    written by a hand-crafted request) falls back to ``0.7`` rather
+    written by a hand-crafted request) falls back to ``0.2`` rather
     than raising, so a corrupt setting can never break chat creation.
 
     Args:
@@ -643,6 +643,47 @@ def set_default_temperature(
     """
     clamped = max(0.0, min(2.0, float(temperature)))
     set_setting(conn, _DEFAULT_TEMPERATURE_KEY, str(clamped))
+
+
+_DEFAULT_TOOL_ITERATION_CAP_KEY = "default_tool_iteration_cap"
+_DEFAULT_TOOL_ITERATION_CAP_FALLBACK = 5
+
+
+def get_default_tool_iteration_cap(conn: sqlite3.Connection) -> int:
+    """Return the global default per-turn tool-iteration cap for new chats.
+
+    Default (no row): ``5``. The stored value is clamped to the [1, 10]
+    range the app enforces; a malformed row falls back to ``5`` rather
+    than raising, so a corrupt setting can never break chat creation.
+
+    Args:
+        conn: Open SQLite connection.
+    """
+    raw = get_setting(conn, _DEFAULT_TOOL_ITERATION_CAP_KEY, default=None)
+    if raw is None:
+        return _DEFAULT_TOOL_ITERATION_CAP_FALLBACK
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_TOOL_ITERATION_CAP_FALLBACK
+    return max(1, min(10, value))
+
+
+def set_default_tool_iteration_cap(
+    conn: sqlite3.Connection, tool_iteration_cap: int
+) -> None:
+    """Persist the global default per-turn tool-iteration cap for new chats.
+
+    Clamps to [1, 10] before storing so an out-of-range value can't be
+    read back later. Stored as a string (the app_settings value column
+    is text).
+
+    Args:
+        conn: Open SQLite connection.
+        tool_iteration_cap: New default cap (clamped to 1–10).
+    """
+    clamped = max(1, min(10, int(tool_iteration_cap)))
+    set_setting(conn, _DEFAULT_TOOL_ITERATION_CAP_KEY, str(clamped))
 
 
 # ---------------------------------------------------------------------------
