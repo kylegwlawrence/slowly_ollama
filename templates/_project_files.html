@@ -1,0 +1,91 @@
+{# Files tab body. Two modes:
+   - Directory listing (when `files_ctx.listing` is set): breadcrumbs +
+     entries grid.
+   - File view (when `files_ctx.view` is set): breadcrumbs + size +
+     download + rendered content.
+
+   Both modes share the breadcrumb shape; the route picks which to
+   populate. Errors (path-outside-workspace, missing dir, binary file)
+   surface as in-page messages rather than HTTP errors. #}
+{% set listing = files_ctx.listing|default(none) %}
+{% set view = files_ctx.view|default(none) %}
+<section class="project-files">
+  {% if listing %}
+    <nav class="project-files__crumbs">
+      {% for label, href in listing.breadcrumbs %}
+        <a href="{{ href }}"
+           hx-get="{{ href }}"
+           hx-target="#main"
+           hx-swap="innerHTML"
+           hx-push-url="true">{{ label }}</a>
+        {% if not loop.last %} / {% endif %}
+      {% endfor %}
+    </nav>
+    {% if not listing.available %}
+      <p class="project-files__empty">{{ listing.error }}</p>
+    {% elif listing.error %}
+      <p class="project-files__empty">{{ listing.error }}</p>
+    {% elif not listing.entries %}
+      <p class="project-files__empty">No files yet. Agents that use the file tools will write here.</p>
+    {% else %}
+      <ul class="project-files__list">
+        {% for entry in listing.entries %}
+          <li class="project-files__item">
+            {% if entry.is_dir %}
+              <a class="project-files__dir"
+                 href="{{ entry.href_browse }}"
+                 hx-get="{{ entry.href_browse }}"
+                 hx-target="#main"
+                 hx-swap="innerHTML"
+                 hx-push-url="true">
+                <span class="material-symbols-outlined">folder</span>
+                {{ entry.name }}/
+              </a>
+            {% else %}
+              <a class="project-files__file"
+                 href="{{ entry.href_view }}"
+                 hx-get="{{ entry.href_view }}"
+                 hx-target="#main"
+                 hx-swap="innerHTML"
+                 hx-push-url="true">
+                <span class="material-symbols-outlined">description</span>
+                {{ entry.name }}
+              </a>
+              <span class="project-files__size">{{ entry.size_display }}</span>
+              <a class="project-files__download"
+                 href="{{ entry.href_download }}"
+                 aria-label="Download {{ entry.name }}"
+                 download>
+                <span class="material-symbols-outlined">download</span>
+              </a>
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  {% elif view %}
+    <nav class="project-files__crumbs">
+      {% for label, href in view.breadcrumbs %}
+        <a href="{{ href }}"
+           hx-get="{{ href }}"
+           hx-target="#main"
+           hx-swap="innerHTML"
+           hx-push-url="true">{{ label }}</a>
+        {% if not loop.last %} / {% endif %}
+      {% endfor %}
+    </nav>
+    <div class="project-files__view-header">
+      <span class="project-files__size">{{ view.size_display }}</span>
+      <a class="project-files__download"
+         href="{{ view.download_href }}"
+         download>Download</a>
+    </div>
+    {% if view.error %}
+      <p class="project-files__empty">{{ view.error }}</p>
+    {% elif view.is_markdown %}
+      <article class="project-files__markdown">{{ view.rendered_html|safe }}</article>
+    {% else %}
+      <pre class="project-files__pre">{{ view.text }}</pre>
+    {% endif %}
+  {% endif %}
+</section>

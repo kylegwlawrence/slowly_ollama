@@ -356,7 +356,7 @@ def test_create_chat_returns_201_with_panel_and_oob_row(
     """
     with make_client(_ollama_unreachable) as client:
         response = client.post(
-            "/chats", data={"model": "llama3", "content": "hello there"}
+            f"/projects/{_default_project_id()}/chats", data={"model": "llama3", "content": "hello there"}
         )
 
     assert response.status_code == 201
@@ -380,30 +380,48 @@ def test_create_chat_returns_201_with_panel_and_oob_row(
     ), "OOB attribute must wrap the <li>, not sit on it directly"
     assert 'class="chat-item"' in response.text
     assert 'data-chat-id=' in response.text
-    # URL push so reload restores the new chat's view.
-    assert response.headers["HX-Push-Url"].startswith("/chats/")
+    # Phase 17: URL push points at the project-scoped canonical URL so
+    # reload restores the new chat's view.
+    assert response.headers["HX-Push-Url"].startswith("/projects/")
+    assert "/chats/" in response.headers["HX-Push-Url"]
+
+
+def _default_project_id() -> int:
+    """Return the Default project's id from the test DB.
+
+    Phase 17: every chat lives in a project. The migration creates a
+    single "Default" project at id 1 (lowest id); the test helpers use
+    it as the canonical home for chats created through the project-
+    scoped create-chat endpoint.
+    """
+    db_path = os.environ["DB_PATH"]
+    with open_connection(db_path) as conn:
+        return conn.execute(
+            "SELECT id FROM projects ORDER BY id LIMIT 1;"
+        ).fetchone()[0]
 
 
 def _create_chat_and_get_id(
     client: TestClient, content: str = "first message"
 ) -> int:
-    """Create a chat via POST /chats and return its id.
+    """Create a chat via POST /projects/{pid}/chats and return its id.
 
-    Phase 12g: POST /chats spawns a generation task as a side
-    effect, so by the time this helper returns, the test's mocked
-    Ollama has been consumed by one generation cycle (one probe +
-    one stream). Tests that just want to observe the generation's
-    SSE output can then GET /stream and `consume_generation` will
-    replay the events.
+    Phase 12g: this endpoint spawns a generation task as a side effect,
+    so by the time this helper returns, the test's mocked Ollama has
+    been consumed by one generation cycle (one probe + one stream).
+    Tests that just want to observe the generation's SSE output can
+    then GET /stream and ``consume_generation`` will replay the events.
 
     For tests that need to control the mock's first probe directly
-    (typically tool tests that want the probe to return a tool_call
-    on call #1), use `_create_chat_db_only` instead — that bypasses
-    the generation spawn and lets the test's first probe arrive via
-    POST /messages.
+    (typically tool tests that want the probe to return a tool_call on
+    call #1), use ``_create_chat_db_only`` instead — that bypasses the
+    generation spawn and lets the test's first probe arrive via POST
+    /messages.
     """
+    pid = _default_project_id()
     response = client.post(
-        "/chats", data={"model": "llama3", "content": content}
+        f"/projects/{pid}/chats",
+        data={"model": "llama3", "content": content},
     )
     marker = 'data-chat-id="'
     start = response.text.index(marker) + len(marker)
@@ -439,38 +457,39 @@ def _create_chat_db_only(
 def test_index_renders_layout_with_composer(
     make_client: ClientFactory,
 ) -> None:
-    """GET / returns the full page: sidebar + empty-state composer."""
+    """Phase 17: GET / 302s to /projects, where the Chats tab of the
+    Default project shows sidebar + empty-state composer."""
     with make_client(_ollama_unreachable) as client:
-        response = client.get("/")
+        pid = _default_project_id()
+        response = client.get(f"/projects/{pid}/chats")
 
     assert response.status_code == 200
     # Page shell from base.html.
     assert "<!DOCTYPE html>" in response.text
-    # Sidebar layout.
+    # Sidebar layout (the in-project sidebar variant).
     assert 'class="sidebar"' in response.text
     assert 'id="chats-list"' in response.text
     # Composer takes the main area when no chat is loaded.
     assert 'class="composer"' in response.text
     assert 'class="chat-panel"' not in response.text
-    # Sidebar "+ New chat" affordance for returning to the composer
-    # from inside an existing chat.
+    # Sidebar "+ New chat" affordance is now on the in-project sidebar.
     assert 'class="sidebar__new-chat"' in response.text
 
 
 def test_index_includes_composer_form(
     make_client: ClientFactory,
 ) -> None:
-    """The composer posts to /chats with model + content (no name).
+    """Phase 17: the composer posts to /projects/{pid}/chats with model + content.
 
-    Phase 11b removed the standalone "Compose" disclosure + named
-    new-chat form in favour of a Claude-style empty-state composer
-    that starts a conversation in one round trip.
+    Phase 11b removed the standalone "Compose" disclosure; phase 17
+    nested the create-chat URL under the project.
     """
     with make_client(_ollama_unreachable) as client:
-        response = client.get("/")
+        pid = _default_project_id()
+        response = client.get(f"/projects/{pid}/chats")
 
     assert 'class="composer__form"' in response.text
-    assert 'hx-post="/chats"' in response.text
+    assert f'hx-post="/projects/{pid}/chats"' in response.text
     # The composer replaces #main with the new chat panel; the OOB
     # sidebar row is delivered separately by the server.
     assert 'hx-target="#main"' in response.text
@@ -478,12 +497,12 @@ def test_index_includes_composer_form(
     # that attribute onto the descendant <select hx-get="/models">,
     # which would push `/models?model=` into the address bar on
     # initial load. URL syncing for chat creation is driven by the
-    # server's HX-Push-Url header in POST /chats responses instead.
+    # server's HX-Push-Url header instead.
     composer_start = response.text.index('class="composer__form"')
     composer_end = response.text.index("</form>", composer_start)
     composer_form = response.text[composer_start:composer_end]
     assert "hx-push-url" not in composer_form
-    # The two fields POST /chats now requires via Form().
+    # The two fields the create endpoint requires via Form().
     assert 'name="content"' in response.text
     assert 'name="model"' in response.text
     # The old Compose disclosure is gone.
@@ -498,7 +517,8 @@ def test_composer_model_dropdown_auto_loads_from_models(
     swaps its innerHTML with the returned <option> tags. Without
     these attributes the dropdown would be permanently empty."""
     with make_client(_ollama_unreachable) as client:
-        response = client.get("/")
+        pid = _default_project_id()
+        response = client.get(f"/projects/{pid}/chats")
 
     assert "<select" in response.text
     assert 'hx-get="/models"' in response.text
@@ -516,19 +536,20 @@ def test_new_route_returns_composer_fragment(
     into #main without re-rendering the sidebar.
     """
     with make_client(_ollama_unreachable) as client:
-        response = client.get("/new")
+        response = client.get(f"/projects/{_default_project_id()}/chats/new")
 
     assert response.status_code == 200
     assert "<!DOCTYPE html>" not in response.text
     assert 'class="sidebar"' not in response.text
+    pid = _default_project_id()
     assert 'class="composer"' in response.text
-    assert 'hx-post="/chats"' in response.text
+    assert f'hx-post="/projects/{pid}/chats"' in response.text
 
 
 def test_index_lists_existing_chats_in_sidebar(
     make_client: ClientFactory,
 ) -> None:
-    """GET / populates the sidebar from the DB.
+    """Phase 17: GET /projects/{pid}/chats populates the sidebar from the DB.
 
     The placeholder name is derived from each chat's first user
     message (first non-empty line, capped at 40 chars), so two chats
@@ -538,7 +559,8 @@ def test_index_lists_existing_chats_in_sidebar(
         _create_chat_and_get_id(client, "first")
         _create_chat_and_get_id(client, "second")
 
-        response = client.get("/")
+        pid = _default_project_id()
+        response = client.get(f"/projects/{pid}/chats")
 
     assert response.text.count('class="chat-item"') == 2
     # Each row's link text is the message-derived placeholder.
@@ -776,13 +798,18 @@ def test_delete_chat_emits_hx_location_when_viewing_deleted_chat(
     now-404'd URL."""
     with make_client(_ollama_unreachable) as client:
         chat_id = _create_chat_and_get_id(client, "Topic")
+        pid = _default_project_id()
         response = client.delete(
             f"/chats/{chat_id}",
-            headers={"Referer": f"http://test/chats/{chat_id}"},
+            headers={
+                "Referer": f"http://test/projects/{pid}/chats/{chat_id}"
+            },
         )
 
     assert response.status_code == 200
-    assert response.headers.get("HX-Location") == "/"
+    # Phase 17: HX-Location redirects to the project's chats tab so the
+    # user lands on a valid URL after deleting the chat they were viewing.
+    assert response.headers.get("HX-Location") == f"/projects/{pid}/chats"
 
 
 def test_delete_chat_omits_hx_location_when_viewing_different_chat(
@@ -815,7 +842,10 @@ def test_chat_item_link_carries_href_and_hx_push_url(
         chat_id = _create_chat_and_get_id(client, "X")
         response = client.get("/chats")
 
-    assert f'href="/chats/{chat_id}"' in response.text
+    # Phase 17: rendered links are project-scoped (the row knows the chat's
+    # project via chat.project_id, even when no `project` is passed).
+    pid = _default_project_id()
+    assert f'href="/projects/{pid}/chats/{chat_id}"' in response.text
     assert 'hx-push-url="true"' in response.text
 
 
@@ -968,7 +998,7 @@ def test_delete_chat_returns_empty_200(
     """DELETE /chats/{id} returns an empty body with status 200."""
     with make_client(_ollama_unreachable) as client:
         created = client.post(
-            "/chats", data={"model": "llama3", "content": "hi"}
+            f"/projects/{_default_project_id()}/chats", data={"model": "llama3", "content": "hi"}
         )
         marker = 'data-chat-id="'
         start = created.text.index(marker) + len(marker)
@@ -999,7 +1029,7 @@ def test_send_message_returns_user_bubble_and_placeholder(
     """
     with make_client(_ollama_unreachable) as client:
         created = client.post(
-            "/chats", data={"model": "llama3", "content": "hi"}
+            f"/projects/{_default_project_id()}/chats", data={"model": "llama3", "content": "hi"}
         )
         marker = 'data-chat-id="'
         start = created.text.index(marker) + len(marker)
@@ -1045,7 +1075,7 @@ def test_stream_endpoint_emits_token_and_done_events(
 
     with make_client(handler) as client:
         created = client.post(
-            "/chats", data={"model": "llama3", "content": "hi"}
+            f"/projects/{_default_project_id()}/chats", data={"model": "llama3", "content": "hi"}
         )
         marker = 'data-chat-id="'
         start = created.text.index(marker) + len(marker)
@@ -1084,7 +1114,7 @@ def test_stream_endpoint_emits_error_event_when_ollama_unreachable(
     """A mid-stream Ollama failure surfaces as SSE event: error."""
     with make_client(_ollama_unreachable) as client:
         created = client.post(
-            "/chats", data={"model": "llama3", "content": "hi"}
+            f"/projects/{_default_project_id()}/chats", data={"model": "llama3", "content": "hi"}
         )
         marker = 'data-chat-id="'
         start = created.text.index(marker) + len(marker)
@@ -1119,7 +1149,7 @@ def test_stream_escapes_html_in_token_content(
 
     with make_client(handler) as client:
         created = client.post(
-            "/chats", data={"model": "llama3", "content": "hi"}
+            f"/projects/{_default_project_id()}/chats", data={"model": "llama3", "content": "hi"}
         )
         marker = 'data-chat-id="'
         start = created.text.index(marker) + len(marker)
@@ -1268,7 +1298,7 @@ def test_regenerate_returns_placeholder_for_replacement(
 
     with make_client(handler) as client:
         created = client.post(
-            "/chats", data={"model": "llama3", "content": "hi"}
+            f"/projects/{_default_project_id()}/chats", data={"model": "llama3", "content": "hi"}
         )
         marker = 'data-chat-id="'
         start = created.text.index(marker) + len(marker)
@@ -1296,7 +1326,7 @@ def test_regenerate_400_when_no_assistant_message(
     """Regenerate without an assistant message yet → 400."""
     with make_client(_ollama_unreachable) as client:
         created = client.post(
-            "/chats", data={"model": "llama3", "content": "hi"}
+            f"/projects/{_default_project_id()}/chats", data={"model": "llama3", "content": "hi"}
         )
         marker = 'data-chat-id="'
         start = created.text.index(marker) + len(marker)
@@ -1366,7 +1396,7 @@ def test_regenerate_stream_replaces_last_assistant_in_place(
 
     with make_client(handler) as client:
         created = client.post(
-            "/chats", data={"model": "llama3", "content": "hi"}
+            f"/projects/{_default_project_id()}/chats", data={"model": "llama3", "content": "hi"}
         )
         marker = 'data-chat-id="'
         start = created.text.index(marker) + len(marker)
@@ -1683,7 +1713,7 @@ def test_new_composer_reflects_default_temperature(
         client.patch(
             "/settings/default-temperature", data={"temperature": "0.3"}
         )
-        composer = client.get("/new")
+        composer = client.get(f"/projects/{_default_project_id()}/chats/new")
     assert 'id="composer-temperature"' in composer.text
     assert 'value="0.3"' in composer.text
 
@@ -1738,7 +1768,7 @@ def test_new_composer_reflects_default_tool_cap(
         client.patch(
             "/settings/default-tool-cap", data={"tool_iteration_cap": "3"}
         )
-        composer = client.get("/new")
+        composer = client.get(f"/projects/{_default_project_id()}/chats/new")
     assert 'id="composer-tool-iteration-cap"' in composer.text
     assert 'value="3"' in composer.text
 
@@ -1748,7 +1778,7 @@ def test_new_composer_renders_tool_iteration_cap_input(
 ) -> None:
     """The empty-state composer exposes a Tool cap input defaulting to 5."""
     with make_client(_ollama_unreachable) as client:
-        composer = client.get("/new")
+        composer = client.get(f"/projects/{_default_project_id()}/chats/new")
     assert 'id="composer-tool-iteration-cap"' in composer.text
     assert 'name="tool_iteration_cap"' in composer.text
 
@@ -2378,7 +2408,7 @@ def test_create_chat_with_agent_persists_active_agent(
 
     with make_client(_tool_capable_handler) as client:
         response = client.post(
-            "/chats",
+            f"/projects/{_default_project_id()}/chats",
             data={"model": "llama3", "content": "hi", "agent": "research"},
         )
 
@@ -2462,7 +2492,7 @@ def test_create_chat_seeds_tool_rows(
 
     with make_client(_tool_capable_handler) as client:
         response = client.post(
-            "/chats",
+            f"/projects/{_default_project_id()}/chats",
             data={"model": "llama3", "content": "hi"},
         )
 
@@ -2550,7 +2580,7 @@ def test_create_chat_seeds_rag_server_rows(
 
     with make_client(_tool_capable_handler) as client:
         response = client.post(
-            "/chats",
+            f"/projects/{_default_project_id()}/chats",
             data={"model": "llama3", "content": "hi"},
         )
 

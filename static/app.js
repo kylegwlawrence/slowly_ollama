@@ -278,3 +278,24 @@ document.addEventListener('click', function (e) {
   chip.classList.toggle('tool-chip--off', !cb.checked);
   chip.querySelector('.tool-chip__check').textContent = cb.checked ? '✓' : '✕';
 });
+
+// Phase 17: project default-model prefill.
+//
+// `_composer.html`'s #composer-model loads its <option>s lazily via
+// HTMX from /models (so the dropdown isn't populated at SSR time).
+// After the swap, if the select has a data-default attribute matching
+// one of the loaded options, select it — that propagates a project's
+// configured default_model into the composer's selected value without
+// any server-side coordination on option order.
+document.body.addEventListener("htmx:afterSwap", (evt) => {
+  const target = evt.target;
+  if (target && target.id === "composer-model" && target.dataset.default) {
+    const want = target.dataset.default;
+    for (const opt of target.options) {
+      if (opt.value === want) {
+        target.value = want;
+        break;
+      }
+    }
+  }
+});

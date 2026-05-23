@@ -6,6 +6,7 @@ opens a private connection only long enough to create the file and tables.
 """
 
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 from app.config import db_path
@@ -31,6 +32,27 @@ from app.config import db_path
 # - composite index on messages(conversation_id, created_at): supports the
 #   primary read pattern, "give me this conversation's messages in order."
 _SCHEMA_SQL = """
+-- Phase 17: a project is the container above chats. Every conversation
+-- belongs to exactly one project, and the project's `workspace_subdir`
+-- (a slug under FILE_TOOL_ROOT) scopes the file tools to a per-project
+-- directory. `default_model` / `default_agent` pre-fill the composer
+-- for new chats in the project and are NOT applied retroactively to
+-- existing chats.
+CREATE TABLE IF NOT EXISTS projects (
+    id                INTEGER PRIMARY KEY,
+    name              TEXT NOT NULL UNIQUE,
+    description       TEXT NOT NULL DEFAULT '',
+    -- Path segment under FILE_TOOL_ROOT (a slug). UNIQUE so projects
+    -- can't share a workspace. Set at create time; never edited.
+    workspace_subdir  TEXT NOT NULL UNIQUE,
+    -- NULL = no project default; new chats use the global default.
+    default_model     TEXT,
+    -- NULL = Normal (no agent) is the default; otherwise an agent name.
+    default_agent     TEXT,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS conversations (
     id           INTEGER PRIMARY KEY,
     name         TEXT NOT NULL,
@@ -47,6 +69,11 @@ CREATE TABLE IF NOT EXISTS conversations (
     -- Phase 16: name of the user-invoked agent active for this chat
     -- (a key in app.agents.AGENTS), or NULL for Normal plain chat.
     active_agent TEXT,
+    -- Phase 17: the project this chat belongs to. NOT NULL — every
+    -- chat lives in a project; the migration ensures a "Default"
+    -- project exists before this column is enforced.
+    project_id   INTEGER NOT NULL
+        REFERENCES projects(id) ON DELETE CASCADE,
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL
 );
@@ -167,6 +194,109 @@ def _ensure_conversations_tool_iteration_cap_column(conn: sqlite3.Connection) ->
             "ALTER TABLE conversations"
             " ADD COLUMN tool_iteration_cap INTEGER NOT NULL DEFAULT 5;"
         )
+
+
+def _now_iso_db() -> str:
+    """Return the current UTC time as ISO 8601 for DB writes from this module.
+
+    Mirror of ``app.queries._now_iso``. Lives here so the db-layer migration
+    helpers can stamp ``created_at`` / ``updated_at`` without circular-
+    importing from ``app.queries``.
+    """
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _ensure_default_project(conn: sqlite3.Connection) -> int:
+    """Ensure at least one project exists; return the Default project's id.
+
+    Called as part of the projects migration. Idempotent: if any project
+    already exists, returns the id of the lowest-id one (deterministic for
+    tests); otherwise inserts a row named ``"Default"`` with
+    ``workspace_subdir = "default"`` and returns its id.
+
+    Args:
+        conn: Open SQLite connection.
+
+    Returns:
+        The id of the Default (or first existing) project.
+    """
+    row = conn.execute(
+        "SELECT id FROM projects ORDER BY id LIMIT 1;"
+    ).fetchone()
+    if row is not None:
+        # row may be a Row or tuple depending on the connection's
+        # row_factory; index by position to handle both.
+        return row[0]
+    now = _now_iso_db()
+    cursor = conn.execute(
+        "INSERT INTO projects"
+        " (name, description, workspace_subdir, default_model, default_agent,"
+        "  created_at, updated_at)"
+        " VALUES ('Default', '', 'default', NULL, NULL, ?, ?);",
+        (now, now),
+    )
+    return cursor.lastrowid
+
+
+def _ensure_conversations_project_id_column(
+    conn: sqlite3.Connection, default_project_id: int
+) -> None:
+    """Add ``conversations.project_id`` and backfill it on legacy DBs.
+
+    SQLite can't ``ALTER COLUMN`` to add NOT NULL to an existing column,
+    so this uses the table-rewrite pattern: phase 1 adds the column as
+    nullable + backfills with ``default_project_id``; phase 2 rebuilds
+    the table with NOT NULL + FK ON DELETE CASCADE. Idempotent: detects
+    the new column's presence and exits early.
+
+    Args:
+        conn: Open SQLite connection.
+        default_project_id: Project id to assign to every existing
+            conversation row.
+    """
+    columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(conversations);")
+    }
+    if "project_id" in columns:
+        return
+    # Phase 1: add the column as NULLable so we can backfill safely.
+    conn.execute(
+        "ALTER TABLE conversations ADD COLUMN project_id INTEGER;"
+    )
+    conn.execute(
+        "UPDATE conversations SET project_id = ? WHERE project_id IS NULL;",
+        (default_project_id,),
+    )
+    # Phase 2: table-rewrite to enforce NOT NULL + FK ON DELETE CASCADE.
+    # executescript wraps the whole sequence in BEGIN/COMMIT so the swap
+    # is atomic — if any step fails, the original table is preserved.
+    conn.executescript(
+        """
+        BEGIN;
+        CREATE TABLE conversations_new (
+            id           INTEGER PRIMARY KEY,
+            name         TEXT NOT NULL,
+            model        TEXT NOT NULL,
+            name_locked  INTEGER NOT NULL DEFAULT 0,
+            temperature  REAL NOT NULL DEFAULT 0.8,
+            tool_iteration_cap INTEGER NOT NULL DEFAULT 5,
+            active_agent TEXT,
+            project_id   INTEGER NOT NULL
+                REFERENCES projects(id) ON DELETE CASCADE,
+            created_at   TEXT NOT NULL,
+            updated_at   TEXT NOT NULL
+        );
+        INSERT INTO conversations_new
+            (id, name, model, name_locked, temperature, tool_iteration_cap,
+             active_agent, project_id, created_at, updated_at)
+        SELECT id, name, model, name_locked, temperature, tool_iteration_cap,
+               active_agent, project_id, created_at, updated_at
+          FROM conversations;
+        DROP TABLE conversations;
+        ALTER TABLE conversations_new RENAME TO conversations;
+        COMMIT;
+        """
+    )
 
 
 def _ensure_conversations_active_agent_column(conn: sqlite3.Connection) -> None:
@@ -291,6 +421,11 @@ def initialize_database(path: Path | None = None) -> Path:
         # for this init connection; every connection Phase 3+ opens must set
         # it again, otherwise REFERENCES clauses become documentation-only.
         conn.execute("PRAGMA foreign_keys = ON;")
+        # row_factory = Row so the projects migration helpers below can
+        # index lookup rows by name as well as by position. Local to this
+        # init connection; production connections set their own factory in
+        # ``app.connection``.
+        conn.row_factory = sqlite3.Row
         # executescript runs multiple `;`-separated statements; it issues an
         # implicit COMMIT first so DDL applies cleanly.
         conn.executescript(_SCHEMA_SQL)
@@ -311,5 +446,10 @@ def initialize_database(path: Path | None = None) -> Path:
         # Phase 16: backfill the active_agent column on conversations
         # tables created before user-invoked agents existed.
         _ensure_conversations_active_agent_column(conn)
+        # Phase 17: ensure a "Default" project exists, then add
+        # conversations.project_id (NOT NULL FK) and backfill every
+        # legacy chat to point at Default.
+        default_project_id = _ensure_default_project(conn)
+        _ensure_conversations_project_id_column(conn, default_project_id)
 
     return target

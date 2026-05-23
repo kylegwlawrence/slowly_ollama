@@ -118,9 +118,18 @@ def test_full_user_journey(integration_client: TestClient) -> None:
     """
     client = integration_client
 
-    # 1. Index page renders the composer (empty-state was removed
-    # in phase 11b).
-    index = client.get("/")
+    # Look up the Default project id once; phase 17 nests all chat URLs
+    # under /projects/{pid}/.
+    from app.connection import open_connection
+    import os
+
+    with open_connection(os.environ["DB_PATH"]) as conn:
+        pid = conn.execute(
+            "SELECT id FROM projects ORDER BY id LIMIT 1;"
+        ).fetchone()[0]
+
+    # 1. Project's Chats tab renders the composer (empty state).
+    index = client.get(f"/projects/{pid}/chats")
     assert index.status_code == 200
     assert 'class="composer"' in index.text
     assert "chats-list" in index.text
@@ -128,9 +137,10 @@ def test_full_user_journey(integration_client: TestClient) -> None:
     # 2. Create a chat AND send the first message in one POST.
     # Response carries the rendered chat panel + an OOB sidebar row
     # marked for afterbegin into #chats-list + the HX-Push-Url
-    # header pointing at the new chat.
+    # header pointing at the new (project-scoped) chat URL.
     created = client.post(
-        "/chats", data={"model": "llama3", "content": "hello"}
+        f"/projects/{pid}/chats",
+        data={"model": "llama3", "content": "hello"},
     )
     assert created.status_code == 201
     match = re.search(r'data-chat-id="(\d+)"', created.text)
@@ -144,7 +154,9 @@ def test_full_user_journey(integration_client: TestClient) -> None:
     assert 'data-role="user"' in created.text
     assert "hello" in created.text
     assert f'sse-connect="/chats/{chat_id}/stream"' in created.text
-    assert created.headers.get("HX-Push-Url") == f"/chats/{chat_id}"
+    assert created.headers.get("HX-Push-Url") == (
+        f"/projects/{pid}/chats/{chat_id}"
+    )
 
     # 3. Sidebar now shows the chat. The placeholder name is derived
     # from the first user message ("hello") — phase 11d may auto-rename
@@ -153,9 +165,10 @@ def test_full_user_journey(integration_client: TestClient) -> None:
     assert ">hello<" in chats.text
     assert f'data-chat-id="{chat_id}"' in chats.text
 
-    # 4. Reload-safe: a direct browser hit on /chats/{id} returns the
-    # full index page with the chat preloaded.
-    panel = client.get(f"/chats/{chat_id}")
+    # 4. Reload-safe: a direct browser hit on the project-scoped chat
+    # URL returns the full project page with the chat preloaded. The
+    # legacy /chats/{id} URL 302s here (verified separately).
+    panel = client.get(f"/projects/{pid}/chats/{chat_id}")
     assert panel.status_code == 200
     assert "hello" in panel.text  # first user message persisted
     assert "chat-panel" in panel.text
@@ -168,7 +181,7 @@ def test_full_user_journey(integration_client: TestClient) -> None:
     assert "event: done" in stream.text
 
     # 6. Conversation now has both messages persisted.
-    panel_after = client.get(f"/chats/{chat_id}")
+    panel_after = client.get(f"/projects/{pid}/chats/{chat_id}")
     assert "hello" in panel_after.text
     assert "First reply" in panel_after.text
 
@@ -187,7 +200,7 @@ def test_full_user_journey(integration_client: TestClient) -> None:
 
     # 9. The assistant message has been replaced in place — new text
     # present, old text gone (regenerate replaces, doesn't append).
-    panel_after_regen = client.get(f"/chats/{chat_id}")
+    panel_after_regen = client.get(f"/projects/{pid}/chats/{chat_id}")
     assert "Regenerated reply" in panel_after_regen.text
     assert "First reply" not in panel_after_regen.text
 
@@ -229,8 +242,17 @@ def test_delete_while_viewing_emits_hx_location(
     """
     client = integration_client
 
+    from app.connection import open_connection
+    import os
+
+    with open_connection(os.environ["DB_PATH"]) as conn:
+        pid = conn.execute(
+            "SELECT id FROM projects ORDER BY id LIMIT 1;"
+        ).fetchone()[0]
+
     created = client.post(
-        "/chats", data={"model": "llama3", "content": "first msg"}
+        f"/projects/{pid}/chats",
+        data={"model": "llama3", "content": "first msg"},
     )
     chat_id = int(
         re.search(r'data-chat-id="(\d+)"', created.text).group(1)
@@ -238,10 +260,13 @@ def test_delete_while_viewing_emits_hx_location(
 
     response = client.delete(
         f"/chats/{chat_id}",
-        headers={"Referer": f"http://test/chats/{chat_id}"},
+        headers={
+            "Referer": f"http://test/projects/{pid}/chats/{chat_id}"
+        },
     )
     assert response.status_code == 200
-    assert response.headers.get("HX-Location") == "/"
+    # Phase 17: HX-Location redirects to the project's chats tab.
+    assert response.headers.get("HX-Location") == f"/projects/{pid}/chats"
 
 
 # ---------------------------------------------------------------------------
@@ -303,10 +328,23 @@ def test_invoked_agent_journey(agent_client: TestClient) -> None:
     """
     client = agent_client
 
+    # Look up the Default project id; phase 17 nests all chat URLs.
+    from app.connection import open_connection
+    import os
+
+    with open_connection(os.environ["DB_PATH"]) as conn:
+        pid = conn.execute(
+            "SELECT id FROM projects ORDER BY id LIMIT 1;"
+        ).fetchone()[0]
+
     # 1. Create a chat with the Research agent selected.
     created = client.post(
-        "/chats",
-        data={"model": "llama3", "content": "research X", "agent": "research"},
+        f"/projects/{pid}/chats",
+        data={
+            "model": "llama3",
+            "content": "research X",
+            "agent": "research",
+        },
     )
     assert created.status_code == 201
     chat_id = int(re.search(r'data-chat-id="(\d+)"', created.text).group(1))
@@ -320,7 +358,7 @@ def test_invoked_agent_journey(agent_client: TestClient) -> None:
     assert "event: done" in stream.text
 
     # 3. Reload: research's reply persisted; indicator still shows Research.
-    panel = client.get(f"/chats/{chat_id}")
+    panel = client.get(f"/projects/{pid}/chats/{chat_id}")
     assert "Done." in panel.text
     assert "Agent: Research" in panel.text
 
@@ -332,7 +370,7 @@ def test_invoked_agent_journey(agent_client: TestClient) -> None:
     )
     assert switch.status_code == 200
     assert "Content Generator" in switch.text
-    panel2 = client.get(f"/chats/{chat_id}")
+    panel2 = client.get(f"/projects/{pid}/chats/{chat_id}")
     assert "Agent: Content Generator" in panel2.text
 
     # 5. Switch back to Normal — the indicator drops the agent and shows
@@ -343,7 +381,7 @@ def test_invoked_agent_journey(agent_client: TestClient) -> None:
         headers={"HX-Request": "true"},
     )
     assert normal.status_code == 200
-    panel3 = client.get(f"/chats/{chat_id}")
+    panel3 = client.get(f"/projects/{pid}/chats/{chat_id}")
     assert "Agent:" not in panel3.text
     assert "llama3" in panel3.text
 

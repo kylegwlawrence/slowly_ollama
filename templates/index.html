@@ -1,75 +1,44 @@
 {% extends "base.html" %}
 
-{# Page title includes the loaded conversation's name when there is
-   one — easier to tell tabs apart when several chats are open. The
-   /settings direct hit shows a stable "Settings" title. #}
+{# Phase 17: the index template is a layout dispatcher. The route picks
+   `layout` (``"projects"`` / ``"project"`` / ``"settings"``) and we
+   render the corresponding sidebar + main slot. Pre-17 hits without
+   `layout` still work for tests that render the chat panel directly
+   — the fallback at the bottom keeps that path alive. #}
 {% block title %}
-  {% if settings_view|default(false) %}Settings — {% endif %}
+  {% if layout|default(none) == "projects" %}Projects — {% endif %}
+  {% if layout|default(none) == "settings" %}Settings — {% endif %}
+  {% if project %}{{ project.name }} — {% endif %}
   {% if conversation %}{{ conversation.name }} — {% endif %}olliellama
 {% endblock %}
 
 {% block content %}
 <div class="layout">
-  <aside class="sidebar">
-    {# Sidebar header: app name on the left, "+ New chat" affordance
-       on the right. The link `hx-get`s the composer fragment so it
-       replaces only `#main` (no full page reload, no sidebar flash)
-       and pushes the URL back to `/` so reload restores the empty
-       state. #}
-    <div class="sidebar__header">
-      <h1 class="sidebar__logo">olliellama</h1>
-      <a class="sidebar__new-chat"
-         href="/"
-         hx-get="/new"
-         hx-target="#main"
-         hx-swap="innerHTML"
-         hx-push-url="/"
-         aria-label="New chat">
-        <span class="material-symbols-outlined">add</span>
-        New chat
-      </a>
-    </div>
-    {% include "_chats_list.html" %}
-    {# Sidebar footer: settings link pinned to the bottom via
-       `margin-top: auto`. Uses the same dual-nav pattern as chat
-       links — `href` for normal navigation, `hx-get` for HTMX swaps
-       so the page doesn't reload when the user clicks it from inside
-       a chat. #}
-    <div class="sidebar__footer">
-      <a class="sidebar__settings" href="/settings"
-         hx-get="/settings"
-         hx-target="#main"
-         hx-swap="innerHTML"
-         hx-push-url="/settings">
-        <span class="material-symbols-outlined">settings</span>
-        Settings
-      </a>
-      {# Icon text is set by app.js on load (DOMContentLoaded) and on
-         each toggle — shows the mode you'll switch TO (moon = currently
-         light, sun = currently dark). The click handler is wired in
-         app.js too so we don't ship a global `toggleTheme` function. #}
-      <button class="theme-toggle" aria-label="Toggle dark mode" type="button">
-        <span class="material-symbols-outlined theme-toggle__icon">dark_mode</span>
-      </button>
-    </div>
-  </aside>
-
-  {# `id="main"` is the HTMX swap target when the user clicks a chat
-     in the sidebar OR sends the first message via the composer. On a
-     direct page load the panel is rendered inline so reloading
-     /chats/{id} restores the same view; when no chat is open the
-     composer takes over the main area. The settings_view branch is
-     a Phase 12c addition — /settings preloads the settings fragment
-     here so a direct hit / reload is bookmarkable. #}
-  <main id="main">
-    {% if settings_view|default(false) %}
+  {% if layout|default(none) == "projects" %}
+    {% include "_projects_sidebar.html" %}
+    <main id="main">{% include "_projects_index.html" %}</main>
+  {% elif layout|default(none) == "project" %}
+    {% include "_project_sidebar.html" %}
+    <main id="main">{% include "_project_page.html" %}</main>
+  {% elif layout|default(none) == "settings" %}
+    {% include "_projects_sidebar.html" %}
+    <main id="main">
       {% set servers = rag_servers %}
       {% include "_settings.html" %}
-    {% elif conversation %}
-      {% include "_chat_panel.html" %}
-    {% else %}
-      {% include "_composer.html" %}
-    {% endif %}
-  </main>
+    </main>
+  {% else %}
+    {# Fallback for direct chat / settings hits during the transition. #}
+    {% include "_projects_sidebar.html" %}
+    <main id="main">
+      {% if settings_view|default(false) %}
+        {% set servers = rag_servers %}
+        {% include "_settings.html" %}
+      {% elif conversation %}
+        {% include "_chat_panel.html" %}
+      {% else %}
+        {% include "_composer.html" %}
+      {% endif %}
+    </main>
+  {% endif %}
 </div>
 {% endblock %}

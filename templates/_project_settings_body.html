@@ -1,0 +1,44 @@
+{# Settings tab body. The save form patches /projects/{id}; the server
+   returns the body again with `saved=True` so we can show a transient
+   confirmation. The delete form sits below with an hx-confirm guard. #}
+<section class="project-settings">
+  <form class="project-settings__form"
+        hx-patch="/projects/{{ project.id }}"
+        hx-target="#project-page-body"
+        hx-swap="innerHTML">
+    <label>
+      Name
+      <input type="text" name="name" required maxlength="80"
+             value="{{ project.name }}">
+    </label>
+    <label>
+      Description
+      <textarea name="description" maxlength="400" rows="3">{{ project.description }}</textarea>
+    </label>
+    <label>
+      Default model (for new chats)
+      <input type="text" name="default_model"
+             value="{{ project.default_model or '' }}"
+             placeholder="(global default)">
+    </label>
+    <label>
+      Default agent (for new chats)
+      <select name="default_agent">
+        <option value=""{% if not project.default_agent %} selected{% endif %}>Normal</option>
+        {% for a in agents %}
+          <option value="{{ a.name }}"{% if project.default_agent == a.name %} selected{% endif %}>{{ a.label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <div class="project-settings__buttons">
+      <button type="submit">Save</button>
+      {% if saved %}<span class="project-settings__saved">Saved.</span>{% endif %}
+    </div>
+  </form>
+  <hr>
+  <form class="project-settings__delete"
+        hx-delete="/projects/{{ project.id }}"
+        hx-confirm="Delete project '{{ project.name }}'? Chats will be deleted; workspace files are preserved on disk.">
+    <button type="submit" class="danger">Delete project</button>
+  </form>
+</section>

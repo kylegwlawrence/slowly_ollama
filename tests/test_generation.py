@@ -661,7 +661,7 @@ def test_agent_tool_specs_excludes_tools_outside_allowlist(tmp_path) -> None:
 
 
 def test_agent_tool_specs_includes_query_rag_when_servers_configured(
-    tmp_path,
+    tmp_path, monkeypatch
 ) -> None:
     """query_rag is offered (with a sources description) when allowlisted AND
     a RAG server is configured."""
@@ -670,6 +670,9 @@ def test_agent_tool_specs_includes_query_rag_when_servers_configured(
 
     db_path = tmp_path / "chats.db"
     _setup_chat(db_path)
+    # refresh_query_rag_registration() opens its own connection via open_connection()
+    # which reads DB_PATH — point it at the temp DB so it sees the server we create.
+    monkeypatch.setenv("DB_PATH", str(db_path))
     with open_connection(db_path) as db:
         _rs.create_server(db, "arxiv", "http://fake/arxiv")
         refresh_query_rag_registration()
@@ -1719,3 +1722,77 @@ async def test_query_rag_sent_even_when_tool_chip_disabled(
     # Despite the disabled tool chip, query_rag is sent because arxiv is
     # enabled for the chat.
     assert "query_rag" in tool_names_sent
+
+
+# ---------------------------------------------------------------------------
+# Phase 17: workspace ContextVar wiring
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_generation_sets_workspace_contextvar(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """During a turn, app.projects.current_workspace_root resolves to the chat's
+    project workspace; outside the turn it resets to None."""
+    from app.projects import current_workspace_root
+
+    fs_root = tmp_path / "workspaces"
+    fs_root.mkdir()
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(fs_root))
+
+    db_path = tmp_path / "chats.db"
+    initialize_database(db_path)
+
+    observed: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # Read the ContextVar at the moment of the LLM probe — this is
+        # inside the producer's set/reset region. The handler runs in
+        # the same task as the producer, so the ContextVar should be set.
+        observed.append(current_workspace_root.get())
+        body = json.loads(request.content or b"{}")
+        if body.get("stream"):
+            return httpx.Response(
+                200,
+                content=(
+                    b'{"message":{"content":"ok"},"done":false}\n'
+                    b'{"message":{"content":""},"done":true}\n'
+                ),
+            )
+        return httpx.Response(
+            200, json={"message": {"content": "", "tool_calls": []}}
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://x") as client:
+        with open_connection(db_path) as db:
+            # Create a chat tied to the Default project the migration made.
+            chat = queries.create_conversation(db, "t", "llama3")
+            queries.append_message(db, chat.id, "user", "hi")
+            state = await generation.start_generation(
+                client=client,
+                db=db,
+                conversation_id=chat.id,
+                model=chat.model,
+                temperature=0.5,
+                tool_iteration_cap=5,
+                history=queries.list_messages(db, chat.id),
+                on_complete="append",
+            )
+            await state.task
+
+    # The handler should observe a non-None root during the producer's
+    # main body. `model_supports_tools` runs BEFORE the ContextVar is set
+    # (it doesn't need the workspace), so an initial None observation is
+    # expected; the streaming + tool-probe calls observe the set value.
+    assert observed, "handler must have been called at least once"
+    non_none = [r for r in observed if r is not None]
+    assert non_none, f"expected at least one non-None ContextVar; observed={observed!r}"
+    expected_root = (fs_root / "default").resolve()
+    for root in non_none:
+        # The bound root points at the Default project's workspace.
+        assert root == expected_root
+
+    # After the producer completes, the ContextVar is back to its default.
+    assert current_workspace_root.get() is None
