@@ -415,5 +415,9 @@ def format_tool_invocation(name: str, arguments: dict) -> str:
         source = arguments.get("source", "?")
         query = arguments.get("query", "")
         return f'searching {source}: "{query}"'
+    if name == "search_files":
+        pattern = arguments.get("pattern", "*")
+        path = arguments.get("path", ".")
+        return f'searching {path} for "{pattern}"'
     args_str = ", ".join(f"{k}={v!r}" for k, v in arguments.items())
     return f"calling {name}({args_str})"

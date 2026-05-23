@@ -745,6 +745,24 @@ def test_format_tool_invocation_generic_no_args() -> None:
     assert format_tool_invocation("ping", {}) == "calling ping()"
 
 
+def test_format_tool_invocation_search_files_uses_pattern_and_path() -> None:
+    """search_files gets a purpose-built label showing path and pattern."""
+    from app.tools import format_tool_invocation
+
+    label = format_tool_invocation("search_files", {"pattern": "*.md", "path": "docs"})
+    assert 'docs' in label
+    assert '"*.md"' in label
+
+
+def test_format_tool_invocation_search_files_missing_args_uses_defaults() -> None:
+    """search_files with no args falls back to sensible placeholders."""
+    from app.tools import format_tool_invocation
+
+    label = format_tool_invocation("search_files", {})
+    assert '"*"' in label
+    assert "." in label
+
+
 # ---------------------------------------------------------------------------
 # File tools: read_file / write_file (sandboxed to FILE_TOOL_ROOT)
 # ---------------------------------------------------------------------------
@@ -1084,3 +1102,166 @@ async def test_run_tool_dispatches_list_directory(
     (tmp_path / "doc.txt").write_text("hello", encoding="utf-8")
     result = await run_tool("list_directory", {"path": "."})
     assert "[file] doc.txt" in result.text
+
+
+# search_files (recursive glob search within workspace)
+# ---------------------------------------------------------------------------
+
+
+def test_search_files_finds_matching_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """search_files returns matching files with their paths and sizes."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    (tmp_path / "notes.md").write_text("hi", encoding="utf-8")
+    (tmp_path / "readme.txt").write_text("bye", encoding="utf-8")
+    out = _file_builtins.search_files("*.md")
+    assert "notes.md" in out
+    assert "readme.txt" not in out
+
+
+def test_search_files_is_recursive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """search_files descends into subdirectories."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    sub = tmp_path / "docs"
+    sub.mkdir()
+    (sub / "plan.md").write_text("x", encoding="utf-8")
+    out = _file_builtins.search_files("*.md")
+    assert "docs/plan.md" in out or "docs" in out
+
+
+def test_search_files_no_match_returns_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pattern with no matches returns an explanatory message."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    (tmp_path / "readme.txt").write_text("hi", encoding="utf-8")
+    out = _file_builtins.search_files("*.md")
+    assert "No files matching" in out
+
+
+def test_search_files_excludes_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Directories matching the pattern are not listed."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    (tmp_path / "notes").mkdir()  # a dir named "notes" — NOT a file
+    (tmp_path / "notes.txt").write_text("file", encoding="utf-8")
+    out = _file_builtins.search_files("notes*")
+    assert "[file] notes.txt" in out
+    assert "[dir]" not in out
+
+
+def test_search_files_shows_file_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each result includes a human-readable size."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    (tmp_path / "a.md").write_text("hello", encoding="utf-8")
+    out = _file_builtins.search_files("*.md")
+    assert "(" in out and "B)" in out
+
+
+def test_search_files_nonexistent_path_returns_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A starting path that doesn't exist returns an explanatory message."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    out = _file_builtins.search_files("*.md", path="nope")
+    assert "No directory" in out
+
+
+def test_search_files_file_path_returns_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pointing the starting path at a file returns a redirect message."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    (tmp_path / "f.txt").write_text("data", encoding="utf-8")
+    out = _file_builtins.search_files("*.md", path="f.txt")
+    assert "is a file" in out
+
+
+def test_search_files_rejects_traversal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `..` path escaping the root is rejected."""
+    root = tmp_path / "ws"
+    root.mkdir()
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(root))
+    out = _file_builtins.search_files("*.md", path="../escape")
+    assert "outside the allowed workspace" in out
+
+
+def test_search_files_rejects_absolute_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An absolute starting path is rejected."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    out = _file_builtins.search_files("*.md", path="/tmp")
+    assert "outside the allowed workspace" in out
+
+
+def test_search_files_no_root_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no FILE_TOOL_ROOT the tool reports the misconfiguration."""
+    monkeypatch.delenv("FILE_TOOL_ROOT", raising=False)
+    out = _file_builtins.search_files("*.md")
+    assert "not configured" in out
+
+
+def test_search_files_truncates_at_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Results are capped at _SEARCH_CAP; the header reports the true total."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    total = _file_builtins._SEARCH_CAP + 5
+    for i in range(total):
+        (tmp_path / f"file{i:04d}.md").write_text("x", encoding="utf-8")
+    out = _file_builtins.search_files("*.md")
+    assert f"showing first {_file_builtins._SEARCH_CAP}" in out
+    assert out.count("[file]") == _file_builtins._SEARCH_CAP
+    assert f"{total} file" in out
+
+
+def test_search_files_is_read_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """search_files is read-only (no confirmation needed)."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    _file_builtins.refresh_file_tools_registration()
+    assert TOOLS["search_files"].is_read_only is True
+
+
+def test_refresh_includes_search_files_when_root_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Gating adds search_files to the registry when a root is configured."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    _file_builtins.refresh_file_tools_registration()
+    assert "search_files" in TOOLS
+
+
+def test_refresh_pops_search_files_when_root_unset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Gating removes search_files when the root is unset."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    _file_builtins.refresh_file_tools_registration()
+    monkeypatch.delenv("FILE_TOOL_ROOT", raising=False)
+    _file_builtins.refresh_file_tools_registration()
+    assert "search_files" not in TOOLS
+
+
+@pytest.mark.asyncio
+async def test_run_tool_dispatches_search_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The registry dispatches search_files end-to-end via run_tool."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    _file_builtins.refresh_file_tools_registration()
+    (tmp_path / "doc.md").write_text("hello", encoding="utf-8")
+    result = await run_tool("search_files", {"pattern": "*.md"})
+    assert "doc.md" in result.text

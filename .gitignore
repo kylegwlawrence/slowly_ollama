@@ -30,4 +30,5 @@ __pycache__/
 # Claude Code's per-project local settings (e.g. tool permissions)
 .claude/
 
-agent_workspace/
+/agent_workspace
+ext_plan.md
