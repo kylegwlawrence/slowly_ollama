@@ -24,6 +24,10 @@ _READ_FILE_CAP = 50_000
 # model's context window.
 _LIST_DIR_CAP = 200
 
+# Hard cap on search_files results so a broad pattern can't blow the
+# model's context window.
+_SEARCH_CAP = 100
+
 
 def _format_size(size_bytes: int) -> str:
     """Format a byte count as a human-readable string.
@@ -202,6 +206,51 @@ def list_directory(path: str = ".") -> str:
     return header + "\n\n" + "\n".join(lines)
 
 
+@tool
+def search_files(pattern: str, path: str = ".") -> str:
+    """Find files matching a glob pattern anywhere inside a workspace directory.
+
+    Args:
+        pattern: Filename glob to match, e.g. "*.md" or "report_*.txt".
+            Applied recursively under the starting path. Only files are
+            returned — directories are excluded.
+        path: Starting directory, relative to the workspace root. Defaults to
+            "." (the workspace root). Must stay inside the workspace.
+    """
+    try:
+        target = _resolve_within_root(path)
+    except _PathOutsideRoot as e:
+        return str(e)
+    if not target.exists():
+        return f"No directory at '{path}'."
+    if not target.is_dir():
+        return f"'{path}' is a file, not a directory. Use read_file to read it."
+    try:
+        matches = sorted(
+            (m for m in target.rglob(pattern) if m.is_file()),
+            key=lambda p: str(p).lower(),
+        )
+    except (OSError, ValueError) as e:
+        return f"Could not search '{path}': {e}"
+    if not matches:
+        return f'No files matching "{pattern}" in \'{path}\'.'
+    total = len(matches)
+    truncated = total > _SEARCH_CAP
+    root = file_tool_root()
+    lines: list[str] = []
+    for m in matches[:_SEARCH_CAP]:
+        try:
+            size_str = _format_size(m.stat().st_size)
+        except OSError:
+            size_str = "?"
+        rel = m.relative_to(root)
+        lines.append(f"[file] {rel} ({size_str})")
+    header = f'{total} file{"s" if total != 1 else ""} matching "{pattern}" in \'{path}\''
+    if truncated:
+        header += f" — showing first {_SEARCH_CAP}"
+    return header + "\n\n" + "\n".join(lines)
+
+
 # Snapshot the file-tool specs the @tool decorator built above so
 # refresh_file_tools_registration() can re-add them after a pop without
 # losing the introspected schema. Mirrors app/tools/rag.py.
@@ -211,6 +260,7 @@ _FILE_TOOL_SPECS = {
     "read_file": _TOOLS["read_file"],
     "write_file": _TOOLS["write_file"],
     "list_directory": _TOOLS["list_directory"],
+    "search_files": _TOOLS["search_files"],
 }
 
 
@@ -232,9 +282,8 @@ def refresh_file_tools_registration() -> None:
     from app.tools import TOOLS
 
     if file_tool_root() is None:
-        TOOLS.pop("read_file", None)
-        TOOLS.pop("write_file", None)
-        TOOLS.pop("list_directory", None)
+        for name in _FILE_TOOL_SPECS:
+            TOOLS.pop(name, None)
         return
     for name, spec in _FILE_TOOL_SPECS.items():
         if name not in TOOLS:

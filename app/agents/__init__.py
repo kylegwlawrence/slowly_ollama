@@ -76,7 +76,7 @@ AGENTS: dict[str, AgentSpec] = {
         # when that's unset all three are absent from TOOLS, and
         # _run_generation's allowlist filter simply drops them — the agent
         # degrades to tool-less synthesis.
-        tools=frozenset({"read_file", "write_file", "list_directory"}),
+        tools=frozenset({"read_file", "write_file", "list_directory", "search_files"}),
         # Shares Research's model (granite4.1:8b) so the Research -> Content
         # hand-off needs no model swap/reload on a 16GB machine. Not a
         # thinking model, so think stays False.

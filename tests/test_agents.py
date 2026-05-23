@@ -29,7 +29,7 @@ def test_shipped_agent_allowlists() -> None:
     assert research.tools == frozenset({"current_time", "query_rag"})
 
     content = AGENTS["content_generator"]
-    assert content.tools == frozenset({"read_file", "write_file", "list_directory"})
+    assert content.tools == frozenset({"read_file", "write_file", "list_directory", "search_files"})
 
 
 def test_think_defaults_off_and_is_settable() -> None:
