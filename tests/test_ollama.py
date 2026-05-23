@@ -244,6 +244,51 @@ async def test_stream_chat_raises_protocol_error_on_malformed_ndjson() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stream_chat_passes_num_ctx_in_options() -> None:
+    """When num_ctx is provided it lands in the Ollama options dict."""
+    body = b'{"message":{"content":""},"done":true}\n'
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["payload"] = json.loads(request.content)
+        return httpx.Response(200, content=body)
+
+    async with _client_with(handler) as client:
+        async for _ in stream_chat(
+            client,
+            model="llama3",
+            messages=[{"role": "user", "content": "Hi"}],
+            num_ctx=32768,
+        ):
+            pass
+
+    assert seen["payload"]["options"]["num_ctx"] == 32768
+    # Temperature still rides alongside, default 0.8.
+    assert seen["payload"]["options"]["temperature"] == 0.8
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_omits_num_ctx_when_none() -> None:
+    """When num_ctx is None the options dict has no num_ctx key (Ollama default)."""
+    body = b'{"message":{"content":""},"done":true}\n'
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["payload"] = json.loads(request.content)
+        return httpx.Response(200, content=body)
+
+    async with _client_with(handler) as client:
+        async for _ in stream_chat(
+            client,
+            model="llama3",
+            messages=[{"role": "user", "content": "Hi"}],
+        ):
+            pass
+
+    assert "num_ctx" not in seen["payload"]["options"]
+
+
+@pytest.mark.asyncio
 async def test_stream_chat_raises_when_ollama_unreachable() -> None:
     """Connection failures while streaming surface as OllamaUnavailable."""
 

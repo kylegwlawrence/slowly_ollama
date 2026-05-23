@@ -49,6 +49,9 @@ CREATE TABLE IF NOT EXISTS projects (
     default_model     TEXT,
     -- NULL = Normal (no agent) is the default; otherwise an agent name.
     default_agent     TEXT,
+    -- Per-project override for the Ollama `num_ctx` (context window in
+    -- tokens). NULL = inherit the global default from app_settings.
+    num_ctx           INTEGER,
     created_at        TEXT NOT NULL,
     updated_at        TEXT NOT NULL
 );
@@ -308,6 +311,27 @@ def _ensure_conversations_project_id_column(
     )
 
 
+def _ensure_projects_num_ctx_column(conn: sqlite3.Connection) -> None:
+    """Backfill the ``num_ctx`` column on projects tables that pre-date this phase.
+
+    Nullable INTEGER with no default — existing projects come back as NULL,
+    which the resolution helper reads as "inherit the global default".
+    Mirrors the ``_ensure_*_column`` pattern: ``PRAGMA table_info`` check
+    first so the ``ALTER TABLE`` is a no-op on fresh DBs where
+    ``_SCHEMA_SQL`` already created the column.
+
+    Args:
+        conn: Open SQLite connection.
+    """
+    columns = {row[1] for row in conn.execute(
+        "PRAGMA table_info(projects);"
+    )}
+    if "num_ctx" not in columns:
+        conn.execute(
+            "ALTER TABLE projects ADD COLUMN num_ctx INTEGER;"
+        )
+
+
 def _ensure_conversations_active_agent_column(conn: sqlite3.Connection) -> None:
     """Backfill the ``active_agent`` column on conversations tables that pre-date phase 16.
 
@@ -489,5 +513,8 @@ def initialize_database(path: Path | None = None) -> Path:
         # legacy chat to point at Default.
         default_project_id = _ensure_default_project(conn)
         _ensure_conversations_project_id_column(conn, default_project_id)
+        # Per-project Ollama context-window override: backfill the
+        # num_ctx column on projects tables created before this phase.
+        _ensure_projects_num_ctx_column(conn)
 
     return target

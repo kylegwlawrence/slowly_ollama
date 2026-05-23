@@ -340,6 +340,7 @@ def test_projects_table_created_on_fresh_db(initialized_db: Path) -> None:
         "workspace_subdir",
         "default_model",
         "default_agent",
+        "num_ctx",
         "created_at",
         "updated_at",
     }

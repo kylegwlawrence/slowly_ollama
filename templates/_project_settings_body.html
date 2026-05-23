@@ -55,6 +55,17 @@
           {% endfor %}
         </select>
       </label>
+      {# Per-project Ollama context-window override (tokens). Blank input
+         persists as NULL → inherit the global default shown in the
+         placeholder. Applied per-turn, so a change takes effect on the
+         next message in any chat under this project. #}
+      <label class="project-settings__field--full">
+        Context size (num_ctx, in tokens)
+        <input type="number" name="num_ctx"
+               min="512" max="1048576" step="512"
+               value="{{ project.num_ctx if project.num_ctx is not none else '' }}"
+               placeholder="inherit global ({{ global_default_num_ctx }})">
+      </label>
       <div class="project-settings__buttons">
         <button type="submit">Save</button>
         {% if saved %}<span class="project-settings__saved">Saved.</span>{% endif %}

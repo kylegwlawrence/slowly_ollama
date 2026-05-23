@@ -79,6 +79,11 @@ class Project:
             project. ``None`` means no project default (use the global one).
         default_agent: Pre-selection for the agent dropdown on new chats.
             ``None`` means Normal (no agent).
+        num_ctx: Per-project override for Ollama's ``num_ctx`` (context
+            window in tokens). ``None`` means inherit the global default
+            from ``app_settings``. Applied per turn, not seeded onto chats,
+            so changing it takes effect on the next message in any chat
+            belonging to this project.
         created_at, updated_at: ISO 8601 UTC timestamps.
     """
 
@@ -88,6 +93,7 @@ class Project:
     workspace_subdir: str
     default_model: str | None
     default_agent: str | None
+    num_ctx: int | None
     created_at: datetime
     updated_at: datetime
 
@@ -695,7 +701,7 @@ def count_assistant_messages(
 
 _PROJECT_COLS = (
     "id, name, description, workspace_subdir, default_model, default_agent,"
-    " created_at, updated_at"
+    " num_ctx, created_at, updated_at"
 )
 
 
@@ -708,6 +714,7 @@ def _row_to_project(row: sqlite3.Row) -> Project:
         workspace_subdir=row["workspace_subdir"],
         default_model=row["default_model"],
         default_agent=row["default_agent"],
+        num_ctx=row["num_ctx"],
         created_at=datetime.fromisoformat(row["created_at"]),
         updated_at=datetime.fromisoformat(row["updated_at"]),
     )
@@ -797,7 +804,8 @@ def get_project_for_conversation(
     """
     row = conn.execute(
         "SELECT p.id, p.name, p.description, p.workspace_subdir,"
-        " p.default_model, p.default_agent, p.created_at, p.updated_at"
+        " p.default_model, p.default_agent, p.num_ctx,"
+        " p.created_at, p.updated_at"
         " FROM projects p JOIN conversations c ON c.project_id = p.id"
         " WHERE c.id = ?;",
         (conversation_id,),
@@ -865,8 +873,8 @@ def create_project(
         row = conn.execute(
             "INSERT INTO projects"
             " (name, description, workspace_subdir, default_model, default_agent,"
-            "  created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)"
+            "  num_ctx, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, NULL, ?, ?)"
             f" RETURNING {_PROJECT_COLS};",
             (name, description, slug, default_model, default_agent, now, now),
         ).fetchone()
@@ -881,13 +889,15 @@ def update_project(
     description: str | None = None,
     default_model: "str | None | _Unset" = _UNSET,
     default_agent: "str | None | _Unset" = _UNSET,
+    num_ctx: "int | None | _Unset" = _UNSET,
 ) -> Project:
     """Update editable project fields. Each kwarg is optional.
 
-    ``default_model`` and ``default_agent`` use a sentinel (``_UNSET``) to
-    distinguish "not passed" from "set to NULL". A plain ``None`` default
-    would silently swallow the "clear this field" intent, but the settings
-    form must be able to clear a previously-set default.
+    ``default_model`` / ``default_agent`` / ``num_ctx`` use a sentinel
+    (``_UNSET``) to distinguish "not passed" from "set to NULL". A plain
+    ``None`` default would silently swallow the "clear this field"
+    intent, but the settings form must be able to clear a previously-set
+    override.
 
     Args:
         conn: Open SQLite connection.
@@ -898,6 +908,10 @@ def update_project(
             sentinel ``_UNSET`` (default) to leave alone.
         default_agent: New default agent name, ``None`` to clear, or the
             sentinel ``_UNSET`` (default) to leave alone.
+        num_ctx: New per-project Ollama context-window override (in
+            tokens), ``None`` to clear (inherit global), or the
+            sentinel ``_UNSET`` (default) to leave alone. Values are
+            clamped to [NUM_CTX_MIN, NUM_CTX_MAX].
 
     Returns:
         The updated Project (or unchanged Project when no kwargs were passed).
@@ -920,6 +934,9 @@ def update_project(
     if not isinstance(default_agent, _Unset):
         sets.append("default_agent = ?")
         args.append(default_agent)
+    if not isinstance(num_ctx, _Unset):
+        sets.append("num_ctx = ?")
+        args.append(None if num_ctx is None else clamp_num_ctx(num_ctx))
     if not sets:
         # No-op update — return the current row rather than performing a
         # bare ``UPDATE ... SET updated_at = ?`` which would falsely bump
@@ -1116,6 +1133,76 @@ def set_default_tool_iteration_cap(
     """
     clamped = max(1, min(10, int(tool_iteration_cap)))
     set_setting(conn, _DEFAULT_TOOL_ITERATION_CAP_KEY, str(clamped))
+
+
+# Ollama's own default for `num_ctx` is 2048 — far too small for real
+# conversations. 16384 matches what most local 7-13B models comfortably
+# fit and what tool-using sessions typically need. NUM_CTX_MIN/MAX bound
+# the clamp on read and write: 512 is below any usable chat context, and
+# 1_048_576 (1M) is a future-proof ceiling well above any current model.
+_DEFAULT_NUM_CTX_KEY = "default_num_ctx"
+_DEFAULT_NUM_CTX_FALLBACK = 16384
+NUM_CTX_MIN = 512
+NUM_CTX_MAX = 1_048_576
+
+
+def clamp_num_ctx(num_ctx: int) -> int:
+    """Clamp a num_ctx value to the [NUM_CTX_MIN, NUM_CTX_MAX] range."""
+    return max(NUM_CTX_MIN, min(NUM_CTX_MAX, int(num_ctx)))
+
+
+def get_default_num_ctx(conn: sqlite3.Connection) -> int:
+    """Return the global default Ollama context window for new chats.
+
+    Default (no row): ``16384`` (see ``_DEFAULT_NUM_CTX_FALLBACK``). The
+    stored value is clamped to the [NUM_CTX_MIN, NUM_CTX_MAX] range; a
+    malformed row falls back to the default rather than raising, so a
+    corrupt setting can never break chat creation.
+
+    Args:
+        conn: Open SQLite connection.
+    """
+    raw = get_setting(conn, _DEFAULT_NUM_CTX_KEY, default=None)
+    if raw is None:
+        return _DEFAULT_NUM_CTX_FALLBACK
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_NUM_CTX_FALLBACK
+    return clamp_num_ctx(value)
+
+
+def set_default_num_ctx(conn: sqlite3.Connection, num_ctx: int) -> None:
+    """Persist the global default Ollama context window for new chats.
+
+    Clamps to [NUM_CTX_MIN, NUM_CTX_MAX] before storing so an out-of-
+    range value can't be read back later. Stored as a string (the
+    app_settings value column is text).
+
+    Args:
+        conn: Open SQLite connection.
+        num_ctx: New default context window in tokens.
+    """
+    set_setting(conn, _DEFAULT_NUM_CTX_KEY, str(clamp_num_ctx(num_ctx)))
+
+
+def resolve_num_ctx_for_project(
+    conn: sqlite3.Connection, project_num_ctx: int | None
+) -> int:
+    """Resolve the effective num_ctx for a turn: project override or global.
+
+    Args:
+        conn: Open SQLite connection.
+        project_num_ctx: The project's ``num_ctx`` column value, or
+            ``None`` when the project inherits the global default.
+
+    Returns:
+        A clamped, ready-to-use ``num_ctx`` token count for the Ollama
+        request's ``options`` dict.
+    """
+    if project_num_ctx is not None:
+        return clamp_num_ctx(project_num_ctx)
+    return get_default_num_ctx(conn)
 
 
 # ---------------------------------------------------------------------------

@@ -1842,6 +1842,48 @@ def test_new_composer_reflects_global_default_model(
     assert 'data-default="granite4.1:8b"' in composer.text
 
 
+def test_settings_renders_default_num_ctx_input(
+    make_client: ClientFactory,
+) -> None:
+    """GET /settings shows the default-num-ctx control seeded with the
+    production default (16384) before the user changes it."""
+    with make_client(_ollama_unreachable) as client:
+        response = client.get("/settings", headers={"HX-Request": "true"})
+
+    assert response.status_code == 200
+    assert 'hx-patch="/settings/default-num-ctx"' in response.text
+    assert 'id="default-num-ctx"' in response.text
+    assert 'value="16384"' in response.text
+
+
+def test_set_default_num_ctx_persists(
+    make_client: ClientFactory,
+) -> None:
+    """PATCH /settings/default-num-ctx returns 204 and the new value is
+    reflected on a subsequent /settings render."""
+    with make_client(_ollama_unreachable) as client:
+        patch = client.patch(
+            "/settings/default-num-ctx", data={"num_ctx": "32768"}
+        )
+        assert patch.status_code == 204
+
+        settings = client.get("/settings", headers={"HX-Request": "true"})
+    assert 'value="32768"' in settings.text
+
+
+def test_set_default_num_ctx_clamps(
+    make_client: ClientFactory,
+) -> None:
+    """An out-of-range PATCH is clamped to NUM_CTX_MAX before storage."""
+    with make_client(_ollama_unreachable) as client:
+        client.patch(
+            "/settings/default-num-ctx", data={"num_ctx": "9999999"}
+        )
+        settings = client.get("/settings", headers={"HX-Request": "true"})
+    # 1_048_576 is NUM_CTX_MAX.
+    assert 'value="1048576"' in settings.text
+
+
 def test_chat_panel_renders_tool_iteration_cap_for_capable_model(
     make_client: ClientFactory,
 ) -> None:

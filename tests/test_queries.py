@@ -25,6 +25,7 @@ from app.queries import (
     get_chat_tool_states,
     get_conversation,
     get_default_model,
+    get_default_num_ctx,
     get_default_temperature,
     get_default_tool_iteration_cap,
     get_enabled_rag_server_names,
@@ -40,6 +41,7 @@ from app.queries import (
     set_conversation_temperature,
     set_conversation_tool_iteration_cap,
     set_default_model,
+    set_default_num_ctx,
     set_default_temperature,
     set_default_tool_iteration_cap,
     set_name_auto,
@@ -500,6 +502,59 @@ def test_set_default_model_clears_on_empty_string(conn: sqlite3.Connection) -> N
     set_default_model(conn, "granite4.1:8b")
     set_default_model(conn, "")  # type: ignore[arg-type]
     assert get_default_model(conn) is None
+
+
+def test_default_num_ctx_default_is_16384(conn: sqlite3.Connection) -> None:
+    """No row → 16384. Production default before the user touches /settings."""
+    assert get_default_num_ctx(conn) == 16384
+
+
+def test_default_num_ctx_round_trip(conn: sqlite3.Connection) -> None:
+    """A set value reads back unchanged on a subsequent read."""
+    set_default_num_ctx(conn, 32768)
+    assert get_default_num_ctx(conn) == 32768
+
+
+def test_set_default_num_ctx_clamps_out_of_range(
+    conn: sqlite3.Connection,
+) -> None:
+    """Values outside [NUM_CTX_MIN, NUM_CTX_MAX] are clamped before storage."""
+    from app.queries import NUM_CTX_MAX, NUM_CTX_MIN
+
+    set_default_num_ctx(conn, NUM_CTX_MAX + 1)
+    assert get_default_num_ctx(conn) == NUM_CTX_MAX
+    set_default_num_ctx(conn, 0)
+    assert get_default_num_ctx(conn) == NUM_CTX_MIN
+
+
+def test_get_default_num_ctx_falls_back_on_malformed_row(
+    conn: sqlite3.Connection,
+) -> None:
+    """A non-numeric value reads as 16384 rather than raising."""
+    set_setting(conn, "default_num_ctx", "not-a-number")
+    assert get_default_num_ctx(conn) == 16384
+
+
+def test_resolve_num_ctx_for_project_uses_override(
+    conn: sqlite3.Connection,
+) -> None:
+    """When the project sets num_ctx, that value wins over the global default."""
+    from app.queries import resolve_num_ctx_for_project
+
+    set_default_num_ctx(conn, 8000)
+    # Project override of 32000 should be returned (and clamped, but it's
+    # already in range).
+    assert resolve_num_ctx_for_project(conn, 32000) == 32000
+
+
+def test_resolve_num_ctx_for_project_falls_back_to_global(
+    conn: sqlite3.Connection,
+) -> None:
+    """When the project's num_ctx is None, return the global default."""
+    from app.queries import resolve_num_ctx_for_project
+
+    set_default_num_ctx(conn, 8000)
+    assert resolve_num_ctx_for_project(conn, None) == 8000
 
 
 # ---------------------------------------------------------------------------
