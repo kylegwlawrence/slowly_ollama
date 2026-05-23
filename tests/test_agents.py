@@ -24,12 +24,12 @@ def test_agentspec_fields_are_populated() -> None:
 
 
 def test_shipped_agent_allowlists() -> None:
-    """Research retrieves; the content generator reads/writes workspace files."""
+    """Research retrieves; the content generator reads/writes/browses workspace files."""
     research = AGENTS["research"]
     assert research.tools == frozenset({"current_time", "query_rag"})
 
     content = AGENTS["content_generator"]
-    assert content.tools == frozenset({"read_file", "write_file"})
+    assert content.tools == frozenset({"read_file", "write_file", "list_directory"})
 
 
 def test_think_defaults_off_and_is_settable() -> None:

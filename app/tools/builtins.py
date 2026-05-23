@@ -2,9 +2,9 @@
 
 - ``current_time``: the baseline that validates the tool-calling loop
   without depending on any external service.
-- ``read_file`` / ``write_file``: workspace file access, confined to the
-  directory named by ``FILE_TOOL_ROOT``. When that env var is unset the
-  pair is removed from the registry (see
+- ``read_file`` / ``write_file`` / ``list_directory``: workspace file
+  access, confined to the directory named by ``FILE_TOOL_ROOT``. When
+  that env var is unset the trio is removed from the registry (see
   :func:`refresh_file_tools_registration`) so the model is never offered
   a tool with nowhere to operate.
 """
@@ -19,6 +19,26 @@ from app.tools import tool
 # Hard cap on read_file output so a huge file can't blow the model's
 # context window. Mirrors the output caps in app/tools/rag.py.
 _READ_FILE_CAP = 50_000
+
+# Hard cap on list_directory entries so a huge directory can't blow the
+# model's context window.
+_LIST_DIR_CAP = 200
+
+
+def _format_size(size_bytes: int) -> str:
+    """Format a byte count as a human-readable string.
+
+    Args:
+        size_bytes: File size in bytes.
+
+    Returns:
+        A compact string like "4 B", "1.2 KB", or "3.4 MB".
+    """
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    if size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    return f"{size_bytes / (1024 * 1024):.1f} MB"
 
 
 @tool
@@ -134,6 +154,54 @@ def write_file(path: str, content: str) -> str:
     return f"Wrote {len(content)} characters to '{path}'."
 
 
+@tool
+def list_directory(path: str = ".") -> str:
+    """List the files and subdirectories inside a workspace directory. Directories appear before files, both sorted alphabetically. Only paths inside the configured workspace are accessible. Use "." (the default) to list the workspace root.
+
+    Args:
+        path: Path to the directory, relative to the workspace root (e.g.
+            "notes" or "."). Paths that escape the workspace, or that
+            point at a non-existent or non-directory path, return an
+            explanatory message instead of raising.
+    """
+    try:
+        target = _resolve_within_root(path)
+    except _PathOutsideRoot as e:
+        return str(e)
+    if not target.exists():
+        return f"No directory at '{path}'."
+    if not target.is_dir():
+        return f"'{path}' is a file, not a directory. Use read_file to read it."
+    try:
+        # Dirs first, then files; each group sorted case-insensitively.
+        entries = sorted(
+            target.iterdir(),
+            key=lambda p: (p.is_file(), p.name.lower()),
+        )
+    except OSError as e:
+        return f"Could not list '{path}': {e}"
+
+    if not entries:
+        return f"'{path}' is empty."
+
+    lines: list[str] = []
+    truncated = len(entries) > _LIST_DIR_CAP
+    for entry in entries[:_LIST_DIR_CAP]:
+        if entry.is_dir():
+            lines.append(f"[dir]  {entry.name}/")
+        else:
+            try:
+                size_str = _format_size(entry.stat().st_size)
+            except OSError:
+                size_str = "?"
+            lines.append(f"[file] {entry.name} ({size_str})")
+
+    header = f"{path}/ ({len(entries)} item{'s' if len(entries) != 1 else ''})"
+    if truncated:
+        header += f" — showing first {_LIST_DIR_CAP}"
+    return header + "\n\n" + "\n".join(lines)
+
+
 # Snapshot the file-tool specs the @tool decorator built above so
 # refresh_file_tools_registration() can re-add them after a pop without
 # losing the introspected schema. Mirrors app/tools/rag.py.
@@ -142,16 +210,18 @@ from app.tools import TOOLS as _TOOLS  # noqa: E402
 _FILE_TOOL_SPECS = {
     "read_file": _TOOLS["read_file"],
     "write_file": _TOOLS["write_file"],
+    "list_directory": _TOOLS["list_directory"],
 }
 
 
 def refresh_file_tools_registration() -> None:
     """Sync the file tools' registry presence to whether a root is configured.
 
-    When ``FILE_TOOL_ROOT`` is unset, ``read_file`` / ``write_file`` are
-    removed from ``app.tools.TOOLS`` so the chat model is never offered a
-    tool with nowhere to operate. When it is set, both are (re-)added
-    from the specs snapshotted at decoration time.
+    When ``FILE_TOOL_ROOT`` is unset, ``read_file`` / ``write_file`` /
+    ``list_directory`` are removed from ``app.tools.TOOLS`` so the chat
+    model is never offered a tool with nowhere to operate. When it is
+    set, all three are (re-)added from the specs snapshotted at
+    decoration time.
 
     Mirrors :func:`app.tools.rag.refresh_query_rag_registration`. Called
     at lifespan startup so the initial registry matches config; the root
@@ -164,6 +234,7 @@ def refresh_file_tools_registration() -> None:
     if file_tool_root() is None:
         TOOLS.pop("read_file", None)
         TOOLS.pop("write_file", None)
+        TOOLS.pop("list_directory", None)
         return
     for name, spec in _FILE_TOOL_SPECS.items():
         if name not in TOOLS:
