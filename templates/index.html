@@ -1,10 +1,10 @@
 {% extends "base.html" %}
 
-{# Phase 17: the index template is a layout dispatcher. The route picks
-   `layout` (``"projects"`` / ``"project"`` / ``"settings"``) and we
-   render the corresponding sidebar + main slot. Pre-17 hits without
-   `layout` still work for tests that render the chat panel directly
-   — the fallback at the bottom keeps that path alive. #}
+{# Phase 17 / 17b: the index template is a layout dispatcher. The route
+   picks `layout` (``"projects"`` / ``"project"`` / ``"settings"``) and
+   we render the unified sidebar + the matching main slot. Pre-17 hits
+   without `layout` still work for tests that render the chat panel
+   directly — the fallback at the bottom keeps that path alive. #}
 {% block title %}
   {% if layout|default(none) == "projects" %}Projects — {% endif %}
   {% if layout|default(none) == "settings" %}Settings — {% endif %}
@@ -14,21 +14,18 @@
 
 {% block content %}
 <div class="layout">
+  {% include "_sidebar.html" %}
   {% if layout|default(none) == "projects" %}
-    {% include "_projects_sidebar.html" %}
     <main id="main">{% include "_projects_index.html" %}</main>
   {% elif layout|default(none) == "project" %}
-    {% include "_project_sidebar.html" %}
     <main id="main">{% include "_project_page.html" %}</main>
   {% elif layout|default(none) == "settings" %}
-    {% include "_projects_sidebar.html" %}
     <main id="main">
       {% set servers = rag_servers %}
       {% include "_settings.html" %}
     </main>
   {% else %}
     {# Fallback for direct chat / settings hits during the transition. #}
-    {% include "_projects_sidebar.html" %}
     <main id="main">
       {% if settings_view|default(false) %}
         {% set servers = rag_servers %}

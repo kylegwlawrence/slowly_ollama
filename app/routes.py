@@ -197,13 +197,16 @@ def settings_endpoint(request: Request, db: DB) -> Response:
         name="index.html",
         context={
             # Phase 17: settings is its own top-level layout. The
-            # projects-style sidebar (Projects + Settings nav) renders
+            # unified sidebar (project list + Settings nav) renders
             # alongside the settings fragment in the main slot.
             "layout": "settings",
             "project": None,
             "conversation": None,
             "active_chat_id": None,
             "settings_view": True,
+            # Phase 17b: unified sidebar needs the projects list.
+            "projects": queries.list_projects(db),
+            "active_project_id": None,
             # Passed under `rag_servers` so the index template's
             # `{% set servers = rag_servers %}` adapter resolves it for
             # the included _settings.html fragment.
@@ -389,7 +392,9 @@ def _placeholder_name(content: str) -> str:
 
 @router.get("/models", response_class=HTMLResponse)
 async def list_models_endpoint(
-    request: Request, client: OllamaClient
+    request: Request,
+    client: OllamaClient,
+    prepend_blank: bool = False,
 ) -> Response:
     """Return ``<option>`` tags for the model dropdown.
 
@@ -399,6 +404,11 @@ async def list_models_endpoint(
     with ``tools=[...]`` in the request. ``list_tool_capable_models``
     caches per process so the per-model ``/api/show`` round trips only
     pay the cost on the first render in a 60-second window.
+
+    Phase 17b: when ``prepend_blank=1`` is passed, the rendered list
+    starts with a "(no default — use global)" option. Project Settings
+    uses this so clearing the default selects an empty value (which the
+    PATCH route persists as NULL via the _UNSET sentinel).
 
     On Ollama failure this returns 200 with a single disabled
     ``<option>`` carrying an explanatory message. The reason for not
@@ -418,6 +428,7 @@ async def list_models_endpoint(
             context={
                 "models": [],
                 "error": "Ollama is unreachable — start it and reload.",
+                "prepend_blank": prepend_blank,
             },
         )
     except OllamaProtocolError:
@@ -427,12 +438,17 @@ async def list_models_endpoint(
             context={
                 "models": [],
                 "error": "Ollama returned an unexpected response.",
+                "prepend_blank": prepend_blank,
             },
         )
     return templates.TemplateResponse(
         request=request,
         name="_model_options.html",
-        context={"models": models, "error": None},
+        context={
+            "models": models,
+            "error": None,
+            "prepend_blank": prepend_blank,
+        },
     )
 
 
@@ -1442,6 +1458,9 @@ def list_projects_endpoint(request: Request, db: DB) -> Response:
         context={
             "layout": "projects",
             "projects": projects,
+            # Phase 17b: sidebar highlights the current project; no
+            # project is "current" on the index page.
+            "active_project_id": None,
             "project": None,
             "conversation": None,
             "active_chat_id": None,
@@ -1483,10 +1502,28 @@ def create_project_endpoint(
             status_code=status.HTTP_409_CONFLICT,
         )
     ensure_project_workspace(project)
-    response = templates.TemplateResponse(
-        request=request,
-        name="_project_item.html",
-        context={"project": project},
+    # Phase 17b: render the main-panel tile AND OOB-prepend a row into
+    # the unified sidebar's #projects-list so the new project appears
+    # in the sidebar without a full reload. Wrapping <ul> matches the
+    # OOB pattern used by chat creation (afterbegin unwraps the root,
+    # so a top-level <li> would lose its parent context).
+    tile_html = templates.get_template("_project_item.html").render(
+        project=project
+    )
+    escaped_name = html.escape(project.name)
+    sidebar_row_html = (
+        f'<ul hx-swap-oob="afterbegin:#projects-list">'
+        f'<li class="chat-item project-item" '
+        f'data-project-id="{project.id}">'
+        f'<a id="project-sidebar-link-{project.id}" '
+        f'href="/projects/{project.id}/chats" '
+        f'hx-get="/projects/{project.id}/chats" '
+        f'hx-target="#main" hx-swap="innerHTML" '
+        f'hx-push-url="true">{escaped_name}</a>'
+        f"</li></ul>"
+    )
+    response = HTMLResponse(
+        content=tile_html + sidebar_row_html,
         status_code=status.HTTP_201_CREATED,
     )
     response.headers["HX-Push-Url"] = f"/projects/{project.id}/chats"
@@ -1558,15 +1595,31 @@ async def update_project_endpoint(
         default_model=_string_or_clear("default_model"),
         default_agent=_string_or_clear("default_agent"),
     )
-    return templates.TemplateResponse(
-        request=request,
-        name="_project_settings_body.html",
-        context={
-            "project": project,
-            "saved": True,
-            "agents": list_agents(),
-        },
+    # Phase 17b: the settings body is swapped into #project-page-body, but
+    # the project name also lives in the page header (above the body) and
+    # in the unified sidebar. Append OOB swaps for both so a rename lands
+    # everywhere on the same response — no separate refresh needed. Idempotent
+    # when the name didn't change, so we always include them.
+    settings_html = templates.get_template(
+        "_project_settings_body.html"
+    ).render(
+        project=project,
+        saved=True,
+        agents=list_agents(),
     )
+    escaped_name = html.escape(project.name)
+    header_oob = (
+        f'<h2 id="project-page-name" class="project-page__name" '
+        f'hx-swap-oob="true">{escaped_name}</h2>'
+    )
+    sidebar_link_oob = (
+        f'<a id="project-sidebar-link-{project.id}" '
+        f'href="/projects/{project.id}/chats" '
+        f'hx-get="/projects/{project.id}/chats" '
+        f'hx-target="#main" hx-swap="innerHTML" '
+        f'hx-push-url="true" hx-swap-oob="true">{escaped_name}</a>'
+    )
+    return HTMLResponse(settings_html + header_oob + sidebar_link_oob)
 
 
 @router.delete(
@@ -1640,10 +1693,17 @@ def _render_project_page(
             name="_project_page.html",
             context=base,
         )
+    # Phase 17b: full-page renders include the unified sidebar, which
+    # needs the projects list + active row id.
     return templates.TemplateResponse(
         request=request,
         name="index.html",
-        context={"layout": "project", **base},
+        context={
+            "layout": "project",
+            "projects": queries.list_projects(db),
+            "active_project_id": project.id,
+            **base,
+        },
     )
 
 

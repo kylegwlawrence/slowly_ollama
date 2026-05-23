@@ -1,23 +1,35 @@
-{# Three-tab nav for a project: Chats / Files / Settings. `active_tab`
-   controls the underline state. Each link is HTMX-swappable into #main
-   and pushes the URL so reload restores the same tab. #}
+{# Phase 17b: three-tab nav for a project: Chats / Files / Settings.
+
+   `active_tab` controls the underline state. Each link is HTMX-
+   swappable into #main and pushes the URL so a reload restores the
+   same tab. Icons + underline-active styling match the rest of the
+   app (sage tonal accent on active). #}
 <nav class="project-tabs" aria-label="Project sections">
   <a class="project-tabs__tab{% if active_tab == 'chats' %} project-tabs__tab--active{% endif %}"
      href="/projects/{{ project.id }}/chats"
      hx-get="/projects/{{ project.id }}/chats"
      hx-target="#main"
      hx-swap="innerHTML"
-     hx-push-url="true">Chats</a>
+     hx-push-url="true">
+    <span class="material-symbols-outlined">chat</span>
+    Chats
+  </a>
   <a class="project-tabs__tab{% if active_tab == 'files' %} project-tabs__tab--active{% endif %}"
      href="/projects/{{ project.id }}/files"
      hx-get="/projects/{{ project.id }}/files"
      hx-target="#main"
      hx-swap="innerHTML"
-     hx-push-url="true">Files</a>
+     hx-push-url="true">
+    <span class="material-symbols-outlined">folder</span>
+    Files
+  </a>
   <a class="project-tabs__tab{% if active_tab == 'settings' %} project-tabs__tab--active{% endif %}"
      href="/projects/{{ project.id }}/settings"
      hx-get="/projects/{{ project.id }}/settings"
      hx-target="#main"
      hx-swap="innerHTML"
-     hx-push-url="true">Settings</a>
+     hx-push-url="true">
+    <span class="material-symbols-outlined">settings</span>
+    Settings
+  </a>
 </nav>

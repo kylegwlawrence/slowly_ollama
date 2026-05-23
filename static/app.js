@@ -55,21 +55,28 @@ function toggleTheme() {
 // alone, so without this delegated handler the highlighted row would
 // drift out of sync with the panel content.
 
-function clearChatAriaCurrent() {
+// Phase 17b: the sidebar's #projects-list reuses .chat-item classes for
+// each project row (alongside the .project-item marker). The selectors
+// here cover both chat rows (legacy sidebar before phase 17b) and the
+// project rows that replaced them in the unified sidebar.
+
+function clearSidebarAriaCurrent() {
   document
-    .querySelectorAll('#chats-list .chat-item[aria-current]')
+    .querySelectorAll('#chats-list .chat-item[aria-current], #projects-list .chat-item[aria-current]')
     .forEach((li) => li.removeAttribute('aria-current'));
 }
 
 document.addEventListener('click', (e) => {
-  const chatLink = e.target.closest('#chats-list .chat-item a');
-  if (chatLink) {
-    clearChatAriaCurrent();
-    chatLink.closest('.chat-item').setAttribute('aria-current', 'page');
+  const sidebarLink = e.target.closest(
+    '#chats-list .chat-item a, #projects-list .chat-item a'
+  );
+  if (sidebarLink) {
+    clearSidebarAriaCurrent();
+    sidebarLink.closest('.chat-item').setAttribute('aria-current', 'page');
     return;
   }
   if (e.target.closest('.sidebar__new-chat, .sidebar__settings')) {
-    clearChatAriaCurrent();
+    clearSidebarAriaCurrent();
   }
 });
 
@@ -279,23 +286,26 @@ document.addEventListener('click', function (e) {
   chip.querySelector('.tool-chip__check').textContent = cb.checked ? '✓' : '✕';
 });
 
-// Phase 17: project default-model prefill.
+// Phase 17 / 17b: any <select> that loads its options lazily from /models
+// (or any other source) can opt into "preserve my saved value" by setting
+// `data-default="..."` on the element. After the HTMX swap fills the
+// options, we walk the option list and select the one matching the
+// data-default value.
 //
-// `_composer.html`'s #composer-model loads its <option>s lazily via
-// HTMX from /models (so the dropdown isn't populated at SSR time).
-// After the swap, if the select has a data-default attribute matching
-// one of the loaded options, select it — that propagates a project's
-// configured default_model into the composer's selected value without
-// any server-side coordination on option order.
+// Used by:
+//   - _composer.html's #composer-model (project default propagates into the
+//     composer's selected value)
+//   - _project_settings_body.html's <select name="default_model"> (the
+//     project's currently-saved default_model survives the /models swap)
 document.body.addEventListener("htmx:afterSwap", (evt) => {
   const target = evt.target;
-  if (target && target.id === "composer-model" && target.dataset.default) {
-    const want = target.dataset.default;
-    for (const opt of target.options) {
-      if (opt.value === want) {
-        target.value = want;
-        break;
-      }
+  if (!(target instanceof HTMLSelectElement)) return;
+  const want = target.dataset.default;
+  if (!want) return;
+  for (const opt of target.options) {
+    if (opt.value === want) {
+      target.value = want;
+      break;
     }
   }
 });

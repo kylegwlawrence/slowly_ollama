@@ -1,16 +1,17 @@
-{# One row in the projects index. The whole tile is a link to the
-   project's Chats tab. HTMX swaps the main panel; the address bar
-   updates via hx-push-url. #}
-<li class="project-item" data-project-id="{{ project.id }}">
-  <a class="project-item__link"
+{# Phase 17b: a project tile rendered in the main panel of /projects.
+
+   The whole tile is a link to the project's Chats tab. HTMX swaps
+   #main with the project page; hx-push-url syncs the address bar. #}
+<li class="project-tile" data-project-id="{{ project.id }}">
+  <a class="project-tile__link"
      href="/projects/{{ project.id }}/chats"
      hx-get="/projects/{{ project.id }}/chats"
      hx-target="#main"
      hx-swap="innerHTML"
      hx-push-url="true">
-    <div class="project-item__name">{{ project.name }}</div>
+    <div class="project-tile__name">{{ project.name }}</div>
     {% if project.description %}
-      <div class="project-item__desc">{{ project.description }}</div>
+      <div class="project-tile__desc">{{ project.description }}</div>
     {% endif %}
   </a>
 </li>

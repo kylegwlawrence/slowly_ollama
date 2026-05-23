@@ -1,44 +1,77 @@
-{# Settings tab body. The save form patches /projects/{id}; the server
-   returns the body again with `saved=True` so we can show a transient
-   confirmation. The delete form sits below with an hx-confirm guard. #}
-<section class="project-settings">
-  <form class="project-settings__form"
-        hx-patch="/projects/{{ project.id }}"
-        hx-target="#project-page-body"
-        hx-swap="innerHTML">
-    <label>
-      Name
-      <input type="text" name="name" required maxlength="80"
-             value="{{ project.name }}">
-    </label>
-    <label>
-      Description
-      <textarea name="description" maxlength="400" rows="3">{{ project.description }}</textarea>
-    </label>
-    <label>
-      Default model (for new chats)
-      <input type="text" name="default_model"
-             value="{{ project.default_model or '' }}"
-             placeholder="(global default)">
-    </label>
-    <label>
-      Default agent (for new chats)
-      <select name="default_agent">
-        <option value=""{% if not project.default_agent %} selected{% endif %}>Normal</option>
-        {% for a in agents %}
-          <option value="{{ a.name }}"{% if project.default_agent == a.name %} selected{% endif %}>{{ a.label }}</option>
-        {% endfor %}
-      </select>
-    </label>
-    <div class="project-settings__buttons">
-      <button type="submit">Save</button>
-      {% if saved %}<span class="project-settings__saved">Saved.</span>{% endif %}
-    </div>
-  </form>
-  <hr>
-  <form class="project-settings__delete"
-        hx-delete="/projects/{{ project.id }}"
-        hx-confirm="Delete project '{{ project.name }}'? Chats will be deleted; workspace files are preserved on disk.">
-    <button type="submit" class="danger">Delete project</button>
-  </form>
+{# Phase 17b: settings tab body.
+
+   The save form patches /projects/{id}; the server returns the body
+   again with `saved=True` so we can show a transient confirmation.
+   Delete sits below in a danger-zone section with an hx-confirm guard.
+
+   Default-model is a <select> populated lazily via /models (with
+   `prepend_blank=1` so the loaded list starts with a "(no default)"
+   option). The data-default attribute is read by app.js after the
+   /models swap to re-select the current default. Server-side we also
+   render the current default as a seeded <option> so the rendered HTML
+   exposes the saved value before /models has resolved (tests + reload
+   behavior). #}
+<section class="project-settings settings">
+  <header class="settings__header">
+    <h1 class="settings__title">Project settings</h1>
+    <p class="settings__subtitle">Edit name, description, and per-project defaults applied to new chats.</p>
+  </header>
+
+  <section class="settings__section">
+    <form class="project-settings__form rag-server-form"
+          hx-patch="/projects/{{ project.id }}"
+          hx-target="#project-page-body"
+          hx-swap="innerHTML">
+      <label class="project-settings__field--full">
+        Name
+        <input type="text" name="name" required maxlength="80"
+               value="{{ project.name }}">
+      </label>
+      <label class="project-settings__field--full">
+        Description
+        <textarea name="description" maxlength="400" rows="3">{{ project.description }}</textarea>
+      </label>
+      <label class="project-settings__field--full">
+        Default model (for new chats in this project)
+        <select name="default_model"
+                data-default="{{ project.default_model or '' }}"
+                hx-get="/models?prepend_blank=1"
+                hx-trigger="load"
+                hx-target="this"
+                hx-swap="innerHTML">
+          <option value=""{% if not project.default_model %} selected{% endif %}>(no default — use global)</option>
+          {% if project.default_model %}
+            <option value="{{ project.default_model }}" selected>{{ project.default_model }}</option>
+          {% endif %}
+          <option value="" disabled>Loading models…</option>
+        </select>
+      </label>
+      <label class="project-settings__field--full">
+        Default agent (for new chats in this project)
+        <select name="default_agent">
+          <option value=""{% if not project.default_agent %} selected{% endif %}>Normal (no agent)</option>
+          {% for a in agents %}
+            <option value="{{ a.name }}"{% if project.default_agent == a.name %} selected{% endif %}>{{ a.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <div class="project-settings__buttons">
+        <button type="submit">Save</button>
+        {% if saved %}<span class="project-settings__saved">Saved.</span>{% endif %}
+      </div>
+    </form>
+  </section>
+
+  <section class="settings__section settings__section--danger">
+    <h2 class="settings__section-title">Danger zone</h2>
+    <p class="settings__section-help">
+      Deletes this project and all of its chats. Workspace files on disk
+      are preserved so you can recover them.
+    </p>
+    <form class="project-settings__delete"
+          hx-delete="/projects/{{ project.id }}"
+          hx-confirm="Delete project '{{ project.name }}'? Chats will be deleted; workspace files are preserved on disk.">
+      <button type="submit" class="project-settings__delete-btn">Delete project</button>
+    </form>
+  </section>
 </section>

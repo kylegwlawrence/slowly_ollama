@@ -457,8 +457,12 @@ def _create_chat_db_only(
 def test_index_renders_layout_with_composer(
     make_client: ClientFactory,
 ) -> None:
-    """Phase 17: GET / 302s to /projects, where the Chats tab of the
-    Default project shows sidebar + empty-state composer."""
+    """Phase 17b: GET /projects/{pid}/chats renders the unified sidebar
+    (with the projects list) and the empty-state composer in #main.
+
+    The sidebar's primary list is the projects list (#projects-list),
+    not a chats list. Chats only appear in the main panel when the
+    project has any."""
     with make_client(_ollama_unreachable) as client:
         pid = _default_project_id()
         response = client.get(f"/projects/{pid}/chats")
@@ -466,13 +470,13 @@ def test_index_renders_layout_with_composer(
     assert response.status_code == 200
     # Page shell from base.html.
     assert "<!DOCTYPE html>" in response.text
-    # Sidebar layout (the in-project sidebar variant).
+    # Unified sidebar.
     assert 'class="sidebar"' in response.text
-    assert 'id="chats-list"' in response.text
+    assert 'id="projects-list"' in response.text
     # Composer takes the main area when no chat is loaded.
     assert 'class="composer"' in response.text
     assert 'class="chat-panel"' not in response.text
-    # Sidebar "+ New chat" affordance is now on the in-project sidebar.
+    # Sidebar "+ New project" affordance lives on every page now.
     assert 'class="sidebar__new-chat"' in response.text
 
 
