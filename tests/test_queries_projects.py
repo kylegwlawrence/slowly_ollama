@@ -185,6 +185,44 @@ def test_update_project_clears_default_agent_with_none(conn) -> None:
     assert cleared.default_agent is None
 
 
+def test_create_project_seeds_num_ctx_as_none(conn) -> None:
+    """A newly-created project's num_ctx is NULL (inherit global)."""
+    p = create_project(conn, name="Pfresh")
+    assert p.num_ctx is None
+
+
+def test_update_project_sets_num_ctx(conn) -> None:
+    """Passing num_ctx sets the per-project override and clamps it."""
+    p = create_project(conn, name="Pnum")
+    updated = update_project(conn, p.id, num_ctx=32768)
+    assert updated.num_ctx == 32768
+
+
+def test_update_project_clears_num_ctx_with_none(conn) -> None:
+    """Passing num_ctx=None CLEARS the override (inherit global again)."""
+    p = create_project(conn, name="Pclear", default_model="llama3")
+    update_project(conn, p.id, num_ctx=16384)
+    cleared = update_project(conn, p.id, num_ctx=None)
+    assert cleared.num_ctx is None
+
+
+def test_update_project_clamps_num_ctx(conn) -> None:
+    """An out-of-range num_ctx is clamped before storage."""
+    from app.queries import NUM_CTX_MAX
+
+    p = create_project(conn, name="Pclamp")
+    updated = update_project(conn, p.id, num_ctx=10_000_000)
+    assert updated.num_ctx == NUM_CTX_MAX
+
+
+def test_update_project_leaves_num_ctx_alone_when_unpassed(conn) -> None:
+    """Omitting num_ctx preserves the existing value (sentinel path)."""
+    p = create_project(conn, name="Punset")
+    update_project(conn, p.id, num_ctx=24000)
+    renamed = update_project(conn, p.id, name="Renamed2")
+    assert renamed.num_ctx == 24000
+
+
 def test_update_project_no_kwargs_is_noop(conn) -> None:
     """Calling update_project with nothing returns the unchanged Project.
 

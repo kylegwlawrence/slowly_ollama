@@ -291,6 +291,7 @@ async def start_generation(
     system_prompt_override: str | None = None,
     tool_allowlist: frozenset[str] | None = None,
     think: bool | None = None,
+    num_ctx: int | None = None,
 ) -> GenerationState:
     """Register a GenerationState and spawn the producer task.
 
@@ -353,6 +354,7 @@ async def start_generation(
             system_prompt_override=system_prompt_override,
             tool_allowlist=tool_allowlist,
             think=think,
+            num_ctx=num_ctx,
         )
     )
     state.task.add_done_callback(_make_done_callback(conversation_id))
@@ -631,6 +633,7 @@ async def _run_generation(
     system_prompt_override: str | None = None,
     tool_allowlist: frozenset[str] | None = None,
     think: bool | None = None,
+    num_ctx: int | None = None,
 ) -> None:
     """Producer body — runs the LLM and writes events to the state.
 
@@ -726,6 +729,7 @@ async def _run_generation(
                     tools=tools_payload,
                     temperature=temperature,
                     think=think,
+                    num_ctx=num_ctx,
                 )
             except (OllamaUnavailable, OllamaProtocolError) as e:
                 # Set BEFORE the await — await is a cancellation point;
@@ -843,6 +847,7 @@ async def _run_generation(
                 _build_history_payload(working_history, system_prompt),
                 temperature=temperature,
                 think=think,
+                num_ctx=num_ctx,
             ):
                 if chunk.content:
                     chunks.append(chunk.content)

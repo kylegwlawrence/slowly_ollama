@@ -36,6 +36,7 @@ def _make_project(
         workspace_subdir=workspace_subdir,
         default_model=None,
         default_agent=None,
+        num_ctx=None,
         created_at=now,
         updated_at=now,
     )

@@ -580,6 +580,64 @@ def test_patch_project_leaves_unsubmitted_fields_alone(
     assert 'value="llama3"' in response.text
 
 
+def test_project_settings_renders_num_ctx_input(
+    make_client: ClientFactory,
+) -> None:
+    """The settings tab shows the num_ctx input with the global-default placeholder."""
+    with make_client(_ollama_unreachable) as client:
+        pid = _default_project_id()
+        response = client.get(f"/projects/{pid}/settings")
+    assert response.status_code == 200
+    assert 'name="num_ctx"' in response.text
+    # Empty (no override) renders with an empty value attribute.
+    assert 'value=""' in response.text
+    # Placeholder advertises the global default (16384 fresh).
+    assert "inherit global (16384)" in response.text
+
+
+def test_patch_project_persists_num_ctx_override(
+    make_client: ClientFactory,
+) -> None:
+    """Submitting num_ctx via the project settings form persists the override."""
+    with make_client(_ollama_unreachable) as client:
+        pid = _default_project_id()
+        response = client.patch(
+            f"/projects/{pid}",
+            data={
+                "name": "Default",
+                "description": "",
+                "default_model": "",
+                "default_agent": "",
+                "num_ctx": "32768",
+            },
+        )
+        assert response.status_code == 200
+        # Re-read the project — the override should have landed.
+        with open_connection(os.environ["DB_PATH"]) as conn:
+            project = queries.get_project(conn, pid)
+    assert project.num_ctx == 32768
+
+
+def test_patch_project_clears_num_ctx_with_blank(
+    make_client: ClientFactory,
+) -> None:
+    """Submitting an empty num_ctx clears the per-project override."""
+    with make_client(_ollama_unreachable) as client:
+        pid = _default_project_id()
+        # First set a value, then clear it.
+        client.patch(
+            f"/projects/{pid}",
+            data={"name": "Default", "description": "", "num_ctx": "16384"},
+        )
+        client.patch(
+            f"/projects/{pid}",
+            data={"name": "Default", "description": "", "num_ctx": ""},
+        )
+        with open_connection(os.environ["DB_PATH"]) as conn:
+            project = queries.get_project(conn, pid)
+    assert project.num_ctx is None
+
+
 def test_download_endpoint_400_when_file_tool_root_unset(
     make_client: ClientFactory, monkeypatch
 ) -> None:

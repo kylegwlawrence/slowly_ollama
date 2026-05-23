@@ -269,6 +269,13 @@ body {
   margin: 0;
 }
 
+/* Wider modifier for multi-digit values like num_ctx (up to ~7 digits
+   plus the native spinner arrows). Compound selector matches the
+   specificity rules above. */
+.temp-chip .temp-chip__input--wide {
+  width: 5.5rem;
+}
+
 /* ===== Chats list ======================================================== */
 
 .chats-list {

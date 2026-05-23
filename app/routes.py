@@ -181,6 +181,7 @@ def settings_endpoint(request: Request, db: DB) -> Response:
     default_temperature = queries.get_default_temperature(db)
     default_tool_iteration_cap = queries.get_default_tool_iteration_cap(db)
     default_model = queries.get_default_model(db)
+    default_num_ctx = queries.get_default_num_ctx(db)
     agents = list_agents()
     if request.headers.get("HX-Request"):
         return templates.TemplateResponse(
@@ -191,6 +192,7 @@ def settings_endpoint(request: Request, db: DB) -> Response:
                 "default_temperature": default_temperature,
                 "default_tool_iteration_cap": default_tool_iteration_cap,
                 "default_model": default_model,
+                "default_num_ctx": default_num_ctx,
                 "agents": agents,
             },
         )
@@ -216,6 +218,7 @@ def settings_endpoint(request: Request, db: DB) -> Response:
             "default_temperature": default_temperature,
             "default_tool_iteration_cap": default_tool_iteration_cap,
             "default_model": default_model,
+            "default_num_ctx": default_num_ctx,
             "agents": agents,
         },
     )
@@ -476,6 +479,24 @@ def list_chats_endpoint(request: Request, db: DB) -> Response:
     )
 
 
+def _resolve_num_ctx(
+    db: sqlite3.Connection, conversation_id: int
+) -> int:
+    """Effective Ollama ``num_ctx`` for a turn: project override → global.
+
+    Looks up the project that owns ``conversation_id`` and returns
+    ``project.num_ctx`` when set, otherwise the global default
+    (``queries.get_default_num_ctx``). Falls back to the global default
+    when the project can't be resolved (defensive — every chat should
+    have a project post-phase-17).
+    """
+    try:
+        project = queries.get_project_for_conversation(db, conversation_id)
+    except LookupError:
+        return queries.get_default_num_ctx(db)
+    return queries.resolve_num_ctx_for_project(db, project.num_ctx)
+
+
 def _agent_overrides(conversation: queries.Conversation) -> dict:
     """Resolve a conversation's active agent into ``start_generation`` kwargs.
 
@@ -689,6 +710,7 @@ async def send_message_endpoint(
             conversation_id=conversation_id,
             temperature=conversation.temperature,
             tool_iteration_cap=conversation.tool_iteration_cap,
+            num_ctx=_resolve_num_ctx(db, conversation_id),
             history=history,
             on_complete="append",
             **_agent_overrides(conversation),
@@ -791,6 +813,7 @@ async def regenerate_endpoint(
             conversation_id=conversation_id,
             temperature=conversation.temperature,
             tool_iteration_cap=conversation.tool_iteration_cap,
+            num_ctx=_resolve_num_ctx(db, conversation_id),
             history=prompt_history,
             on_complete="replace",
             **_agent_overrides(conversation),
@@ -1069,6 +1092,29 @@ async def set_default_tool_iteration_cap_endpoint(
     value, so no swap is needed.
     """
     queries.set_default_tool_iteration_cap(db, tool_iteration_cap)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.patch(
+    "/settings/default-num-ctx",
+    response_class=Response,
+)
+async def set_default_num_ctx_endpoint(
+    db: DB,
+    num_ctx: Annotated[int, Form()],
+) -> Response:
+    """Persist the global default Ollama context window for new chats.
+
+    Called by the default-num-ctx ``<input>`` in ``_settings.html`` via
+    ``hx-patch`` on the ``change`` event. Clamps to
+    [NUM_CTX_MIN, NUM_CTX_MAX] server-side so a hand-crafted request
+    can't store an out-of-range value. Takes effect on the next turn
+    of any chat that doesn't have a project-level override.
+
+    Returns 204 No Content — the browser input already shows the typed
+    value, so no swap is needed.
+    """
+    queries.set_default_num_ctx(db, num_ctx)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -1611,6 +1657,25 @@ async def update_project_endpoint(
         s = raw.strip() if isinstance(raw, str) else ""
         return s if s else None
 
+    def _int_or_clear(key: str):
+        """Mirror of ``_string_or_clear`` for integer fields like num_ctx.
+
+        Absent → sentinel; empty/whitespace → None (inherit global);
+        non-numeric → sentinel (treat as untouched — better than
+        crashing the whole save for a stray ``"abc"``); otherwise the
+        parsed int (clamping happens in ``update_project``).
+        """
+        if key not in form:
+            return queries._UNSET
+        raw = form.get(key, "")
+        s = raw.strip() if isinstance(raw, str) else ""
+        if not s:
+            return None
+        try:
+            return int(s)
+        except ValueError:
+            return queries._UNSET
+
     project = queries.update_project(
         db,
         project_id,
@@ -1620,6 +1685,7 @@ async def update_project_endpoint(
         ),
         default_model=_string_or_clear("default_model"),
         default_agent=_string_or_clear("default_agent"),
+        num_ctx=_int_or_clear("num_ctx"),
     )
     # Phase 17b: the settings body is swapped into #project-page-body, but
     # the project name also lives in the page header (above the body) and
@@ -1632,6 +1698,7 @@ async def update_project_endpoint(
         project=project,
         saved=True,
         agents=list_agents(),
+        global_default_num_ctx=queries.get_default_num_ctx(db),
     )
     escaped_name = html.escape(project.name)
     header_oob = (
@@ -1952,6 +2019,7 @@ async def create_project_chat_endpoint(
         conversation_id=chat.id,
         temperature=chat.temperature,
         tool_iteration_cap=chat.tool_iteration_cap,
+        num_ctx=queries.resolve_num_ctx_for_project(db, project.num_ctx),
         history=messages,
         on_complete="append",
         **_agent_overrides(chat),
@@ -2139,6 +2207,7 @@ def project_settings_endpoint(
                 "project": project,
                 "agents": list_agents(),
                 "saved": False,
+                "global_default_num_ctx": queries.get_default_num_ctx(db),
             },
         },
     )

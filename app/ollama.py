@@ -294,6 +294,7 @@ async def stream_chat(
     messages: list[dict[str, str]],
     temperature: float = 0.8,
     think: bool | None = None,
+    num_ctx: int | None = None,
 ) -> AsyncIterator[ChatChunk]:
     """Stream a chat completion from Ollama, yielding chunks as they arrive.
 
@@ -312,6 +313,10 @@ async def stream_chat(
             suppresses a thinking model's reasoning phase (safe on any
             model), ``True`` requires a thinking-capable model (else Ollama
             400s). ``None`` omits the key, leaving Ollama's default.
+        num_ctx: When not ``None``, sets Ollama's ``num_ctx`` option (the
+            total context window in tokens — system + history + user
+            input + generated reply all share this budget). ``None``
+            omits the key, leaving Ollama's own default of 2048.
 
     Yields:
         One ``ChatChunk`` per line of Ollama's NDJSON stream. The final
@@ -324,11 +329,14 @@ async def stream_chat(
         OllamaProtocolError: A line of the NDJSON stream wasn't valid
             JSON.
     """
+    options: dict = {"temperature": temperature}
+    if num_ctx is not None:
+        options["num_ctx"] = num_ctx
     payload = {
         "model": model,
         "messages": messages,
         "stream": True,
-        "options": {"temperature": temperature},
+        "options": options,
     }
     if think is not None:
         payload["think"] = think
@@ -383,6 +391,7 @@ async def maybe_tool_call(
     tools: list[dict] | None,
     temperature: float = 0.8,
     think: bool | None = None,
+    num_ctx: int | None = None,
 ) -> tuple[list[dict], str]:
     """Single non-streaming /api/chat to detect tool calls.
 
@@ -427,13 +436,16 @@ async def maybe_tool_call(
         OllamaProtocolError: Ollama responded but the body wasn't valid
             JSON or didn't have the expected shape.
     """
+    options: dict = {"temperature": temperature}
+    if num_ctx is not None:
+        options["num_ctx"] = num_ctx
     payload: dict = {
         "model": model,
         "messages": messages,
         # Non-streaming — the whole assistant reply (or its tool_calls)
         # comes back in one JSON object rather than NDJSON.
         "stream": False,
-        "options": {"temperature": temperature},
+        "options": options,
     }
     # Only include `tools` when there's something to advertise. Some
     # models 400 when given an empty list; passing None lets the caller

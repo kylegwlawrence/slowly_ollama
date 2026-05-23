@@ -118,6 +118,34 @@
     </form>
   </section>
 
+  {# Global default Ollama context window for new turns. Applied at
+     generation time (not seeded on chats) so a change takes effect on
+     the next message in any chat without a per-project override.
+     PATCHes on `change` with `hx-swap="none"` — the input already shows
+     the typed value, so there's nothing to swap. #}
+  <section class="settings__section">
+    <h2 class="settings__section-title">Default context size</h2>
+    <p class="settings__section-help">
+      Ollama's <code>num_ctx</code> for new turns — the total token
+      budget shared by the system prompt, conversation history, the new
+      user message, and the model's reply. Ollama's own default is 2048;
+      this app ships at 16384. Projects with a per-project override
+      ignore this value.
+    </p>
+    <form class="settings__default-num-ctx"
+          hx-patch="/settings/default-num-ctx"
+          hx-trigger="change"
+          hx-swap="none">
+      <div class="tool-chip tool-chip--on temp-chip">
+        <span class="tool-chip__label">Context</span>
+        <input id="default-num-ctx" type="number" name="num_ctx"
+               value="{{ default_num_ctx | default(16384) }}"
+               min="512" max="1048576" step="512"
+               class="temp-chip__input temp-chip__input--wide">
+      </div>
+    </form>
+  </section>
+
   {# Global default model applied to newly-created chats when neither the
      project nor the user overrides it. PATCHes on `change` with
      `hx-swap="none"` — the select already shows the chosen option.
