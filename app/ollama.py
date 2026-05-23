@@ -105,7 +105,7 @@ def create_client() -> httpx.AsyncClient:
     """
     return httpx.AsyncClient(
         base_url=ollama_host(),
-        timeout=httpx.Timeout(120.0, connect=5.0),
+        timeout=httpx.Timeout(300.0, connect=5.0),
     )
 
 
