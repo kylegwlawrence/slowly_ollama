@@ -905,3 +905,182 @@ async def test_run_tool_dispatches_write_then_read(
     assert "Wrote" in written.text
     read_back = await run_tool("read_file", {"path": "a.txt"})
     assert read_back.text == "data"
+
+
+# ---------------------------------------------------------------------------
+# list_directory (workspace directory browser)
+# ---------------------------------------------------------------------------
+
+
+def test_list_directory_lists_files_and_dirs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Directories appear before files; both are labeled and sorted."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    (tmp_path / "notes").mkdir()
+    (tmp_path / "readme.txt").write_text("hi", encoding="utf-8")
+    out = _file_builtins.list_directory(".")
+    assert "[dir]  notes/" in out
+    assert "[file] readme.txt" in out
+    # Dirs come before files in the output.
+    assert out.index("[dir]") < out.index("[file]")
+
+
+def test_list_directory_default_path_is_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Calling with no argument lists the workspace root."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    (tmp_path / "hello.txt").write_text("x", encoding="utf-8")
+    out = _file_builtins.list_directory()
+    assert "[file] hello.txt" in out
+
+
+def test_list_directory_subdirectory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A subdirectory path lists only that directory's contents."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    sub = tmp_path / "docs"
+    sub.mkdir()
+    (sub / "plan.md").write_text("y", encoding="utf-8")
+    out = _file_builtins.list_directory("docs")
+    assert "[file] plan.md" in out
+    # Nothing from the root leaks in.
+    assert "docs/" not in out.split("\n", 1)[1]  # header may say "docs/"
+
+
+def test_list_directory_empty_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty directory returns a specific message rather than a blank listing."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    (tmp_path / "empty").mkdir()
+    out = _file_builtins.list_directory("empty")
+    assert "empty" in out
+
+
+def test_list_directory_nonexistent_returns_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A path that doesn't exist returns an explanatory message, not an exception."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    out = _file_builtins.list_directory("nope")
+    assert "No directory" in out
+
+
+def test_list_directory_file_path_returns_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pointing at a file returns a helpful redirect, not a crash."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    (tmp_path / "f.txt").write_text("data", encoding="utf-8")
+    out = _file_builtins.list_directory("f.txt")
+    assert "is a file" in out
+    assert "read_file" in out
+
+
+def test_list_directory_rejects_traversal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `..` path escaping the root is rejected without listing anything."""
+    root = tmp_path / "ws"
+    root.mkdir()
+    (tmp_path / "secret").mkdir()
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(root))
+    out = _file_builtins.list_directory("../secret")
+    assert "outside the allowed workspace" in out
+
+
+def test_list_directory_rejects_absolute_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An absolute path escapes the root and is rejected."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    out = _file_builtins.list_directory("/tmp")
+    assert "outside the allowed workspace" in out
+
+
+def test_list_directory_no_root_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no root configured the tool reports the misconfiguration."""
+    monkeypatch.delenv("FILE_TOOL_ROOT", raising=False)
+    out = _file_builtins.list_directory(".")
+    assert "not configured" in out
+
+
+def test_list_directory_shows_file_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """File entries include a human-readable size."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    (tmp_path / "small.txt").write_text("ab", encoding="utf-8")
+    out = _file_builtins.list_directory(".")
+    # Size appears in parentheses after the filename.
+    assert "(" in out and "B)" in out
+
+
+def test_list_directory_truncates_at_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Directories with more than _LIST_DIR_CAP entries are truncated."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    for i in range(_file_builtins._LIST_DIR_CAP + 10):
+        (tmp_path / f"file{i:04d}.txt").write_text("x", encoding="utf-8")
+    out = _file_builtins.list_directory(".")
+    assert f"showing first {_file_builtins._LIST_DIR_CAP}" in out
+    assert out.count("[file]") == _file_builtins._LIST_DIR_CAP
+
+
+def test_list_directory_header_item_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The header reports the true total count even when truncated."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    total = _file_builtins._LIST_DIR_CAP + 5
+    for i in range(total):
+        (tmp_path / f"f{i}.txt").write_text("x", encoding="utf-8")
+    out = _file_builtins.list_directory(".")
+    assert f"({total} items)" in out
+
+
+def test_refresh_includes_list_directory_when_root_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Gating adds list_directory to the registry when a root is configured."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    _file_builtins.refresh_file_tools_registration()
+    assert "list_directory" in TOOLS
+
+
+def test_refresh_pops_list_directory_when_root_unset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Gating removes list_directory when the root is unset."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    _file_builtins.refresh_file_tools_registration()
+    monkeypatch.delenv("FILE_TOOL_ROOT", raising=False)
+    _file_builtins.refresh_file_tools_registration()
+    assert "list_directory" not in TOOLS
+
+
+def test_list_directory_is_read_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """list_directory is read-only (no confirmation needed)."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    _file_builtins.refresh_file_tools_registration()
+    assert TOOLS["list_directory"].is_read_only is True
+
+
+@pytest.mark.asyncio
+async def test_run_tool_dispatches_list_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The registry dispatches list_directory end-to-end via run_tool."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    _file_builtins.refresh_file_tools_registration()
+    (tmp_path / "doc.txt").write_text("hello", encoding="utf-8")
+    result = await run_tool("list_directory", {"path": "."})
+    assert "[file] doc.txt" in result.text
