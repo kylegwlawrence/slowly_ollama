@@ -132,15 +132,23 @@ def test_get_project_id_redirects_to_chats(
 def test_post_projects_creates_and_redirects(
     make_client: ClientFactory,
 ) -> None:
-    """POST /projects creates a row and pushes /projects/{id}/chats via HX-Push-Url."""
+    """POST /projects creates a row and pushes /projects/{id}/chats via HX-Push-Url.
+
+    Phase 17b: response body is the main-panel tile AND an OOB-prepended
+    sidebar row targeting #projects-list so the unified sidebar stays in
+    sync without a full reload.
+    """
     with make_client(_ollama_unreachable) as client:
         response = client.post(
             "/projects",
             data={"name": "Created", "description": "from the test"},
         )
     assert response.status_code == 201
-    assert 'class="project-item"' in response.text
+    # Main-panel tile.
+    assert 'class="project-tile"' in response.text
     assert ">Created<" in response.text
+    # OOB sidebar row prepended into #projects-list.
+    assert 'hx-swap-oob="afterbegin:#projects-list"' in response.text
     # HX-Push-Url moves the address bar to the new project's chats tab.
     assert response.headers["HX-Push-Url"].startswith("/projects/")
     assert response.headers["HX-Push-Url"].endswith("/chats")
@@ -206,6 +214,38 @@ def test_patch_project_updates_fields_and_clears_defaults(
         assert resp2.status_code == 200
         # default_model now empty in the rendered form.
         assert 'name="default_model"' in resp2.text
+
+
+def test_patch_project_rename_oob_updates_header_and_sidebar(
+    make_client: ClientFactory,
+) -> None:
+    """PATCH response emits OOB swaps so a rename lands in the page header
+    and the sidebar without a refresh."""
+    with make_client(_ollama_unreachable) as client:
+        create = client.post("/projects", data={"name": "OldName"})
+        assert create.status_code == 201
+        marker = 'data-project-id="'
+        start = create.text.index(marker) + len(marker)
+        end = create.text.index('"', start)
+        pid = int(create.text[start:end])
+        resp = client.patch(
+            f"/projects/{pid}",
+            data={
+                "name": "NewName",
+                "description": "",
+                "default_model": "",
+                "default_agent": "",
+            },
+        )
+        assert resp.status_code == 200
+        # Header OOB swap: targets the <h2> above #project-page-body.
+        assert 'id="project-page-name"' in resp.text
+        # Sidebar link OOB swap: targets the <a> inside the sidebar <li>.
+        assert f'id="project-sidebar-link-{pid}"' in resp.text
+        # Both OOB fragments must declare hx-swap-oob so HTMX extracts them.
+        assert resp.text.count('hx-swap-oob="true"') >= 2
+        # The new name appears in both OOB payloads (and the form).
+        assert resp.text.count("NewName") >= 3
 
 
 def test_patch_project_missing_404(make_client: ClientFactory) -> None:
@@ -449,13 +489,22 @@ def test_get_project_files_path_traversal_rejected(
 def test_get_project_settings_renders_form(
     make_client: ClientFactory,
 ) -> None:
-    """The settings tab renders the editable form."""
+    """The settings tab renders the editable form.
+
+    Phase 17b: the body class is `project-settings settings` so the
+    section inherits the .settings rhythm (header + sections + scroll).
+    """
     with make_client(_ollama_unreachable) as client:
         pid = _default_project_id()
         response = client.get(f"/projects/{pid}/settings")
     assert response.status_code == 200
-    assert 'class="project-settings"' in response.text
-    assert 'name="default_model"' in response.text
+    assert "project-settings" in response.text
+    # Default-model is now a <select>, lazily loaded via /models with
+    # prepend_blank=1 so the "(no default)" option seeds the list.
+    assert '<select name="default_model"' in response.text
+    assert 'hx-get="/models?prepend_blank=1"' in response.text
+    # data-default carries the saved value across the HTMX option swap.
+    assert 'data-default=' in response.text
 
 
 def test_404_endpoints_for_unknown_project(
@@ -626,3 +675,117 @@ def test_file_view_binary_file_shows_use_download(
         )
     assert response.status_code == 200
     assert "Binary file" in response.text
+
+
+# ---------------------------------------------------------------------------
+# Phase 17b — unified sidebar + default-model dropdown + chat-panel scroll
+# ---------------------------------------------------------------------------
+
+
+def test_sidebar_lists_all_projects(make_client: ClientFactory) -> None:
+    """The unified sidebar (rendered on every full-page route) lists all
+    projects in #projects-list, with one row per project."""
+    with make_client(_ollama_unreachable) as client:
+        # Create two projects in addition to the migration's Default.
+        client.post("/projects", data={"name": "Alpha"})
+        client.post("/projects", data={"name": "Beta"})
+        response = client.get("/projects")
+    assert response.status_code == 200
+    assert 'id="projects-list"' in response.text
+    # Each project surfaces as a sidebar row.
+    for name in ("Default", "Alpha", "Beta"):
+        assert f">{name}<" in response.text
+    # The "+ New project" affordance is anchored at the top of the
+    # sidebar list across pages.
+    assert "New project" in response.text
+
+
+def test_sidebar_highlights_active_project(
+    make_client: ClientFactory,
+) -> None:
+    """Inside a project, the sidebar row for that project has
+    aria-current="page"."""
+    with make_client(_ollama_unreachable) as client:
+        pid = _default_project_id()
+        response = client.get(f"/projects/{pid}/chats")
+    assert response.status_code == 200
+    # The active project's row carries aria-current="page".
+    assert f'data-project-id="{pid}"' in response.text
+    assert 'aria-current="page"' in response.text
+
+
+def test_settings_page_shares_unified_sidebar(
+    make_client: ClientFactory,
+) -> None:
+    """The global Settings page renders the unified sidebar too."""
+    with make_client(_ollama_unreachable) as client:
+        response = client.get("/settings")
+    assert response.status_code == 200
+    assert 'id="projects-list"' in response.text
+
+
+def test_project_settings_default_model_is_dropdown(
+    make_client: ClientFactory,
+) -> None:
+    """The default_model picker is a <select> with data-default carrying
+    the saved value across the /models option swap."""
+    with make_client(_ollama_unreachable) as client:
+        pid = _default_project_id()
+        response = client.get(f"/projects/{pid}/settings")
+    assert response.status_code == 200
+    assert '<select name="default_model"' in response.text
+    assert 'hx-get="/models?prepend_blank=1"' in response.text
+    assert 'data-default=' in response.text
+    # The settings tab body itself reuses the global settings shell so
+    # the page scrolls when the form grows.
+    assert "settings__header" in response.text
+
+
+def test_models_endpoint_prepend_blank_seeds_no_default_option(
+    make_client: ClientFactory,
+) -> None:
+    """/models?prepend_blank=1 prepends the '(no default)' option.
+
+    Tested via the Ollama-unreachable path: even on a failure the
+    template still honors prepend_blank, but the error path supersedes
+    the blank — so we test the success path with a mock returning an
+    empty model list (no installed models still renders the blank).
+    """
+    def _handler(request: httpx.Request) -> httpx.Response:
+        # /api/tags returns an empty model list; no /api/show calls.
+        if request.url.path.endswith("/api/tags"):
+            return httpx.Response(200, json={"models": []})
+        raise httpx.ConnectError("unexpected ollama call")
+
+    with make_client(_handler) as client:
+        response = client.get("/models?prepend_blank=1")
+    assert response.status_code == 200
+    assert '(no default' in response.text
+
+    # Without the flag, no blank option seeds the list.
+    with make_client(_handler) as client:
+        response = client.get("/models")
+    assert '(no default' not in response.text
+
+
+def test_chat_panel_css_uses_flex_for_scroll() -> None:
+    """The chat panel must use flex-grow + min-height: 0 so messages
+    scroll inside the project-page wrapper. `height: 100%` breaks the
+    chain when an intermediate flex column ancestor doesn't propagate
+    height — that was the source of the reported scroll bug."""
+    import re
+
+    css = Path("static/style.css").read_text()
+    m = re.search(r"\.chat-panel\s*\{[^}]+\}", css)
+    assert m is not None, "expected .chat-panel rule in style.css"
+    rule = m.group()
+    # Strip /* ... */ comments before checking declarations, so a comment
+    # that mentions `height: 100%` (explaining why we no longer use it)
+    # doesn't trip the assertion.
+    rule_no_comments = re.sub(r"/\*.*?\*/", "", rule, flags=re.DOTALL)
+    assert "height: 100%" not in rule_no_comments, (
+        "Phase 17b: .chat-panel must not use height: 100% — that breaks "
+        "scroll inside the project page. Use flex: 1; min-height: 0."
+    )
+    assert "flex: 1" in rule_no_comments
+    assert "min-height: 0" in rule_no_comments

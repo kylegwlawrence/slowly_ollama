@@ -1,16 +1,21 @@
-{# Main-panel content for /projects.
+{# Phase 17b: main-panel content for /projects.
 
-   Header + create form + alphabetical list of projects. The create
-   form posts to /projects; on success the server replies with a new
-   <li> that gets OOB-prepended (afterbegin) into #projects-list, plus
-   an HX-Push-Url redirect to the new project's chats tab. #}
+   Header + create form + alphabetical list of project tiles. The
+   create form posts to /projects; on success the server replies with
+   the new tile (afterbegin into #projects-grid) AND an OOB-prepended
+   sidebar row plus an HX-Push-Url redirect to the new project's chats
+   tab. #}
 <section class="projects-index">
   <header class="projects-index__header">
-    <h2>Projects</h2>
+    <h1 class="settings__title">Projects</h1>
+    <p class="settings__subtitle">A project bundles a workspace, chats, and default model.</p>
   </header>
-  <form class="projects-index__create"
+
+  {# Reuses the .rag-server-form grid + button look so create surfaces
+     match the global Settings page (Add server etc.). #}
+  <form class="projects-index__create rag-server-form"
         hx-post="/projects"
-        hx-target="#projects-list"
+        hx-target="#projects-grid"
         hx-swap="afterbegin">
     <label>
       Name
@@ -23,8 +28,10 @@
              placeholder="(optional)">
     </label>
     <button type="submit">Create project</button>
+    <div id="projects-form-error" class="form-error" role="alert" hidden></div>
   </form>
-  <ul id="projects-list" class="projects-list">
+
+  <ul id="projects-grid" class="projects-grid">
     {% for project in projects %}
       {% include "_project_item.html" %}
     {% endfor %}

@@ -1,0 +1,58 @@
+{# Phase 17b: shared sidebar used on every page (projects index,
+   inside-project, global settings). Shows the projects list as the
+   primary nav, with a '+ New project' link at the top and Settings +
+   theme toggle in the footer.
+
+   Context:
+     projects: list[Project] — alphabetical (from queries.list_projects).
+     active_project_id: int | None — highlights the matching row via
+                                     aria-current="page".
+
+   The list reuses the .chats-list / .chat-item classes so projects look
+   and feel like the old sidebar chats (same hover, same sage-tonal
+   active state). `.project-item` is a marker class for tests + JS,
+   carrying no extra style. #}
+<aside class="sidebar">
+  <div class="sidebar__header">
+    <h1 class="sidebar__logo">olliellama</h1>
+  </div>
+  <a class="sidebar__new-chat"
+     href="/projects"
+     hx-get="/projects"
+     hx-target="#main"
+     hx-swap="innerHTML"
+     hx-push-url="/projects"
+     aria-label="New project">
+    <span class="material-symbols-outlined">add</span>
+    New project
+  </a>
+  <ul id="projects-list" class="chats-list">
+    {% for project in projects %}
+      <li class="chat-item project-item"
+          data-project-id="{{ project.id }}"
+          {% if active_project_id == project.id %}aria-current="page"{% endif %}>
+        <a id="project-sidebar-link-{{ project.id }}"
+           href="/projects/{{ project.id }}/chats"
+           hx-get="/projects/{{ project.id }}/chats"
+           hx-target="#main"
+           hx-swap="innerHTML"
+           hx-push-url="true">{{ project.name }}</a>
+      </li>
+    {% endfor %}
+  </ul>
+  <div class="sidebar__footer">
+    <a class="sidebar__settings" href="/settings"
+       hx-get="/settings"
+       hx-target="#main"
+       hx-swap="innerHTML"
+       hx-push-url="/settings">
+      <span class="material-symbols-outlined">settings</span>
+      Settings
+    </a>
+    {# Icon text + click handler are wired in app.js — see the
+       theme-toggle section. #}
+    <button class="theme-toggle" aria-label="Toggle dark mode" type="button">
+      <span class="material-symbols-outlined theme-toggle__icon">dark_mode</span>
+    </button>
+  </div>
+</aside>

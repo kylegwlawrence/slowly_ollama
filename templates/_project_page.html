@@ -1,10 +1,14 @@
-{# Main-panel content for an in-project view. Header with project
-   name + tab nav; body switches on `active_tab`. The Chats tab either
-   renders an open chat panel or the empty-state composer; Files and
-   Settings have their own body templates. #}
+{# Phase 17b: main-panel content for an in-project view.
+
+   Header (project name + tab nav) plus a body that switches on
+   `active_tab`:
+   - Chats tab + no chat open → empty-state with the project's chats
+     list above a vertically-centered composer.
+   - Chats tab + chat open → the chat panel.
+   - Files / Settings → their own bodies. #}
 <section class="project-page" data-project-id="{{ project.id }}">
   <header class="project-page__header">
-    <h2 class="project-page__name">{{ project.name }}</h2>
+    <h2 id="project-page-name" class="project-page__name">{{ project.name }}</h2>
     {% include "_project_tabs.html" %}
   </header>
   <div id="project-page-body" class="project-page__body">
@@ -12,7 +16,19 @@
       {% if conversation %}
         {% include "_chat_panel.html" %}
       {% else %}
-        {% include "_composer.html" %}
+        <div class="project-empty">
+          {% if chats %}
+            <div class="project-empty__chats-wrap">
+              <h3 class="project-empty__title">Chats</h3>
+              <ul class="chats-list project-empty__chats" id="chats-list">
+                {% for chat in chats %}
+                  {% include "_chat_item.html" %}
+                {% endfor %}
+              </ul>
+            </div>
+          {% endif %}
+          {% include "_composer.html" %}
+        </div>
       {% endif %}
     {% elif active_tab == "files" %}
       {% include "_project_files.html" %}

@@ -422,7 +422,13 @@ body {
 .chat-panel {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  /* Phase 17b: inside the project page the chat panel lives in a flex
+     column ancestor; height: 100% wouldn't propagate (intermediate
+     wrappers aren't a containing block). Switching to flex-grow plus
+     min-height: 0 lets the panel fill the available space AND lets
+     .messages shrink-and-scroll inside it. */
+  flex: 1;
+  min-height: 0;
 }
 
 .chat-panel__header {
@@ -1471,4 +1477,413 @@ body {
   margin: 0;
   opacity: 0.5;
   pointer-events: none;
+}
+
+/* ===== Phase 17b: Projects UI polish ==================================== */
+
+/* The unified sidebar reuses .chats-list + .chat-item for the projects
+   list. `.project-item` is a marker class for selectors; aria-current
+   highlighting comes from the existing .chat-item[aria-current="page"]
+   rule. */
+
+/* ----- Projects index (main panel) ----- */
+
+.projects-index {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: var(--space-xl);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xl);
+  /* Mirror .settings: fill #main, scroll its own overflow. */
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.projects-index__header {
+  padding-bottom: var(--space-md);
+  border-bottom: 1px solid var(--border);
+}
+
+/* The create form reuses .rag-server-form's grid + button look. With
+   two inputs + one button we want a tighter column layout than the
+   four-col RAG form; override the grid-template-columns. */
+.projects-index__create {
+  grid-template-columns: 1fr 2fr auto;
+}
+
+.projects-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.project-tile {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  transition: background 0.15s ease, border-color 0.15s ease;
+  /* Pico classless applies `ul li { list-style: square }`, and a tile
+     stays display: list-item by default so the bullet shows in the
+     negative-x margin of .projects-grid. Suppress it here. (The sidebar
+     .chat-item escapes this because it's display: flex, which drops
+     the list-item box.) */
+  list-style: none;
+}
+
+.project-tile:hover {
+  background: var(--surface-hover);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+
+.project-tile__link {
+  display: block;
+  padding: var(--space-md) var(--space-lg);
+  color: var(--text-primary);
+  text-decoration: none;
+}
+
+.project-tile__name {
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.project-tile__desc {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-top: var(--space-xs);
+}
+
+/* ----- Inside-project page wrapper ----- */
+
+.project-page {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.project-page__header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-md) var(--space-xl) 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.project-page__name {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.project-page__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ----- Project tabs (Chats / Files / Settings) ----- */
+
+.project-tabs {
+  display: flex;
+  gap: var(--space-md);
+}
+
+.project-tabs__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-sm) var(--space-md);
+  color: var(--text-secondary);
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+  font-size: 14px;
+  /* Overlap the parent header's border-bottom so the active underline
+     visually replaces it instead of sitting under it. */
+  margin-bottom: -1px;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.project-tabs__tab:hover {
+  color: var(--text-primary);
+}
+
+.project-tabs__tab--active {
+  color: var(--accent-tonal-text);
+  border-bottom-color: var(--accent);
+  font-weight: 500;
+}
+
+.project-tabs__tab .material-symbols-outlined {
+  font-size: 18px;
+}
+
+/* ----- Empty-state composer view (chats list + centered composer) ----- */
+
+.project-empty {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-lg);
+  padding: var(--space-xl);
+  overflow-y: auto;
+}
+
+.project-empty__chats-wrap {
+  width: min(720px, 90%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.project-empty__title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.project-empty__chats {
+  max-height: 30vh;
+  overflow-y: auto;
+}
+
+/* ----- Project settings ----- */
+
+/* .project-settings extends .settings — inherits the scrollable
+   column layout. Form lives inside a section card via the shared
+   .rag-server-form grid styling. */
+
+.project-settings__form {
+  /* Stack form fields vertically: each label is full-width. */
+  grid-template-columns: 1fr;
+}
+
+.project-settings__field--full {
+  grid-column: 1 / -1;
+}
+
+.project-settings__form select,
+.project-settings__form textarea {
+  font-size: 14px;
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text-primary);
+  height: auto;
+  margin: 0;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.project-settings__buttons {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+}
+
+.project-settings__buttons button {
+  width: auto;
+}
+
+.project-settings__saved {
+  color: var(--success);
+  font-size: 13px;
+}
+
+.settings__section--danger {
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-lg);
+}
+
+.project-settings__delete {
+  margin: 0;
+}
+
+.project-settings__delete-btn {
+  background: none;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  padding: var(--space-xs) var(--space-md);
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  width: auto;
+  margin: 0;
+}
+
+.project-settings__delete-btn:hover {
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
+/* ----- Project files ----- */
+
+.project-files {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: var(--space-xl);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.project-files__crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xs);
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.project-files__crumbs a {
+  color: var(--accent-tonal-text);
+  text-decoration: none;
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-md);
+}
+
+.project-files__crumbs a:hover {
+  background: var(--surface-hover);
+}
+
+.project-files__empty {
+  color: var(--text-secondary);
+  font-size: 14px;
+  padding: var(--space-lg);
+  text-align: center;
+  background: var(--surface);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+}
+
+.project-files__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.project-files__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  transition: background 0.15s ease;
+}
+
+.project-files__item:hover {
+  background: var(--surface-hover);
+}
+
+.project-files__dir,
+.project-files__file {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex: 1;
+  color: var(--text-primary);
+  text-decoration: none;
+  font-size: 14px;
+  word-break: break-word;
+}
+
+.project-files__dir .material-symbols-outlined,
+.project-files__file .material-symbols-outlined {
+  color: var(--accent-tonal-text);
+  font-size: 20px;
+  flex-shrink: 0;
+}
+
+.project-files__size {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.project-files__download {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  text-decoration: none;
+  padding: var(--space-xs);
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+
+.project-files__download:hover {
+  background: var(--surface-hover);
+  color: var(--accent-tonal-text);
+}
+
+.project-files__view-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.project-files__view-header .project-files__download {
+  margin-left: auto;
+  color: var(--accent-tonal-text);
+  font-weight: 500;
+  padding: var(--space-xs) var(--space-sm);
+}
+
+.project-files__pre {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-md);
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.project-files__markdown {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-lg);
+  font-size: var(--font-size-base);
+  line-height: 1.6;
 }
