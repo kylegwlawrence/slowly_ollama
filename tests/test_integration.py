@@ -48,6 +48,7 @@ def integration_client(
     """
     monkeypatch.setenv("DB_PATH", str(tmp_path / "chats.db"))
     monkeypatch.setenv("OLLAMA_HOST", "http://test")
+    monkeypatch.delenv("FILE_TOOL_ROOT", raising=False)
 
     # Phase 12d: a single assistant turn now triggers TWO /api/chat
     # POSTs — first a non-streaming probe for tool intent, then the
@@ -282,6 +283,7 @@ def agent_client(
     and answers any chat (probe → no tool calls; stream → a short reply)."""
     monkeypatch.setenv("DB_PATH", str(tmp_path / "chats.db"))
     monkeypatch.setenv("OLLAMA_HOST", "http://test")
+    monkeypatch.delenv("FILE_TOOL_ROOT", raising=False)
 
     import json as _json
 

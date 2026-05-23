@@ -197,7 +197,7 @@ to consume. Tool execution caps at 5 iterations per turn.
 
 ## Key gotchas (one-liners; deep dives in `docs/CONVENTIONS.md`)
 
-- **httpx default 5s timeout is wrong for local LLMs.** Use 120s for chat,
+- **httpx default 5s timeout is wrong for local LLMs.** Use 300s for chat,
   15s for RAG retrieval. Cold model loads take 10–30s.
 - **HTMX attribute inheritance.** `hx-push-url` and most `hx-*` attributes
   cascade to descendants. Prefer server-side `HX-Push-Url` / `HX-Location`
