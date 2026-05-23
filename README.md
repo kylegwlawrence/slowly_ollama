@@ -47,6 +47,7 @@ DB_PATH=~/Library/Application Support/ollama_slowly/chats.db
 
 - **`OLLAMA_HOST`** — base URL of the local Ollama HTTP API. Change this if you run Ollama on a non-standard port or host.
 - **`DB_PATH`** — path to the SQLite database file. The `~` expands to your home directory. The directory is created automatically on first run.
+- **`FILE_TOOL_ROOT`** — (optional) absolute path to a directory agents may read, write, and search. When unset, the file tools (`read_file`, `write_file`, `list_directory`, `search_files`) are removed from the registry and agents fall back to tool-less mode.
 
 ---
 
@@ -100,7 +101,7 @@ app/
   generation.py      # Background-task producer driving the SSE stream
   render.py          # Render-shaped views + tool-card OOB HTML helpers
   tools/             # Tool-calling system
-    builtins.py      # Built-in tools (current_time, etc.)
+    builtins.py      # Built-in tools (current_time, read_file, write_file, list_directory, search_files)
     rag.py           # RAG query tool
 templates/           # Jinja2/HTMX HTML templates
 static/              # Vendored CSS + JS (Pico, HTMX, Material Symbols)
@@ -118,6 +119,7 @@ docs/code_reviews/   # Dated code reviews
 - **Per-chat model selection** — pick any tool-capable model available in your local Ollama instance
 - **Streaming responses** — assistant replies stream token-by-token via SSE
 - **Reload-safe generation** — a page reload during a reply attaches a new consumer to the in-flight stream instead of cancelling it
-- **Tool calling** — extensible tool system; built-in `current_time` tool included
+- **Tool calling** — extensible tool system; built-in tools: `current_time`, `query_rag` (RAG retrieval), and a workspace file suite (`read_file`, `write_file`, `list_directory`, `search_files`) gated on `FILE_TOOL_ROOT`
 - **RAG support** — register external retrieval servers from `/settings` and let the model query them via the `query_rag` tool
+- **User-invoked agents** — pick a named agent (Research, Content Generator) from the composer; each agent has its own model, system prompt, and tool allowlist
 - **Fully local** — no telemetry, no cloud API calls, works offline

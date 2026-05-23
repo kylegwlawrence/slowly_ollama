@@ -61,13 +61,14 @@ controlled artifacts, not workspace scratch.
   (`AgentSpec` + `AGENTS`): an agent = model + system prompt + tool allowlist
   + Ollama `think` flag. Shipped roster: **Research** (`granite4.1:8b`, tools
   `current_time` + `query_rag`) and **Content Generator** (`granite4.1:8b`,
-  no tools); both `think=False`. An invoked agent reuses `_run_generation`
-  parameterized by those four things — no new SSE events, roles, or render
-  blocks. Per-chat `active_agent` persisted (+ migration), resolved per turn
-  via `_agent_overrides`; new `POST /chats/{id}/agent`; header indicator +
+  tools `read_file` + `write_file` + `list_directory` + `search_files`); both
+  `think=False`. An invoked agent reuses `_run_generation` parameterized by
+  those four things — no new SSE events, roles, or render blocks. Per-chat
+  `active_agent` persisted (+ migration), resolved per turn via
+  `_agent_overrides`; new `POST /chats/{id}/agent`; header indicator +
   composer picker (greys the model select). Agents hand off through shared
   conversation history. See `docs/retros/phase16-invokable-agents.md`.
-- **425/425 tests passing**; coverage 98% on `app/` + `main.py`
+- **481/481 tests passing**; coverage 97% on `app/` + `main.py`
   (`app/agents`, `app/render.py`, `app/queries.py` at 100%).
 
 ## Working rules (override Claude defaults where they conflict)
@@ -145,7 +146,7 @@ app/
     prompts.py           # Hardcoded per-agent system prompts (research, content generator)
   tools/
     __init__.py          # @tool decorator, ToolSpec, registry, run_tool, tool_specs_for_ollama, encode/decode_tool_call, encode/decode_tool_result
-    builtins.py          # current_time tool
+    builtins.py          # current_time + read_file + write_file + list_directory + search_files tools
     rag.py               # query_rag tool + RAG-server HTTP client
 templates/               # Jinja fragments — every endpoint returns one of these
 static/                  # Pico, HTMX, htmx-ext-sse, Material Symbols, style.css
