@@ -71,10 +71,21 @@ class ChatChunk:
         done: ``True`` on the final chunk of the stream, ``False`` for
             every intermediate chunk. Callers stop iterating once they
             see ``done=True``.
+        prompt_tokens: Tokens Ollama evaluated for the input prompt for
+            this turn (system + history + new user message). Only set on
+            the final ``done`` chunk; ``None`` on intermediate chunks
+            and on responses where Ollama didn't report a count (e.g.
+            full prompt-cache hit). Use the most-recent turn's value
+            as "current context size" — summing across turns
+            double-counts shared history.
+        eval_tokens: Tokens the model generated in this turn. Only set
+            on the final ``done`` chunk; ``None`` otherwise.
     """
 
     content: str
     done: bool
+    prompt_tokens: int | None = None
+    eval_tokens: int | None = None
 
 
 def create_client() -> httpx.AsyncClient:
@@ -346,9 +357,20 @@ async def stream_chat(
                     raise OllamaProtocolError(
                         f"Ollama emitted a non-JSON line: {line!r}"
                     ) from e
+                done = bool(data.get("done", False))
+                # prompt_eval_count / eval_count are only populated on
+                # the final chunk; pull them out so the producer can
+                # persist per-turn token counts. Ollama omits these
+                # entirely on full prompt-cache hits — treat missing as
+                # None rather than 0 so the UI can distinguish "no
+                # data" from "actually zero tokens evaluated."
+                prompt_tokens = data.get("prompt_eval_count") if done else None
+                eval_tokens = data.get("eval_count") if done else None
                 yield ChatChunk(
                     content=data.get("message", {}).get("content", ""),
-                    done=bool(data.get("done", False)),
+                    done=done,
+                    prompt_tokens=prompt_tokens,
+                    eval_tokens=eval_tokens,
                 )
     except (httpx.HTTPError, httpx.InvalidURL) as e:
         raise OllamaUnavailable(f"Ollama stream failed: {e}") from e

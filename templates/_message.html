@@ -22,6 +22,21 @@
     {%- endif %}
   </div>
   {%- if message.role == "assistant" %}
+  {%- if message.prompt_tokens is not none or message.eval_tokens is not none %}
+  {# Per-turn token counts reported by Ollama on the final stream chunk.
+     `prompt_tokens` is what the model just saw for this turn — use it
+     as "context size at this point in the conversation," not a sum
+     across turns (history is double-counted otherwise). #}
+  <div class="message__tokens"
+       title="Tokens reported by Ollama for this turn. ctx = prompt the model just saw (system + history + new user msg); out = tokens generated.">
+    {%- if message.prompt_tokens is not none %}
+    <span class="message__tokens-ctx">{{ "{:,}".format(message.prompt_tokens) }} ctx</span>
+    {%- endif %}
+    {%- if message.eval_tokens is not none %}
+    <span class="message__tokens-out">{{ "{:,}".format(message.eval_tokens) }} out</span>
+    {%- endif %}
+  </div>
+  {%- endif %}
   {# Regenerate is rendered on every assistant bubble; CSS in
      base.html hides it unless the bubble is the last child of
      #messages AND not a streaming placeholder. That way only the

@@ -128,6 +128,13 @@ class Message:
     role: Role
     content: str
     created_at: datetime
+    # Per-turn token counts reported by Ollama on the final stream chunk
+    # of an assistant message. NULL on non-assistant rows, on assistant
+    # rows persisted before this column existed, and on responses where
+    # Ollama didn't report counts (e.g. full prompt-cache hit). See
+    # `app.ollama.ChatChunk` for the source-of-truth interpretation.
+    prompt_tokens: int | None = None
+    eval_tokens: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +177,8 @@ def _row_to_message(row: sqlite3.Row) -> Message:
         role=row["role"],
         content=row["content"],
         created_at=datetime.fromisoformat(row["created_at"]),
+        prompt_tokens=row["prompt_tokens"],
+        eval_tokens=row["eval_tokens"],
     )
 
 
@@ -519,6 +528,9 @@ def append_message(
     conversation_id: int,
     role: Role,
     content: str,
+    *,
+    prompt_tokens: int | None = None,
+    eval_tokens: int | None = None,
 ) -> Message:
     """Append a message to a conversation.
 
@@ -532,6 +544,12 @@ def append_message(
             "assistant", "tool_call", "tool_result"). The type checker
             enforces this — the SQLite CHECK was dropped in phase 12a.
         content: The message text.
+        prompt_tokens: Ollama's reported `prompt_eval_count` for the
+            turn that produced this message. Only meaningful on
+            assistant rows; pass None for user / tool_* rows and for
+            assistant rows where Ollama didn't report counts.
+        eval_tokens: Ollama's reported `eval_count` (tokens generated)
+            for this assistant turn.
 
     Returns:
         The newly inserted Message.
@@ -543,10 +561,13 @@ def append_message(
     with conn:
         row = conn.execute(
             "INSERT INTO messages"
-            " (conversation_id, role, content, created_at)"
-            " VALUES (?, ?, ?, ?)"
-            " RETURNING id, conversation_id, role, content, created_at;",
-            (conversation_id, role, content, now),
+            " (conversation_id, role, content, created_at,"
+            "  prompt_tokens, eval_tokens)"
+            " VALUES (?, ?, ?, ?, ?, ?)"
+            " RETURNING id, conversation_id, role, content, created_at,"
+            "  prompt_tokens, eval_tokens;",
+            (conversation_id, role, content, now,
+             prompt_tokens, eval_tokens),
         ).fetchone()
         # Bumping updated_at here (rather than via trigger) keeps all
         # mutation in one Python codepath — easier to reason about and to
@@ -572,7 +593,8 @@ def list_messages(
         tiebreaker for messages stamped within the same microsecond).
     """
     rows = conn.execute(
-        "SELECT id, conversation_id, role, content, created_at"
+        "SELECT id, conversation_id, role, content, created_at,"
+        "  prompt_tokens, eval_tokens"
         " FROM messages"
         " WHERE conversation_id = ?"
         " ORDER BY created_at ASC, id ASC;",
@@ -585,6 +607,9 @@ def replace_last_assistant_message(
     conn: sqlite3.Connection,
     conversation_id: int,
     new_content: str,
+    *,
+    prompt_tokens: int | None = None,
+    eval_tokens: int | None = None,
 ) -> Message:
     """Replace the content of the most-recent assistant message in place.
 
@@ -622,9 +647,12 @@ def replace_last_assistant_message(
                 " to replace."
             )
         row = conn.execute(
-            "UPDATE messages SET content = ? WHERE id = ?"
-            " RETURNING id, conversation_id, role, content, created_at;",
-            (new_content, latest["id"]),
+            "UPDATE messages SET content = ?,"
+            "  prompt_tokens = ?, eval_tokens = ?"
+            " WHERE id = ?"
+            " RETURNING id, conversation_id, role, content, created_at,"
+            "  prompt_tokens, eval_tokens;",
+            (new_content, prompt_tokens, eval_tokens, latest["id"]),
         ).fetchone()
         conn.execute(
             "UPDATE conversations SET updated_at = ? WHERE id = ?;",

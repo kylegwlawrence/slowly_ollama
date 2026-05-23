@@ -826,6 +826,19 @@ body {
   color: var(--accent);
 }
 
+/* Per-turn token counts (rendered under assistant bubbles when Ollama
+   reported them). Quiet, monospaced, sits inline just above the
+   regenerate button. */
+.message__tokens {
+  display: flex;
+  gap: var(--space-sm);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: var(--space-sm);
+  cursor: help;
+}
+
 /* ===== Message-form layout =============================================== */
 
 .message-form {

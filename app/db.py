@@ -88,7 +88,16 @@ CREATE TABLE IF NOT EXISTS messages (
         REFERENCES conversations(id) ON DELETE CASCADE,
     role            TEXT NOT NULL,
     content         TEXT NOT NULL,
-    created_at      TEXT NOT NULL
+    created_at      TEXT NOT NULL,
+    -- Per-turn token counts reported by Ollama on the final stream chunk.
+    -- NULL when the message isn't an assistant turn, when Ollama didn't
+    -- report counts (e.g. prompt-cache hit), or for pre-existing rows
+    -- from before this column existed. prompt_tokens is the input the
+    -- model just saw (system + history + new user msg); eval_tokens is
+    -- the output it generated. Use the most-recent turn's prompt_tokens
+    -- as "current context size" — summing across turns double-counts.
+    prompt_tokens   INTEGER,
+    eval_tokens     INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_conversation_created
@@ -339,6 +348,30 @@ def _ensure_rag_servers_description_column(conn: sqlite3.Connection) -> None:
         )
 
 
+def _ensure_messages_token_count_columns(conn: sqlite3.Connection) -> None:
+    """Backfill ``prompt_tokens`` / ``eval_tokens`` on legacy messages tables.
+
+    Nullable INTEGERs — existing rows come back as NULL (we don't have
+    counts for messages persisted before the column existed). Mirrors
+    the other ``_ensure_*_column`` helpers: ``PRAGMA table_info`` check
+    first so the ``ALTER TABLE`` is a no-op on fresh DBs.
+
+    Args:
+        conn: Open SQLite connection.
+    """
+    columns = {row[1] for row in conn.execute(
+        "PRAGMA table_info(messages);"
+    )}
+    if "prompt_tokens" not in columns:
+        conn.execute(
+            "ALTER TABLE messages ADD COLUMN prompt_tokens INTEGER;"
+        )
+    if "eval_tokens" not in columns:
+        conn.execute(
+            "ALTER TABLE messages ADD COLUMN eval_tokens INTEGER;"
+        )
+
+
 def _migrate_messages_drop_role_check(conn: sqlite3.Connection) -> None:
     """Drop the role CHECK from an existing messages table.
 
@@ -434,6 +467,11 @@ def initialize_database(path: Path | None = None) -> Path:
         # Phase 12a: drop the role CHECK on the legacy messages table
         # so tool_call / tool_result rows can be inserted.
         _migrate_messages_drop_role_check(conn)
+        # Per-turn token counts: backfill the prompt_tokens / eval_tokens
+        # columns on messages tables created before this phase. Runs
+        # AFTER the role-check drop because that migration recreates
+        # the table without the new columns.
+        _ensure_messages_token_count_columns(conn)
         # RAG source descriptions: backfill the description column on
         # rag_servers tables created before this phase.
         _ensure_rag_servers_description_column(conn)

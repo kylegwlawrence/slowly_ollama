@@ -835,6 +835,8 @@ async def _run_generation(
             return
 
         # Streaming phase.
+        prompt_tokens: int | None = None
+        eval_tokens: int | None = None
         try:
             async for chunk in ollama.stream_chat(
                 client, model,
@@ -846,6 +848,11 @@ async def _run_generation(
                     chunks.append(chunk.content)
                     await _emit(state, "token", html.escape(chunk.content))
                 if chunk.done:
+                    # Final chunk carries Ollama's reported token counts
+                    # for this turn (None if Ollama didn't report them,
+                    # e.g. on a full prompt-cache hit).
+                    prompt_tokens = chunk.prompt_tokens
+                    eval_tokens = chunk.eval_tokens
                     break
         except (OllamaUnavailable, OllamaProtocolError) as e:
             # Flag-before-await mirrors the probe-loop branch above.
@@ -856,11 +863,15 @@ async def _run_generation(
         full_text = "".join(chunks)
         if on_complete == "append":
             message = queries.append_message(
-                db, conversation_id, "assistant", full_text
+                db, conversation_id, "assistant", full_text,
+                prompt_tokens=prompt_tokens,
+                eval_tokens=eval_tokens,
             )
         else:  # "replace"
             message = queries.replace_last_assistant_message(
-                db, conversation_id, full_text
+                db, conversation_id, full_text,
+                prompt_tokens=prompt_tokens,
+                eval_tokens=eval_tokens,
             )
         # Persisted — outer finally must not double-write a partial.
         # Set BEFORE any further awaits, since await is a suspension
