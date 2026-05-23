@@ -226,12 +226,24 @@ body {
   margin: 0;
 }
 
-/* Temperature chip — same visual as .tool-chip--on but contains a
-   number input instead of a toggle label. The input is stripped of
-   its box model so it blends into the chip; browser spinner arrows
-   are intentionally preserved. */
-.temp-chip {
+/* Temperature / tool-cap chip — styled to match the model select box
+   rather than the accent-tonal tool-chip pill. Compound selector (0,2,0)
+   beats .tool-chip--on (0,1,0); pseudo-class form (0,3,0) beats
+   .tool-chip--on:hover (0,2,0). Number input spinners are preserved. */
+.tool-chip.temp-chip {
   cursor: default;
+  background: var(--bg);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-xs) var(--space-md);
+  font-size: 14px;
+}
+
+.tool-chip.temp-chip:hover {
+  background: var(--bg);
+  color: var(--text-primary);
+  border-color: var(--border);
 }
 
 /* Two classes raise specificity to (0,2,0) so these win over Pico's
