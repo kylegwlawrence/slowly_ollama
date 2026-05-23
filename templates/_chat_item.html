@@ -39,11 +39,16 @@
    instead; see `create_chat_endpoint` in app/routes.py for that
    pattern. The auto-titler in app/generation.py passes `"true"`
    here (match-by-id + outerHTML swap to replace the renamed row). #}
+{# Phase 17: links point at the canonical project-scoped URL when a
+   `project` is in context. A bare `chat.project_id` is the fallback
+   for legacy renders (e.g. auto-titler) where the project may not have
+   been threaded through. Either way the URL resolves to the same chat. #}
+{% set _pid = (project.id if project is defined and project else chat.project_id) %}
 <li id="chat-{{ chat.id }}" class="chat-item" data-chat-id="{{ chat.id }}"
     {%- if chat.id == active_chat_id|default(none) %} aria-current="page"{% endif %}
     {%- if oob_swap is defined and oob_swap %} hx-swap-oob="{{ oob_swap }}"{% endif %}>
-  <a href="/chats/{{ chat.id }}"
-     hx-get="/chats/{{ chat.id }}"
+  <a href="/projects/{{ _pid }}/chats/{{ chat.id }}"
+     hx-get="/projects/{{ _pid }}/chats/{{ chat.id }}"
      hx-target="#main"
      hx-swap="innerHTML"
      hx-push-url="true">{{ chat.name }}</a>

@@ -82,6 +82,8 @@ def test_initialize_is_idempotent(initialized_db: Path) -> None:
         "app_settings",
         "chat_tool_settings",
         "chat_rag_settings",
+        # Phase 17 added the projects table.
+        "projects",
     }
 
 
@@ -94,10 +96,16 @@ def test_role_accepts_documented_roles(initialized_db: Path) -> None:
     rows must still insert cleanly so an old DB doesn't error on read.
     """
     with _open(initialized_db) as conn:
+        # Phase 17: every chat needs a project_id. The Default project the
+        # migration created has id 1 (the lowest); use it here.
+        default_pid = conn.execute(
+            "SELECT id FROM projects ORDER BY id LIMIT 1;"
+        ).fetchone()[0]
         conn.execute(
             "INSERT INTO conversations"
-            " (id, name, model, created_at, updated_at)"
-            " VALUES (1, 'c', 'llama3', '2025-01-01', '2025-01-01');"
+            " (id, name, model, project_id, created_at, updated_at)"
+            " VALUES (1, 'c', 'llama3', ?, '2025-01-01', '2025-01-01');",
+            (default_pid,),
         )
         for role in (
             "user",
@@ -122,10 +130,15 @@ def test_cascade_delete_removes_child_messages(initialized_db: Path) -> None:
     future change drops that pragma, this test fails — which is the point.
     """
     with _open(initialized_db) as conn:
+        # Phase 17: every chat needs a project_id; reuse the Default project.
+        default_pid = conn.execute(
+            "SELECT id FROM projects ORDER BY id LIMIT 1;"
+        ).fetchone()[0]
         conn.execute(
             "INSERT INTO conversations"
-            " (id, name, model, created_at, updated_at)"
-            " VALUES (1, 'c', 'llama3', '2025-01-01', '2025-01-01');"
+            " (id, name, model, project_id, created_at, updated_at)"
+            " VALUES (1, 'c', 'llama3', ?, '2025-01-01', '2025-01-01');",
+            (default_pid,),
         )
         conn.execute(
             "INSERT INTO messages"
@@ -203,16 +216,21 @@ def test_migration_drops_legacy_role_check(tmp_path: Path) -> None:
         ).fetchone()[0]
         assert "CHECK" not in sql
         # And the new roles must INSERT successfully — direct proof
-        # that the old constraint is gone end-to-end.
+        # that the old constraint is gone end-to-end. Phase 17: also pass
+        # project_id (which the migration backfilled to the Default).
+        default_pid = conn.execute(
+            "SELECT id FROM projects ORDER BY id LIMIT 1;"
+        ).fetchone()[0]
         conn.execute(
             "INSERT INTO conversations"
-            " (name, model, name_locked, created_at, updated_at)"
-            " VALUES ('x', 'm', 0, 'now', 'now');"
+            " (name, model, name_locked, project_id, created_at, updated_at)"
+            " VALUES ('x', 'm', 0, ?, 'now', 'now');",
+            (default_pid,),
         )
         conn.execute(
             "INSERT INTO messages"
             " (conversation_id, role, content, created_at)"
-            " VALUES (1, 'tool_call', '{}', 'now');"
+            " VALUES ((SELECT MAX(id) FROM conversations), 'tool_call', '{}', 'now');"
         )
 
 
@@ -302,3 +320,110 @@ def test_app_settings_table_exists_after_init(initialized_db: Path) -> None:
             row[1] for row in conn.execute("PRAGMA table_info(app_settings);")
         }
     assert cols == {"key", "value"}
+
+
+# ---------------------------------------------------------------------------
+# Phase 17: projects table + per-chat project_id column
+# ---------------------------------------------------------------------------
+
+
+def test_projects_table_created_on_fresh_db(initialized_db: Path) -> None:
+    """Phase 17 introduced the projects table; verify its columns are set."""
+    with _open(initialized_db) as conn:
+        cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(projects);")
+        }
+    assert cols == {
+        "id",
+        "name",
+        "description",
+        "workspace_subdir",
+        "default_model",
+        "default_agent",
+        "created_at",
+        "updated_at",
+    }
+
+
+def test_default_project_inserted_on_fresh_db(initialized_db: Path) -> None:
+    """After init, exactly one project named "Default" exists.
+
+    Acts as the home for every chat created without an explicit project (and
+    receives every legacy chat the migration backfills).
+    """
+    with _open(initialized_db) as conn:
+        rows = conn.execute(
+            "SELECT name, workspace_subdir FROM projects;"
+        ).fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == "Default"
+    assert rows[0][1] == "default"
+
+
+def test_conversations_get_project_id_column(tmp_path: Path) -> None:
+    """Legacy conversations get project_id added + backfilled to Default."""
+    db = tmp_path / "chats.db"
+    # Build an old-schema DB (no project_id) with one chat row in it.
+    with sqlite3.connect(db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE conversations (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                model TEXT NOT NULL,
+                name_locked INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO conversations
+                (name, model, name_locked, created_at, updated_at)
+                VALUES ('legacy', 'm', 0, 'now', 'now');
+            """
+        )
+
+    initialize_database(db)
+
+    with sqlite3.connect(db) as conn:
+        cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(conversations);")
+        }
+        assert "project_id" in cols
+        # The pre-existing chat now points at the Default project.
+        row = conn.execute(
+            "SELECT project_id FROM conversations WHERE name = 'legacy';"
+        ).fetchone()
+        default_pid = conn.execute(
+            "SELECT id FROM projects WHERE name = 'Default';"
+        ).fetchone()[0]
+        assert row[0] == default_pid
+
+
+def test_existing_default_project_preserved(tmp_path: Path) -> None:
+    """A second initialize_database call does NOT create another Default."""
+    db = tmp_path / "chats.db"
+    initialize_database(db)
+    initialize_database(db)
+    with sqlite3.connect(db) as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM projects WHERE name = 'Default';"
+        ).fetchone()[0]
+    assert count == 1
+
+
+def test_migration_idempotent_on_already_migrated_db(tmp_path: Path) -> None:
+    """Running initialize_database on an already-migrated DB is a no-op.
+
+    Specifically: the project_id column addition + table-rewrite must not
+    fire twice (would error on the second run because the column is now
+    present and the schema is correct).
+    """
+    db = tmp_path / "chats.db"
+    initialize_database(db)
+    # Second run must not raise — _ensure_conversations_project_id_column
+    # detects the existing column and short-circuits.
+    initialize_database(db)
+    with sqlite3.connect(db) as conn:
+        cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(conversations);")
+        }
+        assert "project_id" in cols

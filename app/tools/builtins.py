@@ -73,17 +73,43 @@ class _PathOutsideRoot(Exception):
     """
 
 
+def _active_workspace_root() -> Path | None:
+    """Return the workspace root the file tools should resolve against.
+
+    Phase 17: reads the per-turn ``current_workspace_root`` ContextVar set
+    by ``app.generation._run_generation``. Falls back to ``FILE_TOOL_ROOT``
+    when the var is unset — covering test code that calls the tools
+    directly without binding a project, and the
+    ``refresh_file_tools_registration``-popped case where the tools aren't
+    registered at all (so this branch is unreachable in production but
+    safe to keep for defensive direct invocations).
+    """
+    # Imported lazily to avoid a top-of-module circular import — both
+    # this module and ``app.projects`` are pulled in by various startup
+    # paths, and the local import keeps the dependency edge one-way.
+    from app.projects import current_workspace_root
+
+    root = current_workspace_root.get()
+    if root is None:
+        root = file_tool_root()
+    return root
+
+
 def _resolve_within_root(path: str) -> Path:
-    """Resolve a model-supplied path against the workspace root, rejecting escapes.
+    """Resolve a model-supplied path against the active workspace root, rejecting escapes.
+
+    Phase 17: the active root comes from the per-turn ContextVar set by
+    the generation producer (see :func:`_active_workspace_root`). When no
+    project-scoped root is in effect, falls back to ``FILE_TOOL_ROOT``.
 
     Args:
         path: Path as the model supplied it, interpreted relative to the
-            configured root. An absolute path escapes the root (joining
-            an absolute path onto the root discards the root), so it is
-            rejected by the containment check below.
+            active workspace root. An absolute path escapes the root
+            (joining an absolute path onto the root discards the root),
+            so it is rejected by the containment check below.
 
     Returns:
-        The fully-resolved absolute ``Path`` contained by the root.
+        The fully-resolved absolute ``Path`` contained by the active root.
 
     Raises:
         _PathOutsideRoot: When no root is configured, or the resolved
@@ -91,7 +117,7 @@ def _resolve_within_root(path: str) -> Path:
             traversal, absolute paths, and symlink escapes (``resolve()``
             follows symlinks before the check).
     """
-    root = file_tool_root()
+    root = _active_workspace_root()
     if root is None:
         # Unreachable in production: the tools are popped from the
         # registry when the root is unset. Defensive in case a caller
@@ -236,7 +262,10 @@ def search_files(pattern: str, path: str = ".") -> str:
         return f'No files matching "{pattern}" in \'{path}\'.'
     total = len(matches)
     truncated = total > _SEARCH_CAP
-    root = file_tool_root()
+    # Phase 17: same resolution rule as _resolve_within_root — the active
+    # workspace is the per-turn ContextVar set by the producer, falling
+    # back to FILE_TOOL_ROOT.
+    root = _active_workspace_root()
     lines: list[str] = []
     for m in matches[:_SEARCH_CAP]:
         try:

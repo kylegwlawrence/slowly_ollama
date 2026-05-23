@@ -20,10 +20,13 @@
      leaks onto the <select>'s `hx-get="/models"` and pushes
      `/models?model=` into the address bar on page load. The URL update
      after a successful chat creation is driven by the server's
-     `HX-Push-Url: /chats/{id}` response header instead — see
-     `create_chat_endpoint` in app/routes.py. #}
+     `HX-Push-Url: /projects/{pid}/chats/{cid}` response header instead
+     — see `create_project_chat_endpoint` in app/routes.py. #}
+  {# Phase 17: the composer is always project-scoped. `project` is
+     supplied by the route's template context (project_chats_endpoint
+     / project_new_chat_endpoint / project_chat_panel_endpoint). #}
   <form class="composer__form"
-        hx-post="/chats"
+        hx-post="/projects/{{ project.id }}/chats"
         hx-target="#main"
         hx-swap="innerHTML">
     {# Shared with the in-chat message form so both pills behave
@@ -50,11 +53,17 @@
          Normal model for when the user switches back. The selection submits as
          the `agent` form field with POST /chats. #}
       <label class="composer__toolbar-label" for="composer-agent">Agent</label>
-      {% set selected_agent = "" %}
+      {# Phase 17: pre-select the project's default agent (if any). The
+         underlying _agent_select.html honors `selected_agent`. #}
+      {% set selected_agent = project_default_agent|default("") or "" %}
       {% set select_id = "composer-agent" %}
       {% include "_agent_select.html" %}
       <label class="composer__toolbar-label" for="composer-model">Model</label>
+      {# Phase 17: data-default attribute is read by app.js after the
+         /models response loads — it pre-selects the project's default
+         model when one matches a loaded option. #}
       <select id="composer-model" name="model" required
+              data-default="{{ project_default_model|default('') or '' }}"
               hx-get="/models"
               hx-trigger="load"
               hx-target="this"

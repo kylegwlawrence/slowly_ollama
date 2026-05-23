@@ -1,0 +1,31 @@
+{# Sidebar shown on /projects (the projects index) and /settings
+   (global settings). Minimal navigation: a "Projects" home link, a
+   "Settings" footer link, and the dark-mode toggle. #}
+<aside class="sidebar">
+  <div class="sidebar__header">
+    <h1 class="sidebar__logo">olliellama</h1>
+  </div>
+  <nav class="sidebar__projects-nav">
+    <a class="sidebar__home" href="/projects"
+       hx-get="/projects" hx-target="#main"
+       hx-swap="innerHTML" hx-push-url="/projects">
+      <span class="material-symbols-outlined">folder</span>
+      Projects
+    </a>
+  </nav>
+  <div class="sidebar__footer">
+    <a class="sidebar__settings" href="/settings"
+       hx-get="/settings"
+       hx-target="#main"
+       hx-swap="innerHTML"
+       hx-push-url="/settings">
+      <span class="material-symbols-outlined">settings</span>
+      Settings
+    </a>
+    {# Icon text and click handler are wired in app.js — see the
+       theme-toggle section. #}
+    <button class="theme-toggle" aria-label="Toggle dark mode" type="button">
+      <span class="material-symbols-outlined theme-toggle__icon">dark_mode</span>
+    </button>
+  </div>
+</aside>

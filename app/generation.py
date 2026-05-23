@@ -38,6 +38,7 @@ import httpx
 
 from app import ollama, queries, rag_servers as _rag_module, render
 from app.ollama import OllamaProtocolError, OllamaUnavailable
+from app.projects import current_workspace_root, project_workspace_root
 from app.templates import templates
 from app.tools import (
     RAG_TOOL_NAME,
@@ -515,9 +516,16 @@ async def _maybe_emit_title(
     # Bare `hx-swap-oob="true"` tells HTMX to match by id and swap in
     # place — the existing `#chat-{id}` row gets replaced with this
     # renamed version when the SSE `title` event lands.
+    # Phase 17: pass the owning project so the rendered row's link URL
+    # is project-scoped (matches the canonical URL the user is on).
+    try:
+        project = queries.get_project_for_conversation(db, conversation_id)
+    except LookupError:
+        project = None
     row_html = templates.get_template("_chat_item.html").render(
         chat=updated,
         active_chat_id=updated.id,
+        project=project,
         oob_swap="true",
     )
     await _emit(state, "title", row_html)
@@ -688,6 +696,26 @@ async def _run_generation(
     chunks: list[str] = []
     persisted_or_errored = False
 
+    # Phase 17: scope the file tools to this chat's project workspace
+    # for the duration of the turn. Resolve the project NOW so the
+    # ContextVar set/reset can wrap the whole producer body — file-tool
+    # calls inside this region see the per-project root via
+    # `_active_workspace_root` (with fallback to FILE_TOOL_ROOT when the
+    # project workspace can't be resolved, e.g. FILE_TOOL_ROOT unset).
+    try:
+        _project = queries.get_project_for_conversation(db, conversation_id)
+        ws_root = project_workspace_root(_project)
+        if ws_root is not None:
+            # Lazily create so a brand-new project's workspace exists
+            # by the time a tool tries to read/write within it.
+            ws_root.mkdir(parents=True, exist_ok=True)
+    except LookupError:
+        # Defensive: post-phase-17, every chat has a project. If we
+        # somehow can't resolve one, degrade to the FILE_TOOL_ROOT
+        # fallback instead of crashing the turn.
+        ws_root = None
+    ws_token = current_workspace_root.set(ws_root)
+
     try:
         for iteration in range(tool_iteration_cap):
             try:
@@ -857,6 +885,12 @@ async def _run_generation(
         )
         await _emit(state, "done", done_card_oobs + final_html)
     finally:
+        # Phase 17: reset the workspace ContextVar BEFORE the safety-net
+        # helpers run. Resetting here (not in a nested finally) keeps the
+        # producer body's try/finally pyramid shallow; the helpers
+        # below don't depend on the per-turn workspace, so the order is
+        # safe.
+        current_workspace_root.reset(ws_token)
         # Phase 12e.1 safety net. The helpers fire on every exit path —
         # CancelledError, GeneratorExit, unhandled exception, normal
         # completion, OR Ollama errors. `maybe_persist_partial` no-ops

@@ -1,0 +1,16 @@
+{# One row in the projects index. The whole tile is a link to the
+   project's Chats tab. HTMX swaps the main panel; the address bar
+   updates via hx-push-url. #}
+<li class="project-item" data-project-id="{{ project.id }}">
+  <a class="project-item__link"
+     href="/projects/{{ project.id }}/chats"
+     hx-get="/projects/{{ project.id }}/chats"
+     hx-target="#main"
+     hx-swap="innerHTML"
+     hx-push-url="true">
+    <div class="project-item__name">{{ project.name }}</div>
+    {% if project.description %}
+      <div class="project-item__desc">{{ project.description }}</div>
+    {% endif %}
+  </a>
+</li>

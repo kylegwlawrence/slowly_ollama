@@ -47,6 +47,9 @@ class Conversation:
             chat (a key in `app.agents.AGENTS`), or None for the default
             "Normal" plain-chat behavior. Persisted so the picker + indicator
             survive reloads.
+        project_id: The project this chat belongs to (phase 17). NOT NULL on
+            the schema side: the migration assigns every legacy chat to the
+            Default project before enforcing the FK.
     """
 
     id: int
@@ -55,9 +58,52 @@ class Conversation:
     name_locked: bool
     temperature: float
     tool_iteration_cap: int
+    project_id: int
     created_at: datetime
     updated_at: datetime
     active_agent: str | None = None
+
+
+@dataclass(frozen=True)
+class Project:
+    """One row of the ``projects`` table (phase 17).
+
+    Attributes:
+        id: Auto-assigned primary key.
+        name: Human-readable display name, unique across the projects table.
+        description: Free-text description (may be empty).
+        workspace_subdir: Path segment under ``FILE_TOOL_ROOT`` — the
+            project's workspace lives at ``FILE_TOOL_ROOT/<subdir>/``.
+            Slugified from ``name`` at create time; never edited.
+        default_model: Pre-fill for the model dropdown on new chats in this
+            project. ``None`` means no project default (use the global one).
+        default_agent: Pre-selection for the agent dropdown on new chats.
+            ``None`` means Normal (no agent).
+        created_at, updated_at: ISO 8601 UTC timestamps.
+    """
+
+    id: int
+    name: str
+    description: str
+    workspace_subdir: str
+    default_model: str | None
+    default_agent: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class _Unset:
+    """Sentinel marker for "argument intentionally omitted" in updaters.
+
+    Allows ``update_project`` to distinguish "this kwarg was not passed
+    (leave the field alone)" from "this kwarg was passed as ``None`` (set
+    the field to SQL NULL)". A plain ``None`` default cannot tell the two
+    apart, but clearing ``default_model`` / ``default_agent`` from the UI
+    must persist as NULL, not be silently ignored.
+    """
+
+
+_UNSET = _Unset()
 
 
 @dataclass(frozen=True)
@@ -109,6 +155,7 @@ def _row_to_conversation(row: sqlite3.Row) -> Conversation:
         name_locked=bool(row["name_locked"]),
         temperature=float(row["temperature"]),
         tool_iteration_cap=int(row["tool_iteration_cap"]),
+        project_id=int(row["project_id"]),
         created_at=datetime.fromisoformat(row["created_at"]),
         updated_at=datetime.fromisoformat(row["updated_at"]),
         active_agent=row["active_agent"],
@@ -135,6 +182,8 @@ def create_conversation(
     conn: sqlite3.Connection,
     name: str,
     model: str,
+    *,
+    project_id: int | None = None,
     temperature: float = 0.8,
     tool_iteration_cap: int = 5,
     active_agent: str | None = None,
@@ -145,6 +194,11 @@ def create_conversation(
         conn: Open SQLite connection.
         name: Human-readable conversation name.
         model: Ollama model identifier this conversation will use.
+        project_id: The project this chat lives in (phase 17 — every chat
+            belongs to exactly one project). When omitted, the chat is
+            assigned to the lowest-id project (the "Default" the migration
+            creates). The FK enforces existence; pass an explicit value when
+            you care which project owns the chat.
         temperature: Sampling temperature passed to Ollama (0.0–2.0).
         tool_iteration_cap: Per-turn cap on single-agent tool-call
             iterations (caller should clamp to 1–10).
@@ -154,7 +208,23 @@ def create_conversation(
     Returns:
         The newly created Conversation, populated with its assigned id and
         timestamps.
+
+    Raises:
+        LookupError: When ``project_id`` is omitted AND no projects exist
+            (which should never happen in production — initialize_database
+            guarantees the Default project).
     """
+    if project_id is None:
+        # Fallback: assume the Default project. Keeps the function ergonomic
+        # for tests + tools that don't care which project a chat lands in.
+        row = conn.execute(
+            "SELECT id FROM projects ORDER BY id LIMIT 1;"
+        ).fetchone()
+        if row is None:
+            raise LookupError(
+                "Cannot create a conversation: no projects exist."
+            )
+        project_id = row[0] if not isinstance(row, sqlite3.Row) else row["id"]
     now = _now_iso()
     with conn:
         # RETURNING (SQLite 3.35+) avoids a follow-up SELECT to pick up the
@@ -163,11 +233,15 @@ def create_conversation(
         # free to refresh the placeholder until the user manually renames.
         row = conn.execute(
             "INSERT INTO conversations"
-            " (name, model, name_locked, temperature, tool_iteration_cap, active_agent, created_at, updated_at)"
-            " VALUES (?, ?, 0, ?, ?, ?, ?, ?)"
+            " (name, model, name_locked, temperature, tool_iteration_cap,"
+            "  active_agent, project_id, created_at, updated_at)"
+            " VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?)"
             " RETURNING id, name, model, name_locked, temperature, tool_iteration_cap,"
-            "          active_agent, created_at, updated_at;",
-            (name, model, temperature, tool_iteration_cap, active_agent, now, now),
+            "          active_agent, project_id, created_at, updated_at;",
+            (
+                name, model, temperature, tool_iteration_cap, active_agent,
+                project_id, now, now,
+            ),
         ).fetchone()
     return _row_to_conversation(row)
 
@@ -193,7 +267,7 @@ def get_conversation(
     """
     row = conn.execute(
         "SELECT id, name, model, name_locked, temperature, tool_iteration_cap,"
-        " active_agent, created_at, updated_at"
+        " active_agent, project_id, created_at, updated_at"
         " FROM conversations WHERE id = ?;",
         (conversation_id,),
     ).fetchone()
@@ -214,9 +288,37 @@ def list_conversations(conn: sqlite3.Connection) -> list[Conversation]:
     """
     rows = conn.execute(
         "SELECT id, name, model, name_locked, temperature, tool_iteration_cap,"
-        " active_agent, created_at, updated_at"
+        " active_agent, project_id, created_at, updated_at"
         " FROM conversations"
         " ORDER BY updated_at DESC, id DESC;"
+    ).fetchall()
+    return [_row_to_conversation(r) for r in rows]
+
+
+def list_conversations_in_project(
+    conn: sqlite3.Connection, project_id: int
+) -> list[Conversation]:
+    """Return every conversation in a project, most-recently-updated first.
+
+    Phase 17: powers the per-project sidebar. Same ordering convention as
+    ``list_conversations`` (updated_at DESC, id DESC) so the most recently
+    touched chat floats to the top.
+
+    Args:
+        conn: Open SQLite connection.
+        project_id: The project whose conversations to list.
+
+    Returns:
+        Conversations in the project, ordered by ``updated_at DESC``. Empty
+        list when the project exists but has no chats yet (or doesn't exist).
+    """
+    rows = conn.execute(
+        "SELECT id, name, model, name_locked, temperature, tool_iteration_cap,"
+        " active_agent, project_id, created_at, updated_at"
+        " FROM conversations"
+        " WHERE project_id = ?"
+        " ORDER BY updated_at DESC, id DESC;",
+        (project_id,),
     ).fetchall()
     return [_row_to_conversation(r) for r in rows]
 
@@ -250,7 +352,7 @@ def rename_conversation(
             " SET name = ?, name_locked = 1, updated_at = ?"
             " WHERE id = ?"
             " RETURNING id, name, model, name_locked, temperature, tool_iteration_cap,"
-            "          active_agent, created_at, updated_at;",
+            "          active_agent, project_id, created_at, updated_at;",
             (new_name, now, conversation_id),
         ).fetchone()
     if row is None:
@@ -287,7 +389,7 @@ def set_name_auto(
             " SET name = ?, updated_at = ?"
             " WHERE id = ? AND name_locked = 0"
             " RETURNING id, name, model, name_locked, temperature, tool_iteration_cap,"
-            "          active_agent, created_at, updated_at;",
+            "          active_agent, project_id, created_at, updated_at;",
             (new_name, now, conversation_id),
         ).fetchone()
     return _row_to_conversation(row) if row is not None else None
@@ -333,7 +435,7 @@ def set_conversation_temperature(
             " SET temperature = ?"
             " WHERE id = ?"
             " RETURNING id, name, model, name_locked, temperature, tool_iteration_cap,"
-            "          active_agent, created_at, updated_at;",
+            "          active_agent, project_id, created_at, updated_at;",
             (temperature, conversation_id),
         ).fetchone()
     if row is None:
@@ -363,7 +465,7 @@ def set_conversation_tool_iteration_cap(
             " SET tool_iteration_cap = ?"
             " WHERE id = ?"
             " RETURNING id, name, model, name_locked, temperature, tool_iteration_cap,"
-            "          active_agent, created_at, updated_at;",
+            "          active_agent, project_id, created_at, updated_at;",
             (tool_iteration_cap, conversation_id),
         ).fetchone()
     if row is None:
@@ -399,7 +501,7 @@ def set_active_agent(
             " SET active_agent = ?"
             " WHERE id = ?"
             " RETURNING id, name, model, name_locked, temperature, tool_iteration_cap,"
-            "          active_agent, created_at, updated_at;",
+            "          active_agent, project_id, created_at, updated_at;",
             (agent_name, conversation_id),
         ).fetchone()
     if row is None:
@@ -556,6 +658,275 @@ def count_assistant_messages(
         (conversation_id,),
     ).fetchone()
     return row[0]
+
+
+# ---------------------------------------------------------------------------
+# Phase 17: projects
+# ---------------------------------------------------------------------------
+
+
+_PROJECT_COLS = (
+    "id, name, description, workspace_subdir, default_model, default_agent,"
+    " created_at, updated_at"
+)
+
+
+def _row_to_project(row: sqlite3.Row) -> Project:
+    """Map a ``projects`` row to the :class:`Project` dataclass."""
+    return Project(
+        id=row["id"],
+        name=row["name"],
+        description=row["description"],
+        workspace_subdir=row["workspace_subdir"],
+        default_model=row["default_model"],
+        default_agent=row["default_agent"],
+        created_at=datetime.fromisoformat(row["created_at"]),
+        updated_at=datetime.fromisoformat(row["updated_at"]),
+    )
+
+
+def slugify_project_name(name: str) -> str:
+    """Convert a project name to a filesystem-safe workspace slug.
+
+    Lowercases, replaces runs of non-``[a-z0-9]`` with a single hyphen,
+    strips leading/trailing hyphens, caps at 60 chars. Falls back to
+    ``"project"`` when the result would be empty (e.g. the name was all
+    punctuation).
+
+    The caller (``create_project``) is responsible for ensuring uniqueness
+    against existing ``workspace_subdir`` values — on collision it appends
+    ``-2``, ``-3``, ... until unique.
+
+    Args:
+        name: Human-readable project name (caller supplies; not modified).
+
+    Returns:
+        A best-effort slug suitable for use as a single path segment.
+    """
+    import re
+
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:60]
+    return slug or "project"
+
+
+def list_projects(conn: sqlite3.Connection) -> list[Project]:
+    """Return every project, alphabetically by name (case-insensitive).
+
+    Args:
+        conn: Open SQLite connection.
+
+    Returns:
+        All projects ordered by ``name COLLATE NOCASE ASC``. The projects-
+        index page surfaces this order; alphabetical is a more stable choice
+        than created_at since the user thinks of projects by name.
+    """
+    rows = conn.execute(
+        f"SELECT {_PROJECT_COLS} FROM projects"
+        f" ORDER BY name COLLATE NOCASE ASC;"
+    ).fetchall()
+    return [_row_to_project(r) for r in rows]
+
+
+def get_project(conn: sqlite3.Connection, project_id: int) -> Project:
+    """Look up a project by id.
+
+    Args:
+        conn: Open SQLite connection.
+        project_id: Id to look up.
+
+    Returns:
+        The matching Project.
+
+    Raises:
+        LookupError: When no project exists with that id.
+    """
+    row = conn.execute(
+        f"SELECT {_PROJECT_COLS} FROM projects WHERE id = ?;", (project_id,)
+    ).fetchone()
+    if row is None:
+        raise LookupError(f"Project {project_id} not found.")
+    return _row_to_project(row)
+
+
+def get_project_for_conversation(
+    conn: sqlite3.Connection, conversation_id: int
+) -> Project:
+    """Return the project that owns ``conversation_id``.
+
+    Used by the generation producer (to scope file tools) and by the
+    backcompat ``/chats/{id}`` redirect (to compute the canonical project-
+    scoped URL).
+
+    Args:
+        conn: Open SQLite connection.
+        conversation_id: Id of the chat to resolve.
+
+    Returns:
+        The owning Project.
+
+    Raises:
+        LookupError: When the conversation does not exist.
+    """
+    row = conn.execute(
+        "SELECT p.id, p.name, p.description, p.workspace_subdir,"
+        " p.default_model, p.default_agent, p.created_at, p.updated_at"
+        " FROM projects p JOIN conversations c ON c.project_id = p.id"
+        " WHERE c.id = ?;",
+        (conversation_id,),
+    ).fetchone()
+    if row is None:
+        raise LookupError(f"Conversation {conversation_id} not found.")
+    return _row_to_project(row)
+
+
+def count_projects(conn: sqlite3.Connection) -> int:
+    """Return the total number of projects.
+
+    Used by ``delete_project_endpoint`` to refuse deletion when one project
+    remains (the app needs a project as the home view).
+    """
+    return conn.execute("SELECT COUNT(*) FROM projects;").fetchone()[0]
+
+
+def create_project(
+    conn: sqlite3.Connection,
+    name: str,
+    description: str = "",
+    default_model: str | None = None,
+    default_agent: str | None = None,
+) -> Project:
+    """Insert a new project; slugify the workspace subdir from ``name``.
+
+    On slug collision (rare — two names that normalize to the same slug),
+    appends ``"-2"``, ``"-3"``, ... until unique. The ``name`` itself must
+    also be unique (UNIQUE constraint on the column); a duplicate raises
+    ``sqlite3.IntegrityError`` which the route layer catches and maps to 409.
+
+    Args:
+        conn: Open SQLite connection.
+        name: Display name. Caller is responsible for ``.strip()`` /
+            length-validation.
+        description: Free-text description; may be empty.
+        default_model: Pre-fill for new chats. ``None`` means use the
+            global default.
+        default_agent: Pre-selection for new chats. ``None`` means Normal.
+
+    Returns:
+        The newly created Project.
+
+    Raises:
+        sqlite3.IntegrityError: When ``name`` already exists.
+    """
+    now = _now_iso()
+    base = slugify_project_name(name)
+    slug = base
+    n = 2
+    # Find an unused slug. The loop's an upper bound of "how many
+    # projects could share a base slug"; we cap nowhere because a real
+    # user can't realistically create thousands of similarly-named
+    # projects.
+    while (
+        conn.execute(
+            "SELECT 1 FROM projects WHERE workspace_subdir = ?;", (slug,)
+        ).fetchone()
+        is not None
+    ):
+        slug = f"{base}-{n}"
+        n += 1
+    with conn:
+        row = conn.execute(
+            "INSERT INTO projects"
+            " (name, description, workspace_subdir, default_model, default_agent,"
+            "  created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)"
+            f" RETURNING {_PROJECT_COLS};",
+            (name, description, slug, default_model, default_agent, now, now),
+        ).fetchone()
+    return _row_to_project(row)
+
+
+def update_project(
+    conn: sqlite3.Connection,
+    project_id: int,
+    *,
+    name: str | None = None,
+    description: str | None = None,
+    default_model: "str | None | _Unset" = _UNSET,
+    default_agent: "str | None | _Unset" = _UNSET,
+) -> Project:
+    """Update editable project fields. Each kwarg is optional.
+
+    ``default_model`` and ``default_agent`` use a sentinel (``_UNSET``) to
+    distinguish "not passed" from "set to NULL". A plain ``None`` default
+    would silently swallow the "clear this field" intent, but the settings
+    form must be able to clear a previously-set default.
+
+    Args:
+        conn: Open SQLite connection.
+        project_id: Id of the project to update.
+        name: New display name (``None`` = leave alone).
+        description: New description (``None`` = leave alone).
+        default_model: New default model, ``None`` to clear, or the
+            sentinel ``_UNSET`` (default) to leave alone.
+        default_agent: New default agent name, ``None`` to clear, or the
+            sentinel ``_UNSET`` (default) to leave alone.
+
+    Returns:
+        The updated Project (or unchanged Project when no kwargs were passed).
+
+    Raises:
+        LookupError: When the project does not exist.
+        sqlite3.IntegrityError: When ``name`` collides with another project.
+    """
+    sets: list[str] = []
+    args: list = []
+    if name is not None:
+        sets.append("name = ?")
+        args.append(name)
+    if description is not None:
+        sets.append("description = ?")
+        args.append(description)
+    if not isinstance(default_model, _Unset):
+        sets.append("default_model = ?")
+        args.append(default_model)
+    if not isinstance(default_agent, _Unset):
+        sets.append("default_agent = ?")
+        args.append(default_agent)
+    if not sets:
+        # No-op update — return the current row rather than performing a
+        # bare ``UPDATE ... SET updated_at = ?`` which would falsely bump
+        # the timestamp.
+        return get_project(conn, project_id)
+    sets.append("updated_at = ?")
+    args.append(_now_iso())
+    args.append(project_id)
+    with conn:
+        row = conn.execute(
+            f"UPDATE projects SET {', '.join(sets)} WHERE id = ?"
+            f" RETURNING {_PROJECT_COLS};",
+            tuple(args),
+        ).fetchone()
+    if row is None:
+        raise LookupError(f"Project {project_id} not found.")
+    return _row_to_project(row)
+
+
+def delete_project(conn: sqlite3.Connection, project_id: int) -> None:
+    """Delete a project and (via FK cascade) every conversation it owns.
+
+    Idempotent: deleting a non-existent project is a no-op (mirrors
+    ``delete_conversation``). The on-disk workspace under
+    ``FILE_TOOL_ROOT/<workspace_subdir>`` is PRESERVED — the user can
+    recover files from a deleted project even though the row is gone.
+
+    Args:
+        conn: Open SQLite connection.
+        project_id: Id of the project to delete.
+    """
+    with conn:
+        conn.execute(
+            "DELETE FROM projects WHERE id = ?;", (project_id,)
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,32 @@
+{# Main-panel content for /projects.
+
+   Header + create form + alphabetical list of projects. The create
+   form posts to /projects; on success the server replies with a new
+   <li> that gets OOB-prepended (afterbegin) into #projects-list, plus
+   an HX-Push-Url redirect to the new project's chats tab. #}
+<section class="projects-index">
+  <header class="projects-index__header">
+    <h2>Projects</h2>
+  </header>
+  <form class="projects-index__create"
+        hx-post="/projects"
+        hx-target="#projects-list"
+        hx-swap="afterbegin">
+    <label>
+      Name
+      <input type="text" name="name" required maxlength="80"
+             placeholder="My new project">
+    </label>
+    <label>
+      Description
+      <input type="text" name="description" maxlength="200"
+             placeholder="(optional)">
+    </label>
+    <button type="submit">Create project</button>
+  </form>
+  <ul id="projects-list" class="projects-list">
+    {% for project in projects %}
+      {% include "_project_item.html" %}
+    {% endfor %}
+  </ul>
+</section>

@@ -16,9 +16,11 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+from app import queries
 from app.connection import open_connection
 from app.db import initialize_database
 from app.ollama import create_client
+from app.projects import migrate_legacy_workspace
 from app.routes import router
 # Importing app.routes (above) transitively imports app.tools.rag, which
 # registers the `query_rag` tool. We re-import the refresh helper here
@@ -62,6 +64,12 @@ async def lifespan(app: FastAPI):
     ollama_client = create_client()
     app.state.db = db
     app.state.ollama_client = ollama_client
+
+    # Phase 17: one-shot move of pre-projects FILE_TOOL_ROOT contents into
+    # FILE_TOOL_ROOT/default/. Gated by an app_settings flag so re-runs are
+    # no-ops. Runs after open_connection() so we have the shared DB to
+    # read/write the flag through.
+    migrate_legacy_workspace(db, queries)
 
     try:
         yield

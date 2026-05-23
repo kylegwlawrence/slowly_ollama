@@ -45,10 +45,16 @@ def test_open_connection_uses_row_factory(tmp_path: Path) -> None:
     initialize_database(db_path)
 
     with open_connection(db_path) as conn:
+        # Phase 17: every conversation needs a project_id (FK NOT NULL).
+        # The migration created a Default project; reuse it.
+        default_pid = conn.execute(
+            "SELECT id FROM projects ORDER BY id LIMIT 1;"
+        ).fetchone()[0]
         conn.execute(
             "INSERT INTO conversations"
-            " (id, name, model, created_at, updated_at)"
-            " VALUES (1, 'c', 'llama3', '2025-01-01', '2025-01-01');"
+            " (id, name, model, project_id, created_at, updated_at)"
+            " VALUES (1, 'c', 'llama3', ?, '2025-01-01', '2025-01-01');",
+            (default_pid,),
         )
         row = conn.execute(
             "SELECT id, name, model FROM conversations WHERE id = 1;"
@@ -75,11 +81,18 @@ def test_open_connection_usable_across_threads(tmp_path: Path) -> None:
     counts: list[int] = []
 
     with open_connection(db_path) as conn:
+        # Phase 17: read the Default project id on the main thread; the
+        # worker thread reuses it for the chat insert (FK NOT NULL).
+        default_pid = conn.execute(
+            "SELECT id FROM projects ORDER BY id LIMIT 1;"
+        ).fetchone()[0]
+
         def worker() -> None:
             conn.execute(
                 "INSERT INTO conversations"
-                " (id, name, model, created_at, updated_at)"
-                " VALUES (1, 'c', 'llama3', '2025-01-01', '2025-01-01');"
+                " (id, name, model, project_id, created_at, updated_at)"
+                " VALUES (1, 'c', 'llama3', ?, '2025-01-01', '2025-01-01');",
+                (default_pid,),
             )
             row = conn.execute("SELECT COUNT(*) FROM conversations;").fetchone()
             counts.append(row[0])

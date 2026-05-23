@@ -1,0 +1,23 @@
+{# Three-tab nav for a project: Chats / Files / Settings. `active_tab`
+   controls the underline state. Each link is HTMX-swappable into #main
+   and pushes the URL so reload restores the same tab. #}
+<nav class="project-tabs" aria-label="Project sections">
+  <a class="project-tabs__tab{% if active_tab == 'chats' %} project-tabs__tab--active{% endif %}"
+     href="/projects/{{ project.id }}/chats"
+     hx-get="/projects/{{ project.id }}/chats"
+     hx-target="#main"
+     hx-swap="innerHTML"
+     hx-push-url="true">Chats</a>
+  <a class="project-tabs__tab{% if active_tab == 'files' %} project-tabs__tab--active{% endif %}"
+     href="/projects/{{ project.id }}/files"
+     hx-get="/projects/{{ project.id }}/files"
+     hx-target="#main"
+     hx-swap="innerHTML"
+     hx-push-url="true">Files</a>
+  <a class="project-tabs__tab{% if active_tab == 'settings' %} project-tabs__tab--active{% endif %}"
+     href="/projects/{{ project.id }}/settings"
+     hx-get="/projects/{{ project.id }}/settings"
+     hx-target="#main"
+     hx-swap="innerHTML"
+     hx-push-url="true">Settings</a>
+</nav>
