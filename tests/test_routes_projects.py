@@ -260,7 +260,12 @@ def test_patch_project_missing_404(make_client: ClientFactory) -> None:
 def test_delete_project_cascades_and_redirects(
     make_client: ClientFactory,
 ) -> None:
-    """DELETE /projects/{id} removes the project + cascades chats, sets HX-Location."""
+    """DELETE /projects/{id} removes the project + cascades chats, sets HX-Redirect.
+
+    HX-Redirect (not HX-Location): the former triggers a true browser
+    navigation, the latter an ajax swap into <body> which would replace
+    the sidebar with just the /projects fragment.
+    """
     with make_client(_ollama_unreachable) as client:
         create = client.post("/projects", data={"name": "Doomed"})
         marker = 'data-project-id="'
@@ -269,7 +274,8 @@ def test_delete_project_cascades_and_redirects(
         pid = int(create.text[start:end])
         response = client.delete(f"/projects/{pid}")
     assert response.status_code == 200
-    assert response.headers.get("HX-Location") == "/projects"
+    assert response.headers.get("HX-Redirect") == "/projects"
+    assert "HX-Location" not in response.headers
 
 
 def test_delete_last_project_returns_409(
