@@ -49,6 +49,22 @@ DB_PATH=~/Library/Application Support/ollama_slowly/chats.db
 - **`DB_PATH`** — path to the SQLite database file. The `~` expands to your home directory. The directory is created automatically on first run.
 - **`FILE_TOOL_ROOT`** — (optional) absolute path to a directory agents may read, write, and search. When unset, the file tools (`read_file`, `write_file`, `list_directory`, `search_files`) are removed from the registry and agents fall back to tool-less mode.
 
+### 4. Set up the agent workspace (optional)
+
+The Content Generator agent can read, write, and search files — but only inside a sandboxed directory you choose. To enable it:
+
+```bash
+mkdir -p ~/olliellama_workspace
+```
+
+Then add the path to your `.env`:
+
+```
+FILE_TOOL_ROOT=~/olliellama_workspace
+```
+
+Any path works — use an existing project folder, a notes directory, whatever you want the agent to have access to. Restart the app after changing this setting.
+
 ---
 
 ## Starting the app
