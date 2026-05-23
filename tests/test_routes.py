@@ -1787,6 +1787,57 @@ def test_new_composer_renders_tool_iteration_cap_input(
     assert 'name="tool_iteration_cap"' in composer.text
 
 
+def test_settings_renders_default_model_select(
+    make_client: ClientFactory,
+) -> None:
+    """GET /settings shows the default-model select (no value set yet)."""
+    with make_client(_ollama_unreachable) as client:
+        response = client.get("/settings", headers={"HX-Request": "true"})
+
+    assert response.status_code == 200
+    assert 'hx-patch="/settings/default-model"' in response.text
+    assert 'name="model"' in response.text
+
+
+def test_set_default_model_persists(
+    make_client: ClientFactory,
+) -> None:
+    """PATCH /settings/default-model returns 204 and the new value
+    is reflected as data-default on a subsequent /settings render."""
+    with make_client(_ollama_unreachable) as client:
+        patch = client.patch(
+            "/settings/default-model", data={"model": "granite4.1:8b"}
+        )
+        assert patch.status_code == 204
+
+        settings = client.get("/settings", headers={"HX-Request": "true"})
+    assert 'data-default="granite4.1:8b"' in settings.text
+
+
+def test_set_default_model_clears_on_missing_field(
+    make_client: ClientFactory,
+) -> None:
+    """Posting without a model field (the empty-option case from the
+    browser select) clears the setting."""
+    with make_client(_ollama_unreachable) as client:
+        client.patch("/settings/default-model", data={"model": "granite4.1:8b"})
+        patch = client.patch("/settings/default-model", data={})
+        assert patch.status_code == 204
+        settings = client.get("/settings", headers={"HX-Request": "true"})
+    assert 'data-default=""' in settings.text
+
+
+def test_new_composer_reflects_global_default_model(
+    make_client: ClientFactory,
+) -> None:
+    """The empty-state composer seeds its model select data-default from
+    the global default when no project default is set."""
+    with make_client(_ollama_unreachable) as client:
+        client.patch("/settings/default-model", data={"model": "granite4.1:8b"})
+        composer = client.get(f"/projects/{_default_project_id()}/chats/new")
+    assert 'data-default="granite4.1:8b"' in composer.text
+
+
 def test_chat_panel_renders_tool_iteration_cap_for_capable_model(
     make_client: ClientFactory,
 ) -> None:

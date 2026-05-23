@@ -24,6 +24,7 @@ from app.queries import (
     get_chat_rag_states,
     get_chat_tool_states,
     get_conversation,
+    get_default_model,
     get_default_temperature,
     get_default_tool_iteration_cap,
     get_enabled_rag_server_names,
@@ -38,6 +39,7 @@ from app.queries import (
     set_active_agent,
     set_conversation_temperature,
     set_conversation_tool_iteration_cap,
+    set_default_model,
     set_default_temperature,
     set_default_tool_iteration_cap,
     set_name_auto,
@@ -473,6 +475,31 @@ def test_get_default_tool_iteration_cap_falls_back_on_malformed_row(
     """A non-numeric value reads as 5 rather than raising."""
     set_setting(conn, "default_tool_iteration_cap", "not-a-number")
     assert get_default_tool_iteration_cap(conn) == 5
+
+
+def test_default_model_default_is_none(conn: sqlite3.Connection) -> None:
+    """No row → None. No global default before the user sets one."""
+    assert get_default_model(conn) is None
+
+
+def test_default_model_round_trip(conn: sqlite3.Connection) -> None:
+    """A set value reads back unchanged on a subsequent read."""
+    set_default_model(conn, "granite4.1:8b")
+    assert get_default_model(conn) == "granite4.1:8b"
+
+
+def test_set_default_model_clears_on_none(conn: sqlite3.Connection) -> None:
+    """Passing None removes the setting so it returns None again."""
+    set_default_model(conn, "granite4.1:8b")
+    set_default_model(conn, None)
+    assert get_default_model(conn) is None
+
+
+def test_set_default_model_clears_on_empty_string(conn: sqlite3.Connection) -> None:
+    """Passing an empty string clears the setting (same as None)."""
+    set_default_model(conn, "granite4.1:8b")
+    set_default_model(conn, "")  # type: ignore[arg-type]
+    assert get_default_model(conn) is None
 
 
 # ---------------------------------------------------------------------------

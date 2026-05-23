@@ -180,6 +180,7 @@ def settings_endpoint(request: Request, db: DB) -> Response:
     servers = _rag_servers_module.list_servers(db)
     default_temperature = queries.get_default_temperature(db)
     default_tool_iteration_cap = queries.get_default_tool_iteration_cap(db)
+    default_model = queries.get_default_model(db)
     agents = list_agents()
     if request.headers.get("HX-Request"):
         return templates.TemplateResponse(
@@ -189,6 +190,7 @@ def settings_endpoint(request: Request, db: DB) -> Response:
                 "servers": servers,
                 "default_temperature": default_temperature,
                 "default_tool_iteration_cap": default_tool_iteration_cap,
+                "default_model": default_model,
                 "agents": agents,
             },
         )
@@ -213,6 +215,7 @@ def settings_endpoint(request: Request, db: DB) -> Response:
             "rag_servers": servers,
             "default_temperature": default_temperature,
             "default_tool_iteration_cap": default_tool_iteration_cap,
+            "default_model": default_model,
             "agents": agents,
         },
     )
@@ -1069,6 +1072,28 @@ async def set_default_tool_iteration_cap_endpoint(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@router.patch(
+    "/settings/default-model",
+    response_class=Response,
+)
+async def set_default_model_endpoint(
+    db: DB,
+    model: Annotated[str | None, Form()] = None,
+) -> Response:
+    """Persist the global default model for new chats.
+
+    Called by the default-model ``<select>`` in ``_settings.html`` via
+    ``hx-patch`` on the ``change`` event. An empty string or missing
+    field clears the setting so the composer falls back to whichever
+    model Ollama lists first. Only affects chats created after the
+    change; existing chats keep their own per-chat model.
+
+    Returns 204 No Content — the select already shows the chosen option.
+    """
+    queries.set_default_model(db, model or None)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 # ---------------------------------------------------------------------------
 # Phase 17: projects
 # ---------------------------------------------------------------------------
@@ -1427,6 +1452,7 @@ def _project_context(
     ctx = {
         "default_temperature": queries.get_default_temperature(db),
         "default_tool_iteration_cap": queries.get_default_tool_iteration_cap(db),
+        "global_default_model": queries.get_default_model(db),
         "agents": list_agents(),
     }
     if composer:
