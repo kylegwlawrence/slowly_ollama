@@ -35,6 +35,10 @@ def make_client(
     """TestClient factory with a fresh per-test DB and Ollama mock."""
     monkeypatch.setenv("DB_PATH", str(tmp_path / "chats.db"))
     monkeypatch.setenv("OLLAMA_HOST", "http://test")
+    # Prevent migrate_legacy_workspace from touching the real filesystem:
+    # the fresh temp DB has no workspace_v2_migrated flag, so without this
+    # the migration would run against the real FILE_TOOL_ROOT on every test.
+    monkeypatch.delenv("FILE_TOOL_ROOT", raising=False)
     saved = dict(app.dependency_overrides)
 
     def _make(handler):
