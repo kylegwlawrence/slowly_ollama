@@ -1648,8 +1648,14 @@ def delete_project_endpoint(project_id: int, db: DB) -> Response:
             status_code=status.HTTP_409_CONFLICT,
         )
     queries.delete_project(db, project_id)
+    # Phase 17b: use HX-Redirect, not HX-Location. HX-Location issues an
+    # ajax GET (carrying HX-Request) and swaps the response into <body> —
+    # which here means the /projects fragment replaces the entire body,
+    # wiping the sidebar. HX-Redirect sets window.location, so the
+    # browser does a real navigation, /projects renders as a full page
+    # with the sidebar intact, and history is clean.
     response = Response(content="", status_code=status.HTTP_200_OK)
-    response.headers["HX-Location"] = "/projects"
+    response.headers["HX-Redirect"] = "/projects"
     return response
 
 
