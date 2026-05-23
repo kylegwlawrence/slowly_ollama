@@ -1016,6 +1016,39 @@ def set_default_temperature(
     set_setting(conn, _DEFAULT_TEMPERATURE_KEY, str(clamped))
 
 
+_DEFAULT_MODEL_KEY = "default_model"
+
+
+def get_default_model(conn: sqlite3.Connection) -> str | None:
+    """Return the global default model for new chats, or None if unset.
+
+    Args:
+        conn: Open SQLite connection.
+    """
+    return get_setting(conn, _DEFAULT_MODEL_KEY, default=None)
+
+
+def set_default_model(conn: sqlite3.Connection, model: str | None) -> None:
+    """Persist the global default model for new chats.
+
+    Passing ``None`` or an empty string clears the setting so no
+    model is pre-selected by the global default.
+
+    Args:
+        conn: Open SQLite connection.
+        model: Ollama model identifier (e.g. ``"granite4.1:8b"``), or
+            ``None`` / empty string to clear.
+    """
+    if model:
+        set_setting(conn, _DEFAULT_MODEL_KEY, model)
+    else:
+        with conn:
+            conn.execute(
+                "DELETE FROM app_settings WHERE key = ?;",
+                (_DEFAULT_MODEL_KEY,),
+            )
+
+
 _DEFAULT_TOOL_ITERATION_CAP_KEY = "default_tool_iteration_cap"
 _DEFAULT_TOOL_ITERATION_CAP_FALLBACK = 5
 

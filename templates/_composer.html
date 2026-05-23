@@ -63,7 +63,7 @@
          /models response loads — it pre-selects the project's default
          model when one matches a loaded option. #}
       <select id="composer-model" name="model" required
-              data-default="{{ project_default_model|default('') or '' }}"
+              data-default="{{ project_default_model|default('') or global_default_model|default('') or '' }}"
               hx-get="/models"
               hx-trigger="load"
               hx-target="this"

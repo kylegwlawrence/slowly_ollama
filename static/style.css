@@ -215,11 +215,11 @@ body {
 
 .composer__toolbar select {
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   padding: var(--space-xs) var(--space-md);
   background: var(--bg);
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: 14px;
   /* Pico's select gets a generous height + bottom margin meant for
      full-page forms; reset to match the toolbar's compact baseline. */
   height: auto;

@@ -118,6 +118,39 @@
     </form>
   </section>
 
+  {# Global default model applied to newly-created chats when neither the
+     project nor the user overrides it. PATCHes on `change` with
+     `hx-swap="none"` — the select already shows the chosen option.
+     Selecting the blank "(none)" option clears the setting. The model list
+     is loaded from GET /models (same as the composer's select). #}
+  <section class="settings__section">
+    <h2 class="settings__section-title">Default model</h2>
+    <p class="settings__section-help">
+      The model new chats start with when no project default is set. Clearing
+      it means the composer shows whichever model Ollama lists first.
+    </p>
+    <form class="project-settings__form"
+          hx-patch="/settings/default-model"
+          hx-trigger="change"
+          hx-swap="none">
+      <label class="project-settings__field--full">
+        Default model (used when no project default is set)
+        <select name="model"
+                data-default="{{ default_model or '' }}"
+                hx-get="/models?prepend_blank=1"
+                hx-trigger="load"
+                hx-target="this"
+                hx-swap="innerHTML">
+          <option value=""{% if not default_model %} selected{% endif %}>(none — use first available)</option>
+          {% if default_model %}
+            <option value="{{ default_model }}" selected>{{ default_model }}</option>
+          {% endif %}
+          <option value="" disabled>Loading models…</option>
+        </select>
+      </label>
+    </form>
+  </section>
+
   {# Read-only view of each agent's system prompt so they're easy to locate
      without digging through source files. Normal has no system prompt (plain
      chat), so only the registered agents appear here. #}
