@@ -29,10 +29,10 @@ from app.tools import tool
 # headroom because remote fetches tend to be picked deliberately.
 _FETCH_CAP = 100_000
 
-# 15s total / 5s connect: same shape as RAG retrieval. GitHub's raw CDN
+# 30s total / 5s connect: same shape as RAG retrieval. GitHub's raw CDN
 # is fast when reachable; failing fast on a network blip is preferable
 # to making the user wait on a stalled fetch.
-_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
+_TIMEOUT = httpx.Timeout(30.0, connect=5.0)
 
 # https://github.com/{owner}/{repo}/blob/{ref}/{path}
 # {ref} can be a branch, tag, or commit SHA — captured as a single

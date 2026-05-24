@@ -331,7 +331,7 @@ has been violated and we learned the cost, the cost is named.
   `"RAG source <name> unreachable"` as the tool's result. The model
   sees the error, can choose to try a different source or proceed
   without retrieval. Don't bubble RAG errors to the user.
-- **15s timeout for RAG, 120s for chat.** Separate `httpx.Timeout`
+- **30s timeout for RAG, 120s for chat.** Separate `httpx.Timeout`
   per client. RAG is retrieval (FTS5 + ANN over local SQLite) — fast.
   Chat can be cold-load slow (10–30s on first request to a 7B model).
 - **The chat-stream timeout was tuned in Phase 11.** Any new

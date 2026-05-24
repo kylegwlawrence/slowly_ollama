@@ -36,7 +36,7 @@ import httpx
 from urllib.parse import urlparse, urlunparse
 
 # Health endpoints are cheap (no FTS/ANN, just a status map), so we
-# pull the timeout in tight relative to ``query_rag``'s 15s. Two
+# pull the timeout in tight relative to ``query_rag``'s 30s. Two
 # seconds to connect handles a slow LAN/VPN hop; five seconds
 # total fails fast on a hung server without making the user wait.
 _HEALTH_TIMEOUT = httpx.Timeout(5.0, connect=2.0)
