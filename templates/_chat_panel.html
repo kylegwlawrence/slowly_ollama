@@ -6,6 +6,18 @@
   <header class="chat-panel__header">
     <h2 class="chat-panel__name">{{ conversation.name }}</h2>
     {% include "_agent_indicator.html" %}
+    {# Phase 16: agent picker. Its OWN form, NOT nested inside .message-form —
+       if it were, the message form's hx-post + hx-target would inherit onto
+       the <select> via HTMX attribute inheritance. On change it posts the
+       selection; the server persists it and OOB-swaps the header indicator +
+       chip bar, so hx-swap="none" here. #}
+    <form class="chat-panel__chip-form"
+          hx-post="/chats/{{ conversation.id }}/agent"
+          hx-trigger="change"
+          hx-swap="none">
+      {% set selected_agent = conversation.active_agent %}
+      {% include "_agent_select.html" %}
+    </form>
     <form class="chat-panel__chip-form"
           hx-patch="/chats/{{ conversation.id }}/temperature"
           hx-trigger="change"
@@ -80,20 +92,8 @@
      / tickToolRows sections respectively. The pill markup itself
      (textarea + send button + auto-grow / Enter-to-submit handlers)
      is in _input_pill.html so the in-chat and empty-state composers
-     stay in sync. #}
-  {# Phase 16: agent picker. Its OWN form, a sibling ABOVE .message-form —
-     NOT nested inside it. If it were nested, the message form's
-     hx-post="/chats/{id}/messages" + hx-target="#messages" would inherit
-     onto the <select> (HTMX attribute inheritance). On change it posts the
-     selection; the server persists it and OOB-swaps the header indicator +
-     chip bar, so hx-swap="none" here. #}
-  <form class="message-form__agent"
-        hx-post="/chats/{{ conversation.id }}/agent"
-        hx-trigger="change"
-        hx-swap="none">
-    {% set selected_agent = conversation.active_agent %}
-    {% include "_agent_select.html" %}
-  </form>
+     stay in sync. The agent picker (phase 16) now lives in the header
+     alongside the other chips — see the chat-panel__agent-form above. #}
   {# Compacting indicator: lives outside #messages so the outerHTML swap
      from /compact doesn't blow it away mid-request. `htmx-indicator` is
      opacity-0 by default; htmx adds `htmx-request` to the element named
