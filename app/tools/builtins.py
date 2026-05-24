@@ -162,7 +162,7 @@ def read_file(path: str) -> str:
     return text
 
 
-@tool(is_read_only=False)
+@tool
 def write_file(path: str, content: str) -> str:
     """Create or overwrite a UTF-8 text file in the workspace with the given content. Only the configured workspace directory is writable; an existing file at the path is replaced.
 
@@ -296,11 +296,11 @@ _FILE_TOOL_SPECS = {
 def refresh_file_tools_registration() -> None:
     """Sync the file tools' registry presence to whether a root is configured.
 
-    When ``FILE_TOOL_ROOT`` is unset, ``read_file`` / ``write_file`` /
-    ``list_directory`` are removed from ``app.tools.TOOLS`` so the chat
-    model is never offered a tool with nowhere to operate. When it is
-    set, all three are (re-)added from the specs snapshotted at
-    decoration time.
+    When ``FILE_TOOL_ROOT`` is unset, every file tool (``read_file`` /
+    ``write_file`` / ``list_directory`` / ``search_files``) is removed
+    from ``app.tools.TOOLS`` so the chat model is never offered a tool
+    with nowhere to operate. When it is set, all of them are (re-)added
+    from the specs snapshotted at decoration time.
 
     Mirrors :func:`app.tools.rag.refresh_query_rag_registration`. Called
     at lifespan startup so the initial registry matches config; the root
