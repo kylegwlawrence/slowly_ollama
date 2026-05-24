@@ -40,8 +40,6 @@ Mid-stream failures emit an SSE ``event: error`` (headers already sent).
 
 import html
 import sqlite3
-from dataclasses import dataclass
-from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Form, HTTPException, Request, Response, status
@@ -56,23 +54,25 @@ from app import generation, ollama, queries, render
 from app import rag_servers as _rag_servers
 from app.agents import get_agent, list_agents
 from app.dependencies import DB, OllamaClient
-from app.format import format_size_bytes
 from app.ollama import OllamaProtocolError, OllamaUnavailable
-from app.projects import ensure_project_workspace, project_workspace_root
+from app.projects import (
+    browse_workspace,
+    ensure_project_workspace,
+    project_workspace_root,
+    read_workspace_file,
+)
 from app.rag_health import probe_rag_health
 from app.templates import templates
 
 # Side-effecting imports: app.tools.builtins registers `current_time`
-# and app.tools.rag registers `query_rag` via their @tool decorators.
-# Without these imports, the production app would never call those
-# modules (the registry would be empty). They live in routes.py rather
-# than generation.py because main.py only imports routes; moving them
-# to generation.py would still work today (routes imports generation)
-# but couples the registration to an internal seam. The noqa silences
-# the unused-import warning since the imports are purely for side
-# effect.
+# (and the file tools) and app.tools.rag registers `query_rag` via their
+# @tool decorators. Without these imports, the production app would
+# never call those modules (the registry would be empty). They live in
+# routes.py rather than generation.py because main.py only imports
+# routes; moving them to generation.py would still work today (routes
+# imports generation) but couples the registration to an internal seam.
 from app.tools import RAG_TOOL_NAME, TOOLS
-from app.tools import builtins as _tools_builtins
+from app.tools import builtins as _tools_builtins  # noqa: F401
 from app.tools import rag as _rag_tool  # noqa: F401
 from app.tools.rag import refresh_query_rag_registration
 
@@ -1142,324 +1142,6 @@ async def set_default_model_endpoint(
 
 
 # ---------------------------------------------------------------------------
-# Phase 17: projects
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class _WorkspaceEntry:
-    """One row in the Files-tab directory listing.
-
-    Attributes:
-        name: Display name of the file or directory.
-        is_dir: True for directories (which get a browse link, no
-            size, no download).
-        size_display: Pretty-printed byte count for files; empty
-            string for dirs.
-        href_browse: URL to descend into the directory (None for files).
-        href_view: URL to render the file in the Files tab (None for dirs).
-        href_download: URL to download the file as an attachment (None
-            for dirs).
-    """
-
-    name: str
-    is_dir: bool
-    size_display: str
-    href_browse: str | None
-    href_view: str | None
-    href_download: str | None
-
-
-@dataclass
-class _WorkspaceListing:
-    """Result shape for ``_browse_workspace``.
-
-    Attributes:
-        available: False when FILE_TOOL_ROOT is unset (file tools off);
-            the template renders an "unavailable" message.
-        path: The workspace-relative directory being shown.
-        breadcrumbs: ``[(label, href), ...]`` from workspace root down to
-            the current directory.
-        entries: The listed children (dirs first, then files), capped.
-        error: A user-facing reason when the listing failed (e.g. the
-            path is outside the workspace, or doesn't exist). Mutually
-            exclusive with ``entries`` carrying useful data.
-    """
-
-    available: bool
-    path: str
-    breadcrumbs: list[tuple[str, str]]
-    entries: list[_WorkspaceEntry]
-    error: str | None
-
-
-@dataclass
-class _WorkspaceFileView:
-    """Result shape for ``_read_workspace_file``.
-
-    Attributes:
-        available: False when FILE_TOOL_ROOT is unset.
-        path: The workspace-relative file path.
-        breadcrumbs: Crumbs from root down to (and including) the file.
-        text: UTF-8 contents (truncated at the cap), or None when the
-            file isn't displayable as text.
-        is_markdown: True for ``.md`` / ``.markdown`` extensions.
-        rendered_html: Pre-rendered HTML for markdown views (None for
-            plain text).
-        size_display: Pretty-printed file size.
-        error: User-facing reason when the file can't be displayed (not
-            found, binary, etc.).
-        download_href: URL to download the original file as an attachment.
-    """
-
-    available: bool
-    path: str
-    breadcrumbs: list[tuple[str, str]]
-    text: str | None
-    is_markdown: bool
-    rendered_html: str | None
-    size_display: str
-    error: str | None
-    download_href: str
-
-
-# UTF-8 text-view ceiling. Larger files are rendered truncated with a
-# "use Download for full file" hint.
-_FILE_VIEW_CAP = 100_000
-
-
-def _project_workspace_or_none(project: queries.Project) -> Path | None:
-    """Return the project's workspace dir (creating it), or None when off.
-
-    Wrapper that combines :func:`app.projects.project_workspace_root` and
-    :func:`app.projects.ensure_project_workspace` so the Files-tab helpers
-    can pre-create the dir on first visit (so the listing isn't an
-    immediate "directory not found" the first time a user clicks Files
-    after creating a project).
-    """
-    root = project_workspace_root(project)
-    if root is None:
-        return None
-    ensure_project_workspace(project)
-    return root
-
-
-def _build_breadcrumbs(
-    project_id: int, rel_path: str, tab: str
-) -> list[tuple[str, str]]:
-    """Build ``[(label, href), ...]`` for the workspace breadcrumb bar.
-
-    Args:
-        project_id: The owning project's id (interpolated into URLs).
-        rel_path: Workspace-relative path being shown (``"."`` for root).
-        tab: ``"browse"`` (directory listing) or ``"view"`` (single file).
-            The browse tab's last crumb points at the directory itself;
-            the view tab's last crumb points at the file viewer for that
-            file.
-
-    Returns:
-        Ordered crumbs starting with ``("workspace", root URL)``.
-    """
-    # `Path.parts` includes a leading "." for "." or "" — filter it out
-    # so the crumb list doesn't start with a vestigial entry.
-    parts = [p for p in Path(rel_path).parts if p not in (".", "")]
-    crumbs: list[tuple[str, str]] = [
-        ("workspace", f"/projects/{project_id}/files")
-    ]
-    accum = Path(".")
-    # For a directory view, every part is a clickable subdirectory link.
-    # For a file view, the last part is the file (rendered by view tab),
-    # so only the leading parts are directory links.
-    nav_parts = parts if tab == "browse" else parts[:-1]
-    for part in nav_parts:
-        accum = accum / part
-        crumbs.append(
-            (part, f"/projects/{project_id}/files?path={accum}")
-        )
-    if tab == "view" and parts:
-        crumbs.append(
-            (
-                parts[-1],
-                f"/projects/{project_id}/files/view?path={rel_path}",
-            )
-        )
-    return crumbs
-
-
-def _browse_workspace(
-    project: queries.Project, path: str
-) -> _WorkspaceListing:
-    """Build a directory listing for the Files tab.
-
-    Args:
-        project: The owning project.
-        path: Workspace-relative directory path (``"."`` = workspace root).
-
-    Returns:
-        A populated _WorkspaceListing. ``available`` is False when
-        FILE_TOOL_ROOT is unset; ``error`` is populated for path-outside-
-        workspace or directory-not-found cases.
-    """
-    root = _project_workspace_or_none(project)
-    if root is None:
-        return _WorkspaceListing(
-            available=False,
-            path=path,
-            breadcrumbs=[],
-            entries=[],
-            error="File tools are not configured (FILE_TOOL_ROOT is unset).",
-        )
-    target = (root / path).resolve()
-    if not target.is_relative_to(root):
-        return _WorkspaceListing(
-            available=True,
-            path=path,
-            breadcrumbs=_build_breadcrumbs(project.id, ".", "browse"),
-            entries=[],
-            error="Path is outside the workspace.",
-        )
-    if not target.exists() or not target.is_dir():
-        return _WorkspaceListing(
-            available=True,
-            path=path,
-            breadcrumbs=_build_breadcrumbs(project.id, path, "browse"),
-            entries=[],
-            error="Directory not found.",
-        )
-    rel_target = "" if target == root else str(target.relative_to(root))
-    entries: list[_WorkspaceEntry] = []
-    # Sort: dirs first, then files; each group alphabetical (case-
-    # insensitive). Matches `list_directory`'s ordering.
-    children = sorted(
-        target.iterdir(), key=lambda p: (p.is_file(), p.name.lower())
-    )[:_tools_builtins.LIST_DIR_CAP]
-    for child in children:
-        child_rel = str(child.relative_to(root))
-        if child.is_dir():
-            entries.append(
-                _WorkspaceEntry(
-                    name=child.name,
-                    is_dir=True,
-                    size_display="",
-                    href_browse=(
-                        f"/projects/{project.id}/files?path={child_rel}"
-                    ),
-                    href_view=None,
-                    href_download=None,
-                )
-            )
-        else:
-            try:
-                size = format_size_bytes(child.stat().st_size)
-            except OSError:
-                size = "?"
-            entries.append(
-                _WorkspaceEntry(
-                    name=child.name,
-                    is_dir=False,
-                    size_display=size,
-                    href_browse=None,
-                    href_view=(
-                        f"/projects/{project.id}/files/view?path={child_rel}"
-                    ),
-                    href_download=(
-                        f"/projects/{project.id}/files/download?path={child_rel}"
-                    ),
-                )
-            )
-    return _WorkspaceListing(
-        available=True,
-        path=rel_target or ".",
-        breadcrumbs=_build_breadcrumbs(
-            project.id, rel_target or ".", "browse"
-        ),
-        entries=entries,
-        error=None,
-    )
-
-
-def _read_workspace_file(
-    project: queries.Project, path: str
-) -> _WorkspaceFileView:
-    """Build a file-view payload for the Files tab.
-
-    Args:
-        project: The owning project.
-        path: Workspace-relative file path.
-
-    Returns:
-        A populated _WorkspaceFileView. ``error`` is populated for
-        path-outside-workspace, file-not-found, or binary-file cases.
-    """
-    root = _project_workspace_or_none(project)
-    download_href = (
-        f"/projects/{project.id}/files/download?path={path}"
-    )
-    if root is None:
-        return _WorkspaceFileView(
-            available=False,
-            path=path,
-            breadcrumbs=[],
-            text=None,
-            is_markdown=False,
-            rendered_html=None,
-            size_display="",
-            download_href=download_href,
-            error="File tools are not configured.",
-        )
-    target = (root / path).resolve()
-    if not target.is_relative_to(root) or not target.is_file():
-        return _WorkspaceFileView(
-            available=True,
-            path=path,
-            breadcrumbs=_build_breadcrumbs(project.id, path, "view"),
-            text=None,
-            is_markdown=False,
-            rendered_html=None,
-            size_display="",
-            download_href=download_href,
-            error="File not found.",
-        )
-    size = format_size_bytes(target.stat().st_size)
-    try:
-        text = target.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return _WorkspaceFileView(
-            available=True,
-            path=path,
-            breadcrumbs=_build_breadcrumbs(project.id, path, "view"),
-            text=None,
-            is_markdown=False,
-            rendered_html=None,
-            size_display=size,
-            download_href=download_href,
-            error="Binary file — use Download.",
-        )
-    if len(text) > _FILE_VIEW_CAP:
-        text = (
-            text[:_FILE_VIEW_CAP]
-            + "\n\n… (truncated; use Download for full file)"
-        )
-    is_md = target.suffix.lower() in (".md", ".markdown")
-    rendered = None
-    if is_md:
-        import markdown as _md
-
-        rendered = _md.markdown(text, extensions=["fenced_code", "tables"])
-    return _WorkspaceFileView(
-        available=True,
-        path=path,
-        breadcrumbs=_build_breadcrumbs(project.id, path, "view"),
-        text=text,
-        is_markdown=is_md,
-        rendered_html=rendered,
-        size_display=size,
-        download_href=download_href,
-        error=None,
-    )
-
-
-# ---------------------------------------------------------------------------
 # /projects routes
 # ---------------------------------------------------------------------------
 
@@ -1563,24 +1245,13 @@ def create_project_endpoint(
     ensure_project_workspace(project)
     # Phase 17b: render the main-panel tile AND OOB-prepend a row into
     # the unified sidebar's #projects-list so the new project appears
-    # in the sidebar without a full reload. Wrapping <ul> matches the
-    # OOB pattern used by chat creation (afterbegin unwraps the root,
-    # so a top-level <li> would lose its parent context).
+    # in the sidebar without a full reload.
     tile_html = templates.get_template("_project_item.html").render(
         project=project
     )
-    escaped_name = html.escape(project.name)
-    sidebar_row_html = (
-        f'<ul hx-swap-oob="afterbegin:#projects-list">'
-        f'<li class="chat-item project-item" '
-        f'data-project-id="{project.id}">'
-        f'<a id="project-sidebar-link-{project.id}" '
-        f'href="/projects/{project.id}/chats" '
-        f'hx-get="/projects/{project.id}/chats" '
-        f'hx-target="#main" hx-swap="innerHTML" '
-        f'hx-push-url="true">{escaped_name}</a>'
-        f"</li></ul>"
-    )
+    sidebar_row_html = templates.get_template(
+        "_project_sidebar_row.html"
+    ).render(project=project, oob=True)
     response = HTMLResponse(
         content=tile_html + sidebar_row_html,
         status_code=status.HTTP_201_CREATED,
@@ -1700,18 +1371,12 @@ async def update_project_endpoint(
         agents=list_agents(),
         global_default_num_ctx=queries.get_default_num_ctx(db),
     )
-    escaped_name = html.escape(project.name)
-    header_oob = (
-        f'<h2 id="project-page-name" class="project-page__name" '
-        f'hx-swap-oob="true">{escaped_name}</h2>'
-    )
-    sidebar_link_oob = (
-        f'<a id="project-sidebar-link-{project.id}" '
-        f'href="/projects/{project.id}/chats" '
-        f'hx-get="/projects/{project.id}/chats" '
-        f'hx-target="#main" hx-swap="innerHTML" '
-        f'hx-push-url="true" hx-swap-oob="true">{escaped_name}</a>'
-    )
+    header_oob = templates.get_template(
+        "_project_header_oob.html"
+    ).render(project=project)
+    sidebar_link_oob = templates.get_template(
+        "_project_sidebar_link_oob.html"
+    ).render(project=project)
     return HTMLResponse(settings_html + header_oob + sidebar_link_oob)
 
 
@@ -2086,7 +1751,7 @@ def project_files_endpoint(
 
     ``path`` is a workspace-relative directory; default ``"."`` lists the
     workspace root. Containment + missing-directory cases are handled by
-    :func:`_browse_workspace` and surface as in-page error text.
+    :func:`browse_workspace` and surface as in-page error text.
 
     Raises:
         HTTPException 404: When the project does not exist.
@@ -2095,7 +1760,7 @@ def project_files_endpoint(
         project = queries.get_project(db, project_id)
     except LookupError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
-    listing = _browse_workspace(project, path)
+    listing = browse_workspace(project, path)
     return _render_project_page(
         request,
         db=db,
@@ -2129,7 +1794,7 @@ def project_file_view_endpoint(
         project = queries.get_project(db, project_id)
     except LookupError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
-    view = _read_workspace_file(project, path)
+    view = read_workspace_file(project, path)
     return _render_project_page(
         request,
         db=db,

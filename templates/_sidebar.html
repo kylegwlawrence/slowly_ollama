@@ -28,16 +28,8 @@
   </a>
   <ul id="projects-list" class="chats-list">
     {% for project in projects %}
-      <li class="chat-item project-item"
-          data-project-id="{{ project.id }}"
-          {% if active_project_id == project.id %}aria-current="page"{% endif %}>
-        <a id="project-sidebar-link-{{ project.id }}"
-           href="/projects/{{ project.id }}/chats"
-           hx-get="/projects/{{ project.id }}/chats"
-           hx-target="#main"
-           hx-swap="innerHTML"
-           hx-push-url="true">{{ project.name }}</a>
-      </li>
+      {% set active = (active_project_id == project.id) %}
+      {% include "_project_sidebar_row.html" %}
     {% endfor %}
   </ul>
   <div class="sidebar__footer">
