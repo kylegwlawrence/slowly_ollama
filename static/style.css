@@ -696,8 +696,27 @@ body {
   padding: var(--space-sm) var(--space-md);
   cursor: pointer;
   list-style: none;
+  /* Pin color across closed/open/focus states so the summary looks the
+     same whether the card is mid-stream (often clicked open by the user
+     to watch tool progress) or on a fresh page load (closed, unfocused).
+     Without these pins, Pico's accordion theming flips the color through
+     three different tokens (--pico-color → --pico-muted-color →
+     --pico-primary-hover) which made streaming and post-reload look
+     unrelated. */
+  color: var(--text-secondary);
+  transition: none;
 }
 .tool-card__summary::-webkit-details-marker { display: none; }
+/* Pico injects a chevron via `details summary::after` (a background-image
+   SVG that doesn't inherit text color). We render our own chevron span
+   below; suppress Pico's so there's only one indicator. */
+.tool-card__summary::after { display: none; }
+.tool-card[open] > .tool-card__summary,
+.tool-card__summary:focus,
+.tool-card__summary:focus-visible {
+  color: var(--text-secondary);
+  outline: none;
+}
 
 .tool-card__chevron {
   margin-left: auto;
