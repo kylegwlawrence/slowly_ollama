@@ -12,8 +12,10 @@ instead of strings.
 
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Literal
+
+from app._time import now_iso as _now_iso
 
 # Role values are constrained at the type level here. The schema-level
 # CHECK was dropped in phase 12a (12a added tool_call/tool_result) and
@@ -151,11 +153,6 @@ class Message:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
-
-
-def _now_iso() -> str:
-    """Return the current UTC time as an ISO 8601 string for DB storage."""
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _row_to_conversation(row: sqlite3.Row) -> Conversation:

@@ -31,12 +31,13 @@ import html
 import logging
 import sqlite3
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import AsyncIterator, Literal
+from typing import Literal
 
 import httpx
 
-from app import ollama, queries, rag_servers as _rag_module, render
+from app import ollama, queries, rag_servers as _rag_servers, render
 from app.ollama import OllamaProtocolError, OllamaUnavailable
 from app.projects import current_workspace_root, project_workspace_root
 from app.templates import templates
@@ -551,7 +552,7 @@ def _chat_tool_specs(
     enabled_names = set(
         queries.get_enabled_tool_names(db, conversation_id, list(TOOLS.keys()))
     )
-    all_rag_servers = _rag_module.list_servers(db)
+    all_rag_servers = _rag_servers.list_servers(db)
     enabled_rag_names = set(
         queries.get_enabled_rag_server_names(
             db, conversation_id, [s.name for s in all_rag_servers]
@@ -599,7 +600,7 @@ def _agent_tool_specs(
     """
     if not allowlist:
         return []
-    all_rag_servers = _rag_module.list_servers(db)
+    all_rag_servers = _rag_servers.list_servers(db)
     specs: list[dict] = []
     for spec in tool_specs_for_ollama():
         name = spec["function"]["name"]
