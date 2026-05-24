@@ -28,12 +28,12 @@ from app.agents import get_agent, list_agents
 from app.dependencies import DB, OllamaClient
 from app.projects import ensure_project_workspace
 from app.routes._helpers import (
-    _ALL_TOOL_NAMES,
     _agent_overrides,
     _chip_states,
     _placeholder_name,
     _project_context,
 )
+from app.tools import TOOLS
 from app.templates import templates
 
 router = APIRouter()
@@ -525,7 +525,7 @@ async def create_project_chat_endpoint(
         set(enabled_tools_raw) if enabled_tools_raw else None
     )
     queries.seed_chat_tools(
-        db, chat.id, _ALL_TOOL_NAMES, enabled_names=enabled_names
+        db, chat.id, list(TOOLS), enabled_names=enabled_names
     )
 
     enabled_rag_raw = form_data.getlist("enabled_rag_servers")
