@@ -1839,11 +1839,16 @@ body {
 
 /* ===== Phase 18: manual compaction ======================================= */
 
-/* "Compact" button in the chat-panel header. Mirrors the chip form
-   styling (height + gap) so it sits flush with the temperature / tool-cap
-   chips beside it. The default `chat-panel__compact` is a flat button —
-   not a primary CTA — because compacting is destructive-feeling even
+/* "Compact" button — lives in a row above the input-pill inside
+   .message-form, right-aligned with the composer's right edge. Flat,
+   not a primary CTA, because compacting is destructive-feeling even
    when fully reversible, and we want the user to think before clicking. */
+.message-form__compact-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: var(--space-xs);
+}
+
 .chat-panel__compact {
   display: inline-flex;
   align-items: center;
@@ -1857,9 +1862,6 @@ body {
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
-  /* Push to the far right of the wrapping header so it's separated
-     visually from the chips on the left. */
-  margin-left: auto;
 }
 
 .chat-panel__compact:hover {
