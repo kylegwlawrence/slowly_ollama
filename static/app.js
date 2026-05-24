@@ -100,22 +100,37 @@ document.addEventListener('DOMContentLoaded', () => {
   scrollMessagesToBottom();
 });
 
+// One delegated htmx:afterSwap handler with two responsibilities:
+//  1. Scroll the messages region to the bottom whenever new content
+//     lands inside it (or the chat panel itself was just mounted).
+//     The replaced `hx-on::after-swap` lived on #messages itself, so
+//     it fired for ANY swap inside #messages via event bubbling:
+//     streaming tokens, OOB-replacing the placeholder with the
+//     persisted bubble, appending tool-rows, freezing tool-rows, etc.
+//     Match that scope here with `target.closest('#messages')`.
+//  2. Re-select a <select>'s saved value (data-default) after HTMX
+//     populates its options lazily. Used by the composer and project-
+//     settings model dropdowns once /models has replied.
 document.body.addEventListener('htmx:afterSwap', (e) => {
   const target = e.detail.target;
   if (!(target instanceof Element)) return;
-  // The replaced `hx-on::after-swap` lived on #messages itself, so it
-  // fired for ANY swap inside #messages via event bubbling: streaming
-  // tokens into the assistant-stream placeholder, OOB-replacing that
-  // placeholder with the persisted bubble, OOB-appending tool-rows,
-  // freezing tool-rows, etc. Match that scope here with
-  // `target.closest('#messages')`. The `#main` branch covers the
-  // separate case where the chat panel itself was just mounted.
+
   if (
     target.id === 'main' ||
     target.id === 'messages' ||
     target.closest('#messages')
   ) {
     scrollMessagesToBottom();
+  }
+
+  if (target instanceof HTMLSelectElement && target.dataset.default) {
+    const want = target.dataset.default;
+    for (const opt of target.options) {
+      if (opt.value === want) {
+        target.value = want;
+        break;
+      }
+    }
   }
 });
 
@@ -286,26 +301,5 @@ document.addEventListener('click', function (e) {
   chip.querySelector('.tool-chip__check').textContent = cb.checked ? '✓' : '✕';
 });
 
-// Phase 17 / 17b: any <select> that loads its options lazily from /models
-// (or any other source) can opt into "preserve my saved value" by setting
-// `data-default="..."` on the element. After the HTMX swap fills the
-// options, we walk the option list and select the one matching the
-// data-default value.
-//
-// Used by:
-//   - _composer.html's #composer-model (project default propagates into the
-//     composer's selected value)
-//   - _project_settings_body.html's <select name="default_model"> (the
-//     project's currently-saved default_model survives the /models swap)
-document.body.addEventListener("htmx:afterSwap", (evt) => {
-  const target = evt.target;
-  if (!(target instanceof HTMLSelectElement)) return;
-  const want = target.dataset.default;
-  if (!want) return;
-  for (const opt of target.options) {
-    if (opt.value === want) {
-      target.value = want;
-      break;
-    }
-  }
-});
+// (data-default re-selection lives inside the single htmx:afterSwap
+// handler above — see responsibility #2.)

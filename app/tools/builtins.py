@@ -14,6 +14,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.config import file_tool_root
+from app.format import format_size_bytes
 from app.tools import tool
 
 # Hard cap on read_file output so a huge file can't blow the model's
@@ -21,28 +22,13 @@ from app.tools import tool
 _READ_FILE_CAP = 50_000
 
 # Hard cap on list_directory entries so a huge directory can't blow the
-# model's context window.
-_LIST_DIR_CAP = 200
+# model's context window. Re-used by the user-facing Files-tab browser
+# (``app/routes.py``) so the listing-render cap matches the model-facing one.
+LIST_DIR_CAP = 200
 
 # Hard cap on search_files results so a broad pattern can't blow the
 # model's context window.
 _SEARCH_CAP = 100
-
-
-def _format_size(size_bytes: int) -> str:
-    """Format a byte count as a human-readable string.
-
-    Args:
-        size_bytes: File size in bytes.
-
-    Returns:
-        A compact string like "4 B", "1.2 KB", or "3.4 MB".
-    """
-    if size_bytes < 1024:
-        return f"{size_bytes} B"
-    if size_bytes < 1024 * 1024:
-        return f"{size_bytes / 1024:.1f} KB"
-    return f"{size_bytes / (1024 * 1024):.1f} MB"
 
 
 @tool
@@ -215,20 +201,20 @@ def list_directory(path: str = ".") -> str:
         return f"'{path}' is empty."
 
     lines: list[str] = []
-    truncated = len(entries) > _LIST_DIR_CAP
-    for entry in entries[:_LIST_DIR_CAP]:
+    truncated = len(entries) > LIST_DIR_CAP
+    for entry in entries[:LIST_DIR_CAP]:
         if entry.is_dir():
             lines.append(f"[dir]  {entry.name}/")
         else:
             try:
-                size_str = _format_size(entry.stat().st_size)
+                size_str = format_size_bytes(entry.stat().st_size)
             except OSError:
                 size_str = "?"
             lines.append(f"[file] {entry.name} ({size_str})")
 
     header = f"{path}/ ({len(entries)} item{'s' if len(entries) != 1 else ''})"
     if truncated:
-        header += f" — showing first {_LIST_DIR_CAP}"
+        header += f" — showing first {LIST_DIR_CAP}"
     return header + "\n\n" + "\n".join(lines)
 
 
@@ -269,7 +255,7 @@ def search_files(pattern: str, path: str = ".") -> str:
     lines: list[str] = []
     for m in matches[:_SEARCH_CAP]:
         try:
-            size_str = _format_size(m.stat().st_size)
+            size_str = format_size_bytes(m.stat().st_size)
         except OSError:
             size_str = "?"
         rel = m.relative_to(root)

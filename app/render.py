@@ -16,7 +16,7 @@ re-groups them into blocks, templates consume blocks.
 import html
 import time
 from dataclasses import dataclass, field
-from typing import ClassVar, Union
+from typing import ClassVar
 
 from app.queries import Message
 from app.templates import templates
@@ -332,7 +332,7 @@ class ToolBatchBlock:
         return summary_text(len(self.calls), done=True)
 
 
-Block = Union[MessageBlock, ToolBatchBlock]
+Block = MessageBlock | ToolBatchBlock
 
 
 _TOOL_ROLES = frozenset({"tool_call", "tool_result"})
