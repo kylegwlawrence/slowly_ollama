@@ -31,6 +31,14 @@
         Description
         <textarea name="description" maxlength="400" rows="3">{{ project.description }}</textarea>
       </label>
+      {# Per-project system prompt prepended to Normal-chat turns in this
+         project. Capped at 200 chars (enforced server-side too). Ignored
+         on invoked-agent turns. #}
+      <label class="project-settings__field--full">
+        System prompt (Normal chat only, max 200 chars)
+        <textarea name="system_prompt" maxlength="200" rows="3"
+                  placeholder="Optional. Prepended to every Normal-chat turn in this project.">{{ project.system_prompt }}</textarea>
+      </label>
       <label class="project-settings__field--full">
         Default model (for new chats in this project)
         <select name="default_model"

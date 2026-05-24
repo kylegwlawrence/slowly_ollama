@@ -84,6 +84,10 @@ class Project:
             from ``app_settings``. Applied per turn, not seeded onto chats,
             so changing it takes effect on the next message in any chat
             belonging to this project.
+        system_prompt: Per-project system prompt prepended to Normal-chat
+            turns. Empty string = none. Capped at 200 chars at the route
+            layer. Ignored on invoked-agent turns (the agent's own prompt
+            wins).
         created_at, updated_at: ISO 8601 UTC timestamps.
     """
 
@@ -96,6 +100,7 @@ class Project:
     num_ctx: int | None
     created_at: datetime
     updated_at: datetime
+    system_prompt: str = ""
 
 
 class _Unset:
@@ -701,7 +706,7 @@ def count_assistant_messages(
 
 _PROJECT_COLS = (
     "id, name, description, workspace_subdir, default_model, default_agent,"
-    " num_ctx, created_at, updated_at"
+    " num_ctx, system_prompt, created_at, updated_at"
 )
 
 
@@ -715,6 +720,7 @@ def _row_to_project(row: sqlite3.Row) -> Project:
         default_model=row["default_model"],
         default_agent=row["default_agent"],
         num_ctx=row["num_ctx"],
+        system_prompt=row["system_prompt"],
         created_at=datetime.fromisoformat(row["created_at"]),
         updated_at=datetime.fromisoformat(row["updated_at"]),
     )
@@ -804,7 +810,7 @@ def get_project_for_conversation(
     """
     row = conn.execute(
         "SELECT p.id, p.name, p.description, p.workspace_subdir,"
-        " p.default_model, p.default_agent, p.num_ctx,"
+        " p.default_model, p.default_agent, p.num_ctx, p.system_prompt,"
         " p.created_at, p.updated_at"
         " FROM projects p JOIN conversations c ON c.project_id = p.id"
         " WHERE c.id = ?;",
@@ -873,8 +879,8 @@ def create_project(
         row = conn.execute(
             "INSERT INTO projects"
             " (name, description, workspace_subdir, default_model, default_agent,"
-            "  num_ctx, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, NULL, ?, ?)"
+            "  num_ctx, system_prompt, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, NULL, '', ?, ?)"
             f" RETURNING {_PROJECT_COLS};",
             (name, description, slug, default_model, default_agent, now, now),
         ).fetchone()
@@ -890,6 +896,7 @@ def update_project(
     default_model: "str | None | _Unset" = _UNSET,
     default_agent: "str | None | _Unset" = _UNSET,
     num_ctx: "int | None | _Unset" = _UNSET,
+    system_prompt: str | None = None,
 ) -> Project:
     """Update editable project fields. Each kwarg is optional.
 
@@ -912,6 +919,8 @@ def update_project(
             tokens), ``None`` to clear (inherit global), or the
             sentinel ``_UNSET`` (default) to leave alone. Values are
             clamped to [NUM_CTX_MIN, NUM_CTX_MAX].
+        system_prompt: New per-project system prompt (``""`` to clear),
+            or ``None`` (default) to leave alone. Clamped to 200 chars.
 
     Returns:
         The updated Project (or unchanged Project when no kwargs were passed).
@@ -937,6 +946,12 @@ def update_project(
     if not isinstance(num_ctx, _Unset):
         sets.append("num_ctx = ?")
         args.append(None if num_ctx is None else clamp_num_ctx(num_ctx))
+    if system_prompt is not None:
+        # Clamp at 200 chars defensively — the route also enforces this,
+        # but a direct programmatic caller should not be able to insert
+        # an unbounded prompt and surprise the model with a giant system.
+        sets.append("system_prompt = ?")
+        args.append(system_prompt[:200])
     if not sets:
         # No-op update — return the current row rather than performing a
         # bare ``UPDATE ... SET updated_at = ?`` which would falsely bump

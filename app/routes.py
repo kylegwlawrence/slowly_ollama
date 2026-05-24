@@ -1676,6 +1676,18 @@ async def update_project_endpoint(
         except ValueError:
             return queries._UNSET
 
+    # Per-project system prompt. The form always submits the field, even
+    # when blank. Trim + cap at 200 chars (the textarea enforces the cap
+    # client-side too, but a hand-rolled POST would bypass that). When
+    # the field is absent entirely (e.g. legacy form), pass None so
+    # update_project leaves the existing value alone.
+    raw_prompt = form.get("system_prompt") if "system_prompt" in form else None
+    if raw_prompt is None:
+        system_prompt_arg: str | None = None
+    else:
+        s = raw_prompt.strip() if isinstance(raw_prompt, str) else ""
+        system_prompt_arg = s[:200]
+
     project = queries.update_project(
         db,
         project_id,
@@ -1686,6 +1698,7 @@ async def update_project_endpoint(
         default_model=_string_or_clear("default_model"),
         default_agent=_string_or_clear("default_agent"),
         num_ctx=_int_or_clear("num_ctx"),
+        system_prompt=system_prompt_arg,
     )
     # Phase 17b: the settings body is swapped into #project-page-body, but
     # the project name also lives in the page header (above the body) and
