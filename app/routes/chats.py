@@ -85,7 +85,7 @@ async def list_models_endpoint(
     user a clear message to act on.
     """
     try:
-        models = await ollama.list_tool_capable_models(client)
+        models = sorted(await ollama.list_tool_capable_models(client))
     except OllamaUnavailable:
         return templates.TemplateResponse(
             request=request,
