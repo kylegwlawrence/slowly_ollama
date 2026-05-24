@@ -110,7 +110,7 @@ def make_client(
         return (True, "")
 
     monkeypatch.setattr(
-        "app.routes.probe_rag_health", _default_healthy_probe
+        "app.routes.settings.probe_rag_health", _default_healthy_probe
     )
 
 
@@ -1989,7 +1989,7 @@ def test_settings_add_server_health_fail_returns_502(
     async def _unhealthy(name: str, base_url: str) -> tuple[bool, str]:
         return (False, "'arxiv_rag' is not healthy (status: 'degraded').")
 
-    monkeypatch.setattr("app.routes.probe_rag_health", _unhealthy)
+    monkeypatch.setattr("app.routes.settings.probe_rag_health", _unhealthy)
 
     with make_client(_ollama_unreachable) as client:
         response = client.post(
@@ -2021,7 +2021,7 @@ def test_settings_add_server_health_unreachable_returns_502(
             "Health check failed: server unreachable at http://host1:8002/health.",
         )
 
-    monkeypatch.setattr("app.routes.probe_rag_health", _unreachable)
+    monkeypatch.setattr("app.routes.settings.probe_rag_health", _unreachable)
 
     with make_client(_ollama_unreachable) as client:
         response = client.post(
@@ -2050,7 +2050,7 @@ def test_settings_add_server_health_unknown_name_returns_502(
             " Available RAG databases: arxiv_rag, factbook_rag.",
         )
 
-    monkeypatch.setattr("app.routes.probe_rag_health", _unknown)
+    monkeypatch.setattr("app.routes.settings.probe_rag_health", _unknown)
 
     with make_client(_ollama_unreachable) as client:
         response = client.post(
@@ -2082,7 +2082,7 @@ def test_settings_add_server_health_probe_invoked_with_typed_values(
         seen["url"] = base_url
         return (True, "")
 
-    monkeypatch.setattr("app.routes.probe_rag_health", _capture)
+    monkeypatch.setattr("app.routes.settings.probe_rag_health", _capture)
 
     with make_client(_ollama_unreachable) as client:
         response = client.post(
