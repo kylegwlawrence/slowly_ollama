@@ -6,9 +6,9 @@ opens a private connection only long enough to create the file and tables.
 """
 
 import sqlite3
-from datetime import datetime, timezone
 from pathlib import Path
 
+from app._time import now_iso
 from app.config import db_path
 
 # All schema lives in one string so the file reads top-to-bottom and so
@@ -213,16 +213,6 @@ def _ensure_conversations_tool_iteration_cap_column(conn: sqlite3.Connection) ->
         )
 
 
-def _now_iso_db() -> str:
-    """Return the current UTC time as ISO 8601 for DB writes from this module.
-
-    Mirror of ``app.queries._now_iso``. Lives here so the db-layer migration
-    helpers can stamp ``created_at`` / ``updated_at`` without circular-
-    importing from ``app.queries``.
-    """
-    return datetime.now(timezone.utc).isoformat()
-
-
 def _ensure_default_project(conn: sqlite3.Connection) -> int:
     """Ensure at least one project exists; return the Default project's id.
 
@@ -244,7 +234,7 @@ def _ensure_default_project(conn: sqlite3.Connection) -> int:
         # row may be a Row or tuple depending on the connection's
         # row_factory; index by position to handle both.
         return row[0]
-    now = _now_iso_db()
+    now = now_iso()
     cursor = conn.execute(
         "INSERT INTO projects"
         " (name, description, workspace_subdir, default_model, default_agent,"
