@@ -56,23 +56,6 @@
     {% if supports_tools %}
     {% include "_chat_tool_chips.html" %}
     {% endif %}
-    {# Phase 18: manual compaction. POSTs to /chats/{id}/compact and
-       swaps in the re-rendered #messages container. `hx-confirm` is the
-       browser-native dialog; `hx-indicator` swaps in the spinner span
-       during the 1-5s Ollama round-trip. `hx-disabled-elt` keeps the
-       user from double-clicking it. #}
-    <button class="chat-panel__compact"
-            type="button"
-            hx-post="/chats/{{ conversation.id }}/compact"
-            hx-target="#messages"
-            hx-swap="outerHTML"
-            hx-confirm="Compact this chat? The earlier conversation will be summarized; originals stay in the database."
-            hx-disabled-elt="this"
-            hx-indicator="#chat-compacting-indicator"
-            title="Summarize the older portion of this chat to shrink the prompt sent to Ollama.">
-      <span class="material-symbols-outlined" aria-hidden="true">compress</span>
-      <span class="chat-panel__compact-label">Compact</span>
-    </button>
   </header>
 
   {# app.js keeps the bottom of the conversation in view via a
@@ -109,6 +92,27 @@
         hx-post="/chats/{{ conversation.id }}/messages"
         hx-target="#messages"
         hx-swap="beforeend">
+    {# Phase 18: manual compaction. POSTs to /chats/{id}/compact and
+       swaps in the re-rendered #messages container. `hx-confirm` is the
+       browser-native dialog; `hx-indicator` swaps in the spinner span
+       during the 1-5s Ollama round-trip. `hx-disabled-elt` keeps the
+       user from double-clicking it. The button's hx-* attrs override
+       the parent form's via HTMX precedence, so clicking it doesn't
+       submit the message form. #}
+    <div class="message-form__compact-row">
+      <button class="chat-panel__compact"
+              type="button"
+              hx-post="/chats/{{ conversation.id }}/compact"
+              hx-target="#messages"
+              hx-swap="outerHTML"
+              hx-confirm="Compact this chat? The earlier conversation will be summarized; originals stay in the database."
+              hx-disabled-elt="this"
+              hx-indicator="#chat-compacting-indicator"
+              title="Summarize the older portion of this chat to shrink the prompt sent to Ollama.">
+        <span class="material-symbols-outlined" aria-hidden="true">compress</span>
+        <span class="chat-panel__compact-label">Compact</span>
+      </button>
+    </div>
     {% include "_input_pill.html" %}
   </form>
 </section>
