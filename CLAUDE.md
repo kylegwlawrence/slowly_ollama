@@ -16,6 +16,7 @@ end-user setup and `docs/plans/PLAN.md` for the build-time roadmap.
 | What are we building and why? | `docs/plans/PLAN.md` |
 | What's the latest shipped phase? | `docs/plans/phase16-invokable-agents.md` + retro |
 | What did we learn from prior phases? | `docs/retros/` (per-phase, 6 through 16) |
+| How to write a phase retro? | `docs/retros/RETRO_INSTRUCTIONS.md` |
 | Accumulated conventions + gotchas | `docs/CONVENTIONS.md` |
 | Recent code reviews + cleanup notes | `docs/code_reviews/` |
 | Test strategy + how to run | `tests/README.md` |
