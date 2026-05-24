@@ -26,7 +26,6 @@ assistant row is still persisted before the exception resumes.
 """
 
 import asyncio
-import copy
 import html
 import logging
 import sqlite3
@@ -562,12 +561,14 @@ def _chat_tool_specs(
     ]
 
     specs: list[dict] = []
+    # tool_specs_for_ollama() deep-copies each spec's parameters dict, so
+    # patching `source.description` below is safe — the mutation is local
+    # to this turn's spec list and never leaks back into the registry.
     for spec in tool_specs_for_ollama():
         name = spec["function"]["name"]
         if name == RAG_TOOL_NAME:
             if not enabled_rag_servers:
                 continue  # All server chips off → exclude query_rag.
-            spec = copy.deepcopy(spec)  # Don't mutate the global registry.
             spec["function"]["parameters"]["properties"]["source"][
                 "description"
             ] = build_source_description(enabled_rag_servers)
@@ -601,6 +602,8 @@ def _agent_tool_specs(
         return []
     all_rag_servers = _rag_module.list_servers(db)
     specs: list[dict] = []
+    # tool_specs_for_ollama() deep-copies each spec's parameters dict, so
+    # patching `source.description` below is local to this turn's spec list.
     for spec in tool_specs_for_ollama():
         name = spec["function"]["name"]
         if name not in allowlist:
@@ -608,7 +611,6 @@ def _agent_tool_specs(
         if name == RAG_TOOL_NAME:
             if not all_rag_servers:
                 continue
-            spec = copy.deepcopy(spec)  # Don't mutate the global registry.
             spec["function"]["parameters"]["properties"]["source"][
                 "description"
             ] = build_source_description(all_rag_servers)
