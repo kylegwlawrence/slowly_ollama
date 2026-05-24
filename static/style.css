@@ -23,7 +23,7 @@
      sage family rather than introducing a black/white. */
   --accent: #9ccaa6;
   --accent-hover: #7fb38c;
-  --accent-tonal: #e8f2eb;
+  --accent-tonal: #c4dfcc;
   --accent-tonal-text: #3d6549;
   --accent-on: #1f3a26;
   --danger: #d93025;
@@ -75,8 +75,8 @@
   --text-secondary: #9e9e9e;
   /* Sage green reads well on dark; accent-tonal becomes a very dark sage
      panel, accent-tonal-text flips to the green itself so it's readable. */
-  --accent-tonal: #1a2e22;
-  --accent-tonal-text: #9ccaa6;
+  --accent-tonal: #345f45;
+  --accent-tonal-text: #b3dabc;
   --danger: #f28b82;
   /* Lighter sage-leaning green so the check_circle glyph reads
      against the dark surface without going neon. */
