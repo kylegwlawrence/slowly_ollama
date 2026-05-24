@@ -341,6 +341,7 @@ def test_projects_table_created_on_fresh_db(initialized_db: Path) -> None:
         "default_model",
         "default_agent",
         "num_ctx",
+        "system_prompt",
         "created_at",
         "updated_at",
     }

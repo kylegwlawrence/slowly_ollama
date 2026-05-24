@@ -765,6 +765,197 @@ async def test_generation_omits_system_prompt_when_no_tools(
         )
 
 
+def _set_default_project_system_prompt(db_path: Path, prompt: str) -> None:
+    """Helper: set the Default project's system_prompt."""
+    with open_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT id FROM projects ORDER BY id LIMIT 1;"
+        ).fetchone()
+        queries.update_project(conn, int(row["id"]), system_prompt=prompt)
+
+
+@pytest.mark.asyncio
+async def test_generation_injects_project_system_prompt_on_normal_chat_without_tools(
+    tmp_path, monkeypatch
+):
+    """When a Normal chat has no tools but the owning project has a
+    system prompt, every /api/chat body leads with that prompt (no nudge
+    suffix, since no tools were sent)."""
+    db_path = tmp_path / "chats.db"
+    conv_id = _setup_chat(db_path)
+    monkeypatch.setenv("DB_PATH", str(db_path))
+    with open_connection(db_path) as conn:
+        queries.rename_conversation(conn, conv_id, "locked")
+    _set_default_project_system_prompt(db_path, "Speak like a pirate.")
+
+    captured: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content or b"{}")
+        captured.append(body)
+        if body.get("stream"):
+            return httpx.Response(
+                200,
+                content=(
+                    b'{"message":{"content":"hi"},"done":false}\n'
+                    b'{"message":{"content":""},"done":true}\n'
+                ),
+            )
+        return httpx.Response(
+            200, json={"message": {"content": "", "tool_calls": []}}
+        )
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://test"
+    )
+
+    async def _not_capable(*args, **kwargs):
+        return False
+
+    monkeypatch.setattr(ollama, "model_supports_tools", _not_capable)
+
+    with open_connection(db_path) as db:
+        state = await generation.start_generation(
+            client=client,
+            db=db,
+            conversation_id=conv_id,
+            model="llama3",
+            history=queries.list_messages(db, conv_id),
+            on_complete="append",
+        )
+        await state.task
+
+    assert captured, "expected at least one /api/chat call"
+    for body in captured:
+        msgs = body.get("messages") or []
+        assert msgs[0] == {
+            "role": "system",
+            "content": "Speak like a pirate.",
+        }
+
+
+@pytest.mark.asyncio
+async def test_generation_combines_project_prompt_with_tool_nudge_when_tools_present(
+    tmp_path, monkeypatch
+):
+    """When the project has a system_prompt AND tools are sent, the
+    /api/chat body's system message is the project prompt joined to the
+    SINGLE_AGENT_SYSTEM_PROMPT with a blank line."""
+    from app.tools import builtins  # noqa: F401 — registers current_time
+    from app.generation import SINGLE_AGENT_SYSTEM_PROMPT
+
+    db_path = tmp_path / "chats.db"
+    conv_id = _setup_chat(db_path)
+    monkeypatch.setenv("DB_PATH", str(db_path))
+    with open_connection(db_path) as conn:
+        queries.rename_conversation(conn, conv_id, "locked")
+    _set_default_project_system_prompt(db_path, "Be terse.")
+
+    captured: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content or b"{}")
+        captured.append(body)
+        if body.get("stream"):
+            return httpx.Response(
+                200,
+                content=(
+                    b'{"message":{"content":"hi"},"done":false}\n'
+                    b'{"message":{"content":""},"done":true}\n'
+                ),
+            )
+        return httpx.Response(
+            200, json={"message": {"content": "", "tool_calls": []}}
+        )
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://test"
+    )
+
+    async def _capable(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr(ollama, "model_supports_tools", _capable)
+
+    with open_connection(db_path) as db:
+        state = await generation.start_generation(
+            client=client,
+            db=db,
+            conversation_id=conv_id,
+            model="llama3",
+            history=queries.list_messages(db, conv_id),
+            on_complete="append",
+        )
+        await state.task
+
+    expected = "Be terse." + "\n\n" + SINGLE_AGENT_SYSTEM_PROMPT
+    for body in captured:
+        msgs = body.get("messages") or []
+        assert msgs[0] == {"role": "system", "content": expected}
+
+
+@pytest.mark.asyncio
+async def test_generation_agent_turn_ignores_project_system_prompt(
+    tmp_path, monkeypatch
+):
+    """On an invoked-agent turn, the agent's own system prompt wins —
+    the project prompt is intentionally NOT prepended."""
+    db_path = tmp_path / "chats.db"
+    conv_id = _setup_chat(db_path)
+    monkeypatch.setenv("DB_PATH", str(db_path))
+    with open_connection(db_path) as conn:
+        queries.rename_conversation(conn, conv_id, "locked")
+    _set_default_project_system_prompt(db_path, "Project prompt here.")
+
+    captured: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content or b"{}")
+        captured.append(body)
+        if body.get("stream"):
+            return httpx.Response(
+                200,
+                content=(
+                    b'{"message":{"content":"ok"},"done":false}\n'
+                    b'{"message":{"content":""},"done":true}\n'
+                ),
+            )
+        return httpx.Response(
+            200, json={"message": {"content": "", "tool_calls": []}}
+        )
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://test"
+    )
+
+    async def _capable(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr(ollama, "model_supports_tools", _capable)
+
+    with open_connection(db_path) as db:
+        state = await generation.start_generation(
+            client=client,
+            db=db,
+            conversation_id=conv_id,
+            model="llama3",
+            history=queries.list_messages(db, conv_id),
+            on_complete="append",
+            system_prompt_override="You are the test agent.",
+            tool_allowlist=frozenset(),
+        )
+        await state.task
+
+    for body in captured:
+        msgs = body.get("messages") or []
+        assert msgs[0] == {
+            "role": "system",
+            "content": "You are the test agent.",
+        }
+        # Specifically: the project prompt must NOT leak in.
+        assert "Project prompt here." not in msgs[0]["content"]
+
+
 @pytest.mark.asyncio
 async def test_generation_passes_think_flag_into_ollama_payload(
     tmp_path, monkeypatch

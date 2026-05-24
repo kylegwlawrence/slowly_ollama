@@ -223,6 +223,44 @@ def test_update_project_leaves_num_ctx_alone_when_unpassed(conn) -> None:
     assert renamed.num_ctx == 24000
 
 
+def test_create_project_seeds_system_prompt_as_empty(conn) -> None:
+    """A newly-created project's system_prompt is the empty string."""
+    p = create_project(conn, name="Pprompt")
+    assert p.system_prompt == ""
+
+
+def test_update_project_sets_system_prompt(conn) -> None:
+    """Passing system_prompt persists the new value."""
+    p = create_project(conn, name="Psp")
+    updated = update_project(conn, p.id, system_prompt="Be terse.")
+    assert updated.system_prompt == "Be terse."
+
+
+def test_update_project_clears_system_prompt_with_empty_string(conn) -> None:
+    """Empty string clears the system_prompt back to none."""
+    p = create_project(conn, name="Pspc")
+    update_project(conn, p.id, system_prompt="Initial.")
+    cleared = update_project(conn, p.id, system_prompt="")
+    assert cleared.system_prompt == ""
+
+
+def test_update_project_clamps_system_prompt_at_200_chars(conn) -> None:
+    """An overlong prompt is truncated to 200 chars."""
+    p = create_project(conn, name="Pspl")
+    long_text = "x" * 500
+    updated = update_project(conn, p.id, system_prompt=long_text)
+    assert len(updated.system_prompt) == 200
+    assert updated.system_prompt == "x" * 200
+
+
+def test_update_project_leaves_system_prompt_alone_when_unpassed(conn) -> None:
+    """Omitting system_prompt preserves the existing value."""
+    p = create_project(conn, name="Pspu")
+    update_project(conn, p.id, system_prompt="Keep me.")
+    renamed = update_project(conn, p.id, name="Renamed3")
+    assert renamed.system_prompt == "Keep me."
+
+
 def test_update_project_no_kwargs_is_noop(conn) -> None:
     """Calling update_project with nothing returns the unchanged Project.
 

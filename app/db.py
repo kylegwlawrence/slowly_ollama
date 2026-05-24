@@ -52,6 +52,11 @@ CREATE TABLE IF NOT EXISTS projects (
     -- Per-project override for the Ollama `num_ctx` (context window in
     -- tokens). NULL = inherit the global default from app_settings.
     num_ctx           INTEGER,
+    -- Per-project system prompt prepended to Normal-chat turns in this
+    -- project. Capped at 200 chars at the route layer. Empty string =
+    -- no project prompt. Ignored on invoked-agent turns (the agent's
+    -- own system prompt wins).
+    system_prompt     TEXT NOT NULL DEFAULT '',
     created_at        TEXT NOT NULL,
     updated_at        TEXT NOT NULL
 );
@@ -332,6 +337,28 @@ def _ensure_projects_num_ctx_column(conn: sqlite3.Connection) -> None:
         )
 
 
+def _ensure_projects_system_prompt_column(conn: sqlite3.Connection) -> None:
+    """Backfill the ``system_prompt`` column on projects tables that pre-date this phase.
+
+    TEXT NOT NULL DEFAULT '' — existing projects come back as the empty
+    string, which the generation layer reads as "no project prompt".
+    Mirrors the other ``_ensure_*_column`` helpers: ``PRAGMA table_info``
+    check first so the ``ALTER TABLE`` is a no-op on fresh DBs where
+    ``_SCHEMA_SQL`` already created the column.
+
+    Args:
+        conn: Open SQLite connection.
+    """
+    columns = {row[1] for row in conn.execute(
+        "PRAGMA table_info(projects);"
+    )}
+    if "system_prompt" not in columns:
+        conn.execute(
+            "ALTER TABLE projects"
+            " ADD COLUMN system_prompt TEXT NOT NULL DEFAULT '';"
+        )
+
+
 def _ensure_conversations_active_agent_column(conn: sqlite3.Connection) -> None:
     """Backfill the ``active_agent`` column on conversations tables that pre-date phase 16.
 
@@ -516,5 +543,8 @@ def initialize_database(path: Path | None = None) -> Path:
         # Per-project Ollama context-window override: backfill the
         # num_ctx column on projects tables created before this phase.
         _ensure_projects_num_ctx_column(conn)
+        # Per-project system prompt: backfill the system_prompt column
+        # on projects tables created before this phase.
+        _ensure_projects_system_prompt_column(conn)
 
     return target

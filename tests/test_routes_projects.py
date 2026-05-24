@@ -638,6 +638,87 @@ def test_patch_project_clears_num_ctx_with_blank(
     assert project.num_ctx is None
 
 
+def test_project_settings_renders_system_prompt_textarea(
+    make_client: ClientFactory,
+) -> None:
+    """The settings tab shows a 200-char system_prompt textarea."""
+    with make_client(_ollama_unreachable) as client:
+        pid = _default_project_id()
+        response = client.get(f"/projects/{pid}/settings")
+    assert response.status_code == 200
+    assert 'name="system_prompt"' in response.text
+    assert 'maxlength="200"' in response.text
+
+
+def test_patch_project_persists_system_prompt(
+    make_client: ClientFactory,
+) -> None:
+    """Submitting system_prompt via the form persists it on the project."""
+    with make_client(_ollama_unreachable) as client:
+        pid = _default_project_id()
+        response = client.patch(
+            f"/projects/{pid}",
+            data={
+                "name": "Default",
+                "description": "",
+                "default_model": "",
+                "default_agent": "",
+                "system_prompt": "Speak like a pirate.",
+            },
+        )
+        assert response.status_code == 200
+        with open_connection(os.environ["DB_PATH"]) as conn:
+            project = queries.get_project(conn, pid)
+    assert project.system_prompt == "Speak like a pirate."
+
+
+def test_patch_project_clamps_system_prompt_at_200_chars(
+    make_client: ClientFactory,
+) -> None:
+    """An overlong system_prompt is truncated to 200 chars by the route."""
+    long_text = "z" * 500
+    with make_client(_ollama_unreachable) as client:
+        pid = _default_project_id()
+        client.patch(
+            f"/projects/{pid}",
+            data={
+                "name": "Default",
+                "description": "",
+                "system_prompt": long_text,
+            },
+        )
+        with open_connection(os.environ["DB_PATH"]) as conn:
+            project = queries.get_project(conn, pid)
+    assert len(project.system_prompt) == 200
+
+
+def test_patch_project_clears_system_prompt_with_blank(
+    make_client: ClientFactory,
+) -> None:
+    """Submitting an empty system_prompt clears the prior value."""
+    with make_client(_ollama_unreachable) as client:
+        pid = _default_project_id()
+        client.patch(
+            f"/projects/{pid}",
+            data={
+                "name": "Default",
+                "description": "",
+                "system_prompt": "Initial.",
+            },
+        )
+        client.patch(
+            f"/projects/{pid}",
+            data={
+                "name": "Default",
+                "description": "",
+                "system_prompt": "",
+            },
+        )
+        with open_connection(os.environ["DB_PATH"]) as conn:
+            project = queries.get_project(conn, pid)
+    assert project.system_prompt == ""
+
+
 def test_download_endpoint_400_when_file_tool_root_unset(
     make_client: ClientFactory, monkeypatch
 ) -> None:

@@ -68,13 +68,10 @@ _TOOL_ITERATION_CAP = 5
 # This nudges grounded retrieval while still discouraging speculative
 # calls — the same balance the per-tool `current_time` description strikes.
 SINGLE_AGENT_SYSTEM_PROMPT = (
-    "You have tools available. Use them when they materially help: when a "
-    "question depends on information in the user's configured knowledge "
-    "sources, call the retrieval tool to ground your answer instead of "
-    "relying on memory. Do not call tools speculatively or for things you "
-    "already know — call a tool only when its result would change your answer. "
-    "If the user explicitly asks you to use a specific tool, call that tool "
-    "even if you would not have chosen to call it on your own."
+    "You have tools available. Call one only when its result would change "
+    "your answer — prefer retrieval over memory for questions grounded in "
+    "the user's configured knowledge sources. Don't call tools speculatively. "
+    "If the user asks for a specific tool, use it."
 )
 
 
@@ -672,18 +669,34 @@ async def _run_generation(
         else None
     )
 
+    # Phase 17: resolve the owning project up-front. Needed for two
+    # things: (1) the per-project workspace root for file tools, and
+    # (2) the per-project system prompt injected on Normal-chat turns.
+    try:
+        _project = queries.get_project_for_conversation(db, conversation_id)
+    except LookupError:
+        # Defensive: post-phase-17, every chat has a project. Degrade
+        # to None so the turn still runs without project-scoped extras.
+        _project = None
+
     # System prompt selection:
     #   - Agent turn: always inject the agent's prompt — it's the agent's
     #     identity, and a no-tools agent (Content Generator) still needs it.
-    #   - Normal turn: inject the tool-use nudge ONLY when tools are actually
-    #     sent. With no tools, a "use your tools" policy is just noise — and
-    #     omitting it keeps plain chat byte-identical to pre-phase-15.
+    #     The per-project prompt is intentionally IGNORED here; agents have
+    #     purposeful prompts of their own.
+    #   - Normal turn: combine the project's system prompt (when set) with
+    #     the tool-use nudge (when tools are actually sent). With neither,
+    #     omit the system message entirely — keeps plain chat byte-identical
+    #     to pre-project-prompt behavior for users who haven't set one.
     if tool_allowlist is not None:
         system_prompt = system_prompt_override
     else:
-        system_prompt = (
-            SINGLE_AGENT_SYSTEM_PROMPT if tools_payload is not None else None
-        )
+        parts: list[str] = []
+        if _project is not None and _project.system_prompt:
+            parts.append(_project.system_prompt)
+        if tools_payload is not None:
+            parts.append(SINGLE_AGENT_SYSTEM_PROMPT)
+        system_prompt = "\n\n".join(parts) if parts else None
 
     turn_id = str(time.monotonic_ns())
     card_id = render.card_id_for(turn_id)
@@ -700,22 +713,18 @@ async def _run_generation(
     persisted_or_errored = False
 
     # Phase 17: scope the file tools to this chat's project workspace
-    # for the duration of the turn. Resolve the project NOW so the
-    # ContextVar set/reset can wrap the whole producer body — file-tool
-    # calls inside this region see the per-project root via
-    # `_active_workspace_root` (with fallback to FILE_TOOL_ROOT when the
-    # project workspace can't be resolved, e.g. FILE_TOOL_ROOT unset).
-    try:
-        _project = queries.get_project_for_conversation(db, conversation_id)
+    # for the duration of the turn. The ContextVar set/reset wraps the
+    # whole producer body — file-tool calls inside this region see the
+    # per-project root via `current_workspace_root` (with fallback to
+    # FILE_TOOL_ROOT when the project workspace can't be resolved, e.g.
+    # FILE_TOOL_ROOT unset or the defensive None-project path above).
+    if _project is not None:
         ws_root = project_workspace_root(_project)
         if ws_root is not None:
             # Lazily create so a brand-new project's workspace exists
             # by the time a tool tries to read/write within it.
             ws_root.mkdir(parents=True, exist_ok=True)
-    except LookupError:
-        # Defensive: post-phase-17, every chat has a project. If we
-        # somehow can't resolve one, degrade to the FILE_TOOL_ROOT
-        # fallback instead of crashing the turn.
+    else:
         ws_root = None
     ws_token = current_workspace_root.set(ws_root)
 
