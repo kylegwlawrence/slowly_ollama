@@ -5,9 +5,6 @@ model can call:
 - The function's name becomes the tool's name.
 - The first line of its docstring becomes the tool description.
 - Its type hints become the tool's argument JSON schema.
-- An `is_read_only` flag (default True) determines whether tool
-  execution requires user confirmation (phase 12 has no
-  confirm-needed tools yet; the flag is forward-looking).
 
 The registry (`TOOLS`) is a module-level dict the routes layer
 queries via `tool_specs_for_ollama()` (formats for Ollama's
@@ -182,16 +179,12 @@ class ToolSpec:
             dict so phase 12c can refresh dynamic fields (e.g. enum
             descriptions sourced from the RAG-servers list) without
             re-registering the tool.
-        is_read_only: When True, the route layer auto-executes the
-            tool. When False, the route should require user
-            confirmation (no such tools exist in phase 12 yet).
         func: The actual callable. May be sync or async; `run_tool`
             awaits async functions and calls sync ones directly.
     """
     name: str
     description: str
     parameters_schema: dict
-    is_read_only: bool
     func: Callable[..., object] | Callable[..., Awaitable[object]]
 
 
@@ -245,11 +238,7 @@ def _parse_arg_descriptions(docstring: str) -> dict[str, str]:
     return out
 
 
-def tool(
-    func: Callable | None = None,
-    *,
-    is_read_only: bool = True,
-) -> Callable:
+def tool(fn: Callable) -> Callable:
     """Decorate a function to register it as a callable tool.
 
     Usage::
@@ -264,74 +253,61 @@ def tool(
             ...
 
     Args:
-        func: The function being decorated (when used without arguments).
-        is_read_only: When True, the route layer auto-executes. When
-            False, user confirmation is required (phase 12 has no such
-            tools yet).
+        fn: The function being decorated.
 
     Returns:
         The original function, unmodified. Registration is a side
         effect — call sites use the function normally; the model
         sees it via TOOLS / tool_specs_for_ollama().
     """
-    def _decorate(fn: Callable) -> Callable:
-        name = fn.__name__
-        doc = inspect.getdoc(fn) or ""
-        # First line of the docstring = tool description shown to the model.
-        # Fall back to the function name so the model always sees something.
-        description = doc.split("\n", 1)[0].strip() or name
-        arg_descriptions = _parse_arg_descriptions(doc)
+    name = fn.__name__
+    doc = inspect.getdoc(fn) or ""
+    # First line of the docstring = tool description shown to the model.
+    # Fall back to the function name so the model always sees something.
+    description = doc.split("\n", 1)[0].strip() or name
+    arg_descriptions = _parse_arg_descriptions(doc)
 
-        # get_type_hints resolves string-form annotations (PEP 563/649) and
-        # follows the function's __globals__, so this works with `from
-        # __future__ import annotations` and `X | None` syntax alike.
-        hints = typing.get_type_hints(fn)
-        sig = inspect.signature(fn)
+    # get_type_hints resolves string-form annotations (PEP 563/649) and
+    # follows the function's __globals__, so this works with `from
+    # __future__ import annotations` and `X | None` syntax alike.
+    hints = typing.get_type_hints(fn)
+    sig = inspect.signature(fn)
 
-        properties: dict[str, dict] = {}
-        required: list[str] = []
-        for param_name, param in sig.parameters.items():
-            if param_name == "self":
-                continue
-            py_type = hints.get(param_name, str)
-            # Strip Optional[X] / X | None down to X for schema purposes.
-            # Both forms collapse to `Union[X, None]` at the typing level,
-            # which has Union as the origin and includes NoneType in args.
-            origin = typing.get_origin(py_type)
-            if origin is typing.Union or (origin is not None and type(None) in typing.get_args(py_type)):
-                non_none = [a for a in typing.get_args(py_type) if a is not type(None)]
-                py_type = non_none[0] if non_none else str
-            # dict(...) copies so each tool gets its own schema dict (avoids
-            # accidental cross-tool mutation of the shared template).
-            schema = dict(_TYPE_TO_JSON_SCHEMA.get(py_type, {"type": "string"}))
-            if param_name in arg_descriptions:
-                schema["description"] = arg_descriptions[param_name]
-            properties[param_name] = schema
-            if param.default is inspect.Parameter.empty:
-                required.append(param_name)
+    properties: dict[str, dict] = {}
+    required: list[str] = []
+    for param_name, param in sig.parameters.items():
+        if param_name == "self":
+            continue
+        py_type = hints.get(param_name, str)
+        # Strip Optional[X] / X | None down to X for schema purposes.
+        # Both forms collapse to `Union[X, None]` at the typing level,
+        # which has Union as the origin and includes NoneType in args.
+        origin = typing.get_origin(py_type)
+        if origin is typing.Union or (origin is not None and type(None) in typing.get_args(py_type)):
+            non_none = [a for a in typing.get_args(py_type) if a is not type(None)]
+            py_type = non_none[0] if non_none else str
+        # dict(...) copies so each tool gets its own schema dict (avoids
+        # accidental cross-tool mutation of the shared template).
+        schema = dict(_TYPE_TO_JSON_SCHEMA.get(py_type, {"type": "string"}))
+        if param_name in arg_descriptions:
+            schema["description"] = arg_descriptions[param_name]
+        properties[param_name] = schema
+        if param.default is inspect.Parameter.empty:
+            required.append(param_name)
 
-        parameters_schema = {
-            "type": "object",
-            "properties": properties,
-            "required": required,
-        }
+    parameters_schema = {
+        "type": "object",
+        "properties": properties,
+        "required": required,
+    }
 
-        spec = ToolSpec(
-            name=name,
-            description=description,
-            parameters_schema=parameters_schema,
-            is_read_only=is_read_only,
-            func=fn,
-        )
-        TOOLS[name] = spec
-        return fn
-
-    # Allow both `@tool` and `@tool(is_read_only=False)` forms. When used
-    # bare (`@tool`), `func` is the function being decorated; with kwargs
-    # (`@tool(is_read_only=False)`) the outer call returns the decorator.
-    if func is None:
-        return _decorate
-    return _decorate(func)
+    TOOLS[name] = ToolSpec(
+        name=name,
+        description=description,
+        parameters_schema=parameters_schema,
+        func=fn,
+    )
+    return fn
 
 
 def tool_specs_for_ollama() -> list[dict]:

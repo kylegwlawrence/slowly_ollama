@@ -124,9 +124,8 @@ live_generations: dict[int, GenerationState] = {}
 def _sse(payload: str, event: str | None = None) -> str:
     """Format an HTML payload as a single SSE message.
 
-    Mirrors `app.routes._sse` (kept duplicated to avoid circular
-    imports — routes.py imports from this module). Each newline in
-    `payload` becomes its own `data:` line per the SSE spec.
+    Each newline in ``payload`` becomes its own ``data:`` line per the
+    SSE spec.
     """
     prefix = f"event: {event}\n" if event else ""
     lines = payload.split("\n") if payload else [""]
@@ -458,10 +457,9 @@ def _build_history_payload(
             skip_next_result = False
             out.append({"role": m.role, "content": m.content})
         else:
-            # Unknown/legacy role (e.g. research_findings / review_verdict
-            # rows left by the removed agentic loop). Drop silently so a
-            # chat that used a since-removed feature still serializes into
-            # a valid Ollama payload instead of shipping an invalid role.
+            # Unknown role — drop silently so legacy rows from removed
+            # features still serialize into a valid Ollama payload
+            # instead of shipping an invalid role.
             skip_next_result = False
     return out
 
