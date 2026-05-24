@@ -1883,6 +1883,28 @@ body {
   font-size: 16px;
 }
 
+/* Small "Compacting…" indicator that appears just above the composer
+   while POST /chats/{id}/compact is in flight. The `.htmx-indicator`
+   base rule (opacity 0) is provided by htmx itself; we only need to
+   style the visible state. */
+.chat-panel__compacting {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-md);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.chat-panel__compacting .material-symbols-outlined {
+  font-size: 14px;
+  animation: chat-panel__compacting-spin 1s linear infinite;
+}
+
+@keyframes chat-panel__compacting-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* Summary bubble. Distinct from the assistant variant — slightly
    different background and a left-border accent so a glance tells
    the user "this is a synthesized view of earlier turns, not
