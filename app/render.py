@@ -347,9 +347,8 @@ def group_messages_for_render(messages: list[Message]) -> list[Block]:
     that used the tools. A `user` / `assistant` row flushes the pending run
     ahead of itself and emits a :class:`MessageBlock`. Any other role is
     silently skipped: this defends against legacy rows left by removed
-    features (e.g. the old agentic loop's `research_findings` /
-    `review_verdict`) so they neither render as stray bubbles nor get folded
-    into a tool card.
+    features so they neither render as stray bubbles nor get folded into a
+    tool card.
 
     Rules:
         - Tool rows accumulate into a pending run; a renderable message row

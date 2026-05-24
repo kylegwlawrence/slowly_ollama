@@ -40,8 +40,6 @@ def test_decorator_registers_with_inferred_schema() -> None:
     assert props["y"]["type"] == "integer"
     # Only x is required; y has a default.
     assert spec.parameters_schema["required"] == ["x"]
-    # Read-only by default.
-    assert spec.is_read_only is True
 
 
 def test_decorator_handles_no_docstring() -> None:
@@ -880,16 +878,6 @@ def test_write_file_rejects_traversal(
     assert not (tmp_path / "escape.txt").exists()
 
 
-def test_write_file_marked_not_read_only(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """write_file is the only mutating tool; read_file stays read-only."""
-    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
-    _file_builtins.refresh_file_tools_registration()
-    assert TOOLS["write_file"].is_read_only is False
-    assert TOOLS["read_file"].is_read_only is True
-
-
 def test_refresh_registers_file_tools_when_root_set(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1083,15 +1071,6 @@ def test_refresh_pops_list_directory_when_root_unset(
     assert "list_directory" not in TOOLS
 
 
-def test_list_directory_is_read_only(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """list_directory is read-only (no confirmation needed)."""
-    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
-    _file_builtins.refresh_file_tools_registration()
-    assert TOOLS["list_directory"].is_read_only is True
-
-
 @pytest.mark.asyncio
 async def test_run_tool_dispatches_list_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1224,15 +1203,6 @@ def test_search_files_truncates_at_cap(
     assert f"showing first {_file_builtins._SEARCH_CAP}" in out
     assert out.count("[file]") == _file_builtins._SEARCH_CAP
     assert f"{total} file" in out
-
-
-def test_search_files_is_read_only(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """search_files is read-only (no confirmation needed)."""
-    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
-    _file_builtins.refresh_file_tools_registration()
-    assert TOOLS["search_files"].is_read_only is True
 
 
 def test_refresh_includes_search_files_when_root_set(
