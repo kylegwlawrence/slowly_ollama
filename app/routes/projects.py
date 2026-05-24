@@ -428,6 +428,7 @@ async def project_chat_panel_endpoint(
         )
     messages = queries.list_messages(db, conversation_id)
     blocks = render.group_messages_for_render(messages)
+    archived_count = queries.count_archived_messages(db, conversation_id)
 
     # Phase 12g: identical pending-stream logic to the legacy
     # get_chat_panel_endpoint — preserved verbatim so a reload during an
@@ -458,6 +459,7 @@ async def project_chat_panel_endpoint(
             "conversation": conversation,
             "active_chat_id": conversation.id,
             "blocks": blocks,
+            "archived_count": archived_count,
             "pending_stream_url": pending_stream_url,
             "supports_tools": supports_tools,
             "tool_states": tool_states,
@@ -564,6 +566,11 @@ async def create_project_chat_endpoint(
     panel_html = templates.get_template("_chat_panel.html").render(
         conversation=chat,
         blocks=blocks,
+        # Phase 18: a brand-new chat can't have archived rows yet (no
+        # compaction is possible), but pass 0 explicitly so the template's
+        # `archived_count is defined` check is symmetric with the chat-
+        # panel-load path.
+        archived_count=0,
         pending_stream_url=f"/chats/{chat.id}/stream",
         active_chat_id=chat.id,
         supports_tools=supports_tools,

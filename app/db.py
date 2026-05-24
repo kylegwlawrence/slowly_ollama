@@ -105,11 +105,25 @@ CREATE TABLE IF NOT EXISTS messages (
     -- the output it generated. Use the most-recent turn's prompt_tokens
     -- as "current context size" — summing across turns double-counts.
     prompt_tokens   INTEGER,
-    eval_tokens     INTEGER
+    eval_tokens     INTEGER,
+    -- Phase 18: ISO 8601 UTC stamp set when the manual-compact endpoint
+    -- archives this row. NULL = active, included in the prompt sent to
+    -- Ollama. Non-NULL = hidden from the prompt; the row stays in the DB
+    -- so compaction is reversible. Rendering still shows archived rows
+    -- (faded, behind a disclosure) so the user can audit what was hidden.
+    archived_at     TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_conversation_created
 ON messages (conversation_id, created_at);
+
+-- Phase 18's `idx_messages_active` partial index is created inside the
+-- archived_at migration helper (`_ensure_messages_archived_at_column`)
+-- rather than here. Reason: on legacy DBs the `CREATE TABLE IF NOT
+-- EXISTS` above is a no-op, so the `archived_at` column doesn't exist
+-- yet at the time this script runs — referencing it in a partial-index
+-- predicate would error. The migration helper adds the column and the
+-- index in the right order, and runs idempotently on fresh DBs too.
 
 -- Phase 12a: configured RAG endpoints. Each row is one source the
 -- chat model can query via the query_rag tool. `url` is the FULL
@@ -413,6 +427,37 @@ def _ensure_messages_token_count_columns(conn: sqlite3.Connection) -> None:
         )
 
 
+def _ensure_messages_archived_at_column(conn: sqlite3.Connection) -> None:
+    """Backfill the ``archived_at`` column on legacy messages tables.
+
+    Phase 18. Nullable TEXT with no default — existing rows come back as
+    NULL (i.e. active, included in the prompt). Mirrors the other
+    ``_ensure_*_column`` helpers: ``PRAGMA table_info`` check first so the
+    ``ALTER TABLE`` is a no-op on fresh DBs where ``_SCHEMA_SQL`` already
+    created the column. Adds the partial index too if missing — both
+    schema bits travel together so a legacy DB ends up with the same
+    index a fresh one gets.
+
+    Args:
+        conn: Open SQLite connection.
+    """
+    columns = {row[1] for row in conn.execute(
+        "PRAGMA table_info(messages);"
+    )}
+    if "archived_at" not in columns:
+        conn.execute(
+            "ALTER TABLE messages ADD COLUMN archived_at TEXT;"
+        )
+    # Partial index. ``CREATE INDEX IF NOT EXISTS`` is a no-op when the
+    # index already exists; included here so legacy DBs get the index
+    # the schema string creates on fresh installs.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_active"
+        " ON messages (conversation_id, created_at)"
+        " WHERE archived_at IS NULL;"
+    )
+
+
 def _migrate_messages_drop_role_check(conn: sqlite3.Connection) -> None:
     """Drop the role CHECK from an existing messages table.
 
@@ -513,6 +558,10 @@ def initialize_database(path: Path | None = None) -> Path:
         # AFTER the role-check drop because that migration recreates
         # the table without the new columns.
         _ensure_messages_token_count_columns(conn)
+        # Phase 18: backfill archived_at on messages tables created before
+        # manual compaction existed. Same ordering rationale — runs after
+        # the role-check recreate.
+        _ensure_messages_archived_at_column(conn)
         # RAG source descriptions: backfill the description column on
         # rag_servers tables created before this phase.
         _ensure_rag_servers_description_column(conn)

@@ -1,0 +1,39 @@
+{# Phase 18: extracted from _chat_panel.html so the manual-compact endpoint
+   can return just this fragment for an outerHTML swap into #messages.
+
+   Iteration source is `blocks` (from app.render.group_messages_for_render).
+   Block kinds:
+     - "message"    — standalone user / assistant bubble (_message.html)
+     - "tool_batch" — aggregated tool card (_tool_card_shell.html)
+     - "summary"    — synthetic compaction summary (_summary_bubble.html)
+
+   Each branch sets up the loop-local variables its template expects.
+   `archived_count` is bound from the render context (the route passes it
+   alongside blocks); the summary template hides the disclosure when 0. #}
+<div id="messages" class="messages">
+  {% for block in blocks %}
+    {% if block.kind == "tool_batch" %}
+      {% set card_id = block.card_id %}
+      {% set list_id = block.list_id %}
+      {% set summary_id = block.summary_id %}
+      {% set summary_text = block.summary %}
+      {% set rows = block.rows %}
+      {% set swap_oob = none %}
+      {% include "_tool_card_shell.html" %}
+    {% elif block.kind == "summary" %}
+      {% set message = block.message %}
+      {% include "_summary_bubble.html" %}
+    {% else %}
+      {% set message = block.message %}
+      {% include "_message.html" %}
+    {% endif %}
+  {% endfor %}
+  {# `pending_stream_url` is set when an assistant generation needs a
+     streaming placeholder. The compact endpoint passes None — its
+     response shouldn't introduce a new placeholder. #}
+  {% if pending_stream_url is defined and pending_stream_url %}
+    {% set conversation_id = conversation.id %}
+    {% set stream_url = pending_stream_url %}
+    {% include "_assistant_placeholder.html" %}
+  {% endif %}
+</div>

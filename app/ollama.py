@@ -488,6 +488,102 @@ async def maybe_tool_call(
         ) from e
 
 
+async def summarize_conversation(
+    client: httpx.AsyncClient,
+    model: str,
+    history: list[dict[str, str]],
+    *,
+    num_ctx: int | None = None,
+) -> str:
+    """Ask ``model`` to summarize ``history`` into a compact briefing.
+
+    Phase 18: powers the manual ``Compact`` action. Single-shot,
+    non-streaming POST to ``/api/chat``. Uses the chat's own model — it's
+    already warm in Ollama's memory from the previous turn, so the
+    round-trip is cheap and we don't load a second model resident.
+
+    Unlike :func:`generate_title`, the model's output is returned with
+    only whitespace stripping — no quote unwrapping, no word cap, no
+    preamble heuristics. The summarization prompt is explicit enough
+    that smaller models reply cleanly; if a model's output ever needs
+    sanitizing, do it in the caller (the compact endpoint) so the
+    helper stays a thin Ollama wrapper.
+
+    Args:
+        client: Async ``httpx.AsyncClient`` pointed at the Ollama host.
+        model: Identifier of an installed Ollama model. The caller should
+            pass the conversation's own model so the summarizer reuses the
+            warm KV cache.
+        history: Conversation rows in Ollama wire format (already mapped
+            by :func:`app.generation.build_history_payload`). This helper
+            does NOT filter — pass exactly the rows you want summarized.
+        num_ctx: Per-project context-window override, mirroring
+            :func:`stream_chat`. ``None`` omits the key (Ollama default).
+
+    Returns:
+        The stripped summary text. The caller is expected to treat the
+        empty string as ``"skip — don't archive anything"``.
+
+    Raises:
+        OllamaUnavailable: Ollama is unreachable, the request timed out,
+            or the server returned a non-2xx status.
+        OllamaProtocolError: Ollama responded but the body wasn't valid
+            JSON or didn't have the expected shape.
+    """
+    # The instruction is delivered as a final user turn, mirroring
+    # generate_title. Small local models follow a verb-first user
+    # instruction more reliably than a `system` directive.
+    instruction = {
+        "role": "user",
+        "content": (
+            "Summarize the conversation above into a compact briefing"
+            " that preserves what the assistant needs to keep responding"
+            " well. Keep:"
+            "\n- the user's stated goals, constraints, and preferences"
+            "\n- concrete facts, decisions, and conclusions"
+            "\n- findings from tool calls (what was asked, what was found)"
+            "\n- open questions and unresolved threads"
+            "\n- any persona or style instructions the user gave"
+            "\nOmit pleasantries, restated questions, and long verbatim"
+            " quotes. Write a third-person briefing, not dialogue. Under"
+            " ~400 words. Begin directly — no preamble."
+        ),
+    }
+    # Low temperature: compaction is a recall task, not a generative one.
+    # Hardcoded (not the chat's own temperature) so a creatively-tuned
+    # chat doesn't get a creatively-summarized history.
+    options: dict = {"temperature": 0.2}
+    if num_ctx is not None:
+        options["num_ctx"] = num_ctx
+    payload = {
+        "model": model,
+        "messages": [*history, instruction],
+        "stream": False,
+        "options": options,
+    }
+
+    try:
+        # 120s cap: the model is warm but the input may be the entire
+        # conversation, so the time-to-first-token can be longer than a
+        # title call. The default 300s read timeout on the shared client
+        # would also work; the explicit value documents intent.
+        response = await client.post(
+            "/api/chat", json=payload, timeout=120.0
+        )
+        response.raise_for_status()
+    except (httpx.HTTPError, httpx.InvalidURL) as e:
+        raise OllamaUnavailable(f"Compaction request failed: {e}") from e
+
+    try:
+        text = response.json()["message"]["content"]
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        raise OllamaProtocolError(
+            f"Ollama returned an unexpected /api/chat shape: {e}"
+        ) from e
+
+    return text.strip()
+
+
 async def generate_title(
     client: httpx.AsyncClient,
     model: str,

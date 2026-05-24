@@ -456,12 +456,35 @@ def _build_history_payload(
         elif m.role in ("user", "assistant"):
             skip_next_result = False
             out.append({"role": m.role, "content": m.content})
+        elif m.role == "summary":
+            # Phase 18: synthetic row produced by the manual-compact
+            # endpoint. Inject as a `system` message so the model treats
+            # it as background context, not a past turn it has to
+            # respond to. Multiple `system` messages are tolerated in
+            # the Ollama wire format; if the caller passes a turn-level
+            # system_prompt that's prepended above, this one falls
+            # AFTER it, which is the right precedence: agent / project
+            # instructions speak for the CURRENT turn, the summary
+            # speaks for what came BEFORE.
+            skip_next_result = False
+            out.append({
+                "role": "system",
+                "content": f"Earlier conversation summary:\n\n{m.content}",
+            })
         else:
             # Unknown role — drop silently so legacy rows from removed
             # features still serialize into a valid Ollama payload
             # instead of shipping an invalid role.
             skip_next_result = False
     return out
+
+
+# Phase 18: public alias for the same function so out-of-module callers (the
+# manual-compact route in app.routes.chats) can use it by its public name
+# without reaching into a leading-underscore symbol. The internal call sites
+# inside this module + the existing test suite keep using the underscore name
+# — they share a function object, not just a name.
+build_history_payload = _build_history_payload
 
 
 async def _maybe_emit_title(
@@ -490,7 +513,10 @@ async def _maybe_emit_title(
     if not 1 <= count <= 3:
         return
 
-    full_history = queries.list_messages(db, conversation_id)
+    # Phase 18: title generation runs on the ACTIVE history (post-compact)
+    # so the auto-titler reflects what the conversation effectively *is*
+    # right now — not a stale prefix that's been archived away.
+    full_history = queries.list_active_messages(db, conversation_id)
     try:
         title = await ollama.generate_title(
             client,
@@ -827,7 +853,10 @@ async def _run_generation(
 
                 del in_flight[row_id]
 
-            working_history = queries.list_messages(db, conversation_id)
+            # Phase 18: read back only the active rows so a chat that was
+            # compacted earlier doesn't re-bloat its prompt on the next
+            # tool-loop iteration.
+            working_history = queries.list_active_messages(db, conversation_id)
         else:
             # Iteration cap hit: persist apology + emit done with
             # frozen-row OOBs for any unpaired calls.

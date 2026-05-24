@@ -304,6 +304,57 @@ def test_migration_backfills_active_agent_column(tmp_path: Path) -> None:
         assert value is None
 
 
+def test_migration_backfills_archived_at_column(tmp_path: Path) -> None:
+    """Phase 18: a messages table that pre-dates this phase gets the
+    nullable archived_at column backfilled on init (NULL = active row).
+    """
+    db = tmp_path / "chats.db"
+    with sqlite3.connect(db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY,
+                conversation_id INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            INSERT INTO messages
+                (conversation_id, role, content, created_at)
+                VALUES (1, 'user', 'legacy row', 'now');
+            """
+        )
+
+    initialize_database(db)
+
+    with sqlite3.connect(db) as conn:
+        columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(messages);")
+        }
+        assert "archived_at" in columns
+        value = conn.execute(
+            "SELECT archived_at FROM messages WHERE content = 'legacy row';"
+        ).fetchone()[0]
+        assert value is None
+
+
+def test_partial_index_idx_messages_active_present(
+    initialized_db: Path,
+) -> None:
+    """Phase 18: the partial index over active rows is created on init.
+
+    Created by ``_ensure_messages_archived_at_column`` so it lands on
+    both fresh DBs and legacy ones after the migration adds the column.
+    """
+    with _open(initialized_db) as conn:
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master"
+            " WHERE type='index' AND tbl_name='messages';"
+        ).fetchall()
+    names = {r[0] for r in rows}
+    assert "idx_messages_active" in names
+
+
 def test_rag_servers_table_exists_after_init(initialized_db: Path) -> None:
     """Phase 12a introduced the rag_servers table; verify its columns."""
     with _open(initialized_db) as conn:

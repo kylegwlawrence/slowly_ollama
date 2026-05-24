@@ -58,7 +58,10 @@ from app.queries.conversations import (
 )
 from app.queries.messages import (
     append_message,
+    archive_messages_before,
+    count_archived_messages,
     count_assistant_messages,
+    list_active_messages,
     list_messages,
     replace_last_assistant_message,
 )
@@ -112,7 +115,10 @@ __all__ = [
     "set_name_auto",
     # Messages
     "append_message",
+    "archive_messages_before",
+    "count_archived_messages",
     "count_assistant_messages",
+    "list_active_messages",
     "list_messages",
     "replace_last_assistant_message",
     # Projects
