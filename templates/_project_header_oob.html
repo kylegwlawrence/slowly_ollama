@@ -1,0 +1,8 @@
+{# Project-page header name as an OOB swap target.
+
+   Sent alongside the PATCH /projects/{id} response so a rename lands in
+   the page header without requiring a separate refresh.
+
+   Context: project. #}
+<h2 id="project-page-name" class="project-page__name"
+    hx-swap-oob="true">{{ project.name }}</h2>
