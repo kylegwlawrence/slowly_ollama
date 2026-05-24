@@ -50,7 +50,7 @@
              {% if state.enabled %}checked{% endif %}
              class="tool-chip__checkbox">
       <span class="tool-chip__check">{% if state.enabled %}✓{% else %}✕{% endif %}</span>
-      <span class="tool-chip__label">{{ state.server_name }}</span>
+      <span class="tool-chip__label">{{ state.server_name.removesuffix('_rag') }}</span>
     </label>
     {% else %}
     <button class="tool-chip {% if state.enabled %}tool-chip--on{% else %}tool-chip--off{% endif %}"
@@ -58,7 +58,7 @@
             hx-target="#chat-tool-chips"
             hx-swap="innerHTML">
       <span class="tool-chip__check">{% if state.enabled %}✓{% else %}✕{% endif %}</span>
-      <span class="tool-chip__label">{{ state.server_name }}</span>
+      <span class="tool-chip__label">{{ state.server_name.removesuffix('_rag') }}</span>
     </button>
     {% endif %}
   {% endfor %}

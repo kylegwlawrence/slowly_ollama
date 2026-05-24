@@ -848,22 +848,18 @@ body {
 
 /* ===== Agent picker (phase 16) =========================================== */
 
-/* In-chat agent picker — its own form directly above .message-form, aligned
-   to the same horizontal padding as the input pill below it. */
-.message-form__agent {
-  padding: var(--space-md) var(--space-xl) 0;
-  margin: 0;
-}
-
-/* The picker <select>, shared by the composer toolbar and the in-chat form.
-   Compact to match the toolbar baseline (Pico's default select is tall). */
+/* The picker <select>, shared by the composer toolbar and the in-chat header.
+   Sized to match .tool-chip.temp-chip (font-size, border-radius, line-height,
+   padding) so it sits flush with the temp + tool-cap chips in the header.
+   Pico's default select is taller, so we explicitly reset height. */
 .agent-select {
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   padding: var(--space-xs) var(--space-md);
   background: var(--bg);
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: 14px;
+  line-height: 1;
   height: auto;
   margin: 0;
 }
