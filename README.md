@@ -138,4 +138,5 @@ docs/code_reviews/   # Dated code reviews
 - **Tool calling** — extensible tool system; built-in tools: `current_time`, `query_rag` (RAG retrieval), and a workspace file suite (`read_file`, `write_file`, `list_directory`, `search_files`) gated on `FILE_TOOL_ROOT`
 - **RAG support** — register external retrieval servers from `/settings` and let the model query them via the `query_rag` tool
 - **User-invoked agents** — pick a named agent (Research, Content Generator) from the composer; each agent has its own model, system prompt, and tool allowlist
+- **Per-project system prompt** — set a short (≤200 char) system prompt on the project settings page; it's prepended to every Normal-chat turn in that project (ignored on agent turns, which use the agent's own prompt)
 - **Fully local** — no telemetry, no cloud API calls, works offline
