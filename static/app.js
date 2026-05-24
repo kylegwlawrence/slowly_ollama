@@ -309,3 +309,74 @@ document.body.addEventListener('change', function (e) {
 
 // (data-default re-selection lives inside the single htmx:afterSwap
 // handler above — see responsibility #2.)
+
+// ---------------------------------------------------------------------
+// Incremental markdown rendering for streaming assistant tokens
+// ---------------------------------------------------------------------
+// Default htmx-ext-sse behaviour for the assistant placeholder's
+// `sse-swap="token,..."` is a `beforeend` append of each chunk's
+// html-escaped text. That means the user sees plain text accumulating
+// during the stream, then a sudden plain→formatted flip when `done`
+// swaps in the markdown-rendered bubble.
+//
+// We intercept `token` events before htmx swaps them: keep an in-memory
+// raw-markdown buffer keyed off the placeholder element, re-render with
+// marked on each chunk, and write the rendered HTML into the placeholder.
+// Other SSE events (done, error, title, tool-call, tool-result) pass
+// through htmx unmodified — the htmx:sseBeforeMessage handler bails out
+// for anything other than `token` on a streaming placeholder.
+//
+// The buffer lives in a WeakMap so it's GC'd when the placeholder is
+// replaced by the persisted bubble on `done` (outerHTML OOB swap drops
+// the element from the DOM).
+
+const streamBuffers = new WeakMap();
+
+function unescapeHtml(s) {
+  // Inverse of Python's html.escape() that generation.py runs on each
+  // chunk before emitting it as the `token` event payload.
+  return s
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#x27;/g, "'");
+}
+
+document.body.addEventListener('htmx:sseBeforeMessage', (e) => {
+  const elt = e.target;
+  if (!(elt instanceof Element)) return;
+  if (!elt.classList.contains('message--streaming')) return;
+  const sseEvent = e.detail;
+  if (!sseEvent || sseEvent.type !== 'token') return;
+
+  const prev = streamBuffers.get(elt) || '';
+  const next = prev + unescapeHtml(sseEvent.data);
+  streamBuffers.set(elt, next);
+
+  // Wrap in `.message__content` so the same CSS rules that style the
+  // persisted assistant bubble (paragraph margins, code block surfaces,
+  // table borders, etc. — all scoped to `.message--assistant
+  // .message__content`) apply during streaming too. Without the
+  // wrapper the streaming markdown would render unstyled and then
+  // restyle when `done` swaps the persisted bubble in.
+  let rendered;
+  if (typeof marked !== 'undefined') {
+    try {
+      rendered = marked.parse(next);
+    } catch {
+      // A partial chunk can leave markdown in an unparseable state
+      // (e.g. an unclosed code fence). Fall back to plain text so the
+      // user still sees something coherent until the next chunk lands.
+      elt.textContent = next;
+      e.preventDefault();
+      return;
+    }
+  } else {
+    elt.textContent = next;
+    e.preventDefault();
+    return;
+  }
+  elt.innerHTML = `<div class="message__content">${rendered}</div>`;
+  e.preventDefault();
+});

@@ -33,6 +33,12 @@
      order, after DOM parse, before DOMContentLoaded. #}
   <script src="/static/htmx.min.js" defer></script>
   <script src="/static/htmx-ext-sse.js" defer></script>
+  {# Vendored marked.js — used by app.js to re-render the streaming
+     assistant buffer as markdown on each token, so formatting builds
+     up incrementally instead of flipping from plain text to formatted
+     once the `done` event lands. Classic `defer` (not module) so it
+     drops `marked` onto `window`, where app.js can read it. #}
+  <script src="/static/marked.min.js" defer></script>
   <script src="/static/app.js" type="module"></script>
 
   {# These two rules MUST stay inline — tests substring-match them in
