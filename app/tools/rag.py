@@ -38,10 +38,10 @@ _PER_CHUNK_TEXT_CAP = 800
 _TOTAL_OUTPUT_CAP = 4000
 
 # Retrieval should be fast (sparse FTS5 + dense ANN over local SQLite on
-# the RAG server side). 15s total / 5s connect leaves headroom for slow
+# the RAG server side). 30s total / 5s connect leaves headroom for slow
 # Tailscale routes between the chat app and the RAG box, while still
 # failing fast on a truly down server.
-_RAG_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
+_RAG_TIMEOUT = httpx.Timeout(30.0, connect=5.0)
 
 
 def _list_sources() -> list[RagServer]:
