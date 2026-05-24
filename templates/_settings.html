@@ -39,6 +39,12 @@
          since the body is untrusted), unhide it, paint the red cancel
          glyph. HTMX skips the target swap on non-2xx, so the list
          stays intact and the user only sees the error + icon change. #}
+    <p class="settings__section-help">
+      <strong>Name</strong> must match a database key from the remote's
+      <code>/health</code> response (the app probes it before saving). If
+      the typed name isn't a known database, the error lists the
+      available ones so you can copy a correct value.
+    </p>
     <form class="rag-server-form"
           hx-post="/settings/servers"
           hx-target="#rag-servers-list"

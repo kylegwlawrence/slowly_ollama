@@ -343,14 +343,22 @@ def tool_specs_for_ollama() -> list[dict]:
         {"type": "function",
          "function": {"name": "...", "description": "...",
                       "parameters": {... JSON schema ...}}}
+
+    The ``parameters`` dict is a deep copy of the registered tool's
+    ``parameters_schema`` so per-turn callers can patch dynamic fields
+    (e.g. ``query_rag.source.description`` in the generation layer)
+    without mutating the shared registry entry and leaking the patch
+    into the next chat's spec list.
     """
+    import copy as _copy
+
     return [
         {
             "type": "function",
             "function": {
                 "name": spec.name,
                 "description": spec.description,
-                "parameters": spec.parameters_schema,
+                "parameters": _copy.deepcopy(spec.parameters_schema),
             },
         }
         for spec in TOOLS.values()
