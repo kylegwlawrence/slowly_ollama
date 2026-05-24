@@ -56,6 +56,7 @@
             hx-swap="outerHTML"
             hx-confirm="Compact this chat? The earlier conversation will be summarized; originals stay in the database."
             hx-disabled-elt="this"
+            hx-indicator="#chat-compacting-indicator"
             title="Summarize the older portion of this chat to shrink the prompt sent to Ollama.">
       <span class="material-symbols-outlined" aria-hidden="true">compress</span>
       <span class="chat-panel__compact-label">Compact</span>
@@ -93,6 +94,17 @@
     {% set selected_agent = conversation.active_agent %}
     {% include "_agent_select.html" %}
   </form>
+  {# Compacting indicator: lives outside #messages so the outerHTML swap
+     from /compact doesn't blow it away mid-request. `htmx-indicator` is
+     opacity-0 by default; htmx adds `htmx-request` to the element named
+     by the button's hx-indicator while the POST is in flight. #}
+  <div id="chat-compacting-indicator"
+       class="chat-panel__compacting htmx-indicator"
+       role="status"
+       aria-live="polite">
+    <span class="material-symbols-outlined" aria-hidden="true">progress_activity</span>
+    <span>Compacting&hellip;</span>
+  </div>
   <form class="message-form"
         hx-post="/chats/{{ conversation.id }}/messages"
         hx-target="#messages"
