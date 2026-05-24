@@ -5,15 +5,13 @@ takes a ``sqlite3.Connection`` and wraps writes in ``with conn:`` for
 atomicity. RAG servers are user-configured at runtime via the /settings
 UI; the ``query_rag`` tool reads this table to validate the model's chosen
 ``source`` argument and to look up the corresponding base URL.
-
-The ``_now_iso`` helper is defined locally rather than imported from
-``app.queries`` so this module stays self-contained — keeps the import
-graph simple and avoids coupling the RAG layer to the chat-message layer.
 """
 
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
+
+from app._time import now_iso as _now_iso
 
 
 @dataclass(frozen=True)
@@ -52,11 +50,6 @@ class RagServer:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
-
-
-def _now_iso() -> str:
-    """Return the current UTC time as an ISO 8601 string for DB storage."""
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _row_to_server(row: sqlite3.Row) -> RagServer:

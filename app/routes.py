@@ -53,9 +53,10 @@ from fastapi.responses import (
 )
 
 from app import generation, ollama, queries, render
-from app import rag_servers as _rag_servers_module
+from app import rag_servers as _rag_servers
 from app.agents import get_agent, list_agents
 from app.dependencies import DB, OllamaClient
+from app.format import format_size_bytes
 from app.ollama import OllamaProtocolError, OllamaUnavailable
 from app.projects import ensure_project_workspace, project_workspace_root
 from app.rag_health import probe_rag_health
@@ -71,7 +72,7 @@ from app.templates import templates
 # the unused-import warning since the imports are purely for side
 # effect.
 from app.tools import RAG_TOOL_NAME, TOOLS
-from app.tools import builtins as _builtins  # noqa: F401
+from app.tools import builtins as _tools_builtins
 from app.tools import rag as _rag_tool  # noqa: F401
 from app.tools.rag import refresh_query_rag_registration
 
@@ -110,7 +111,7 @@ def _default_rag_server_states(
     Used by the empty-state composer so per-server chips default to on
     before a chat is created.
     """
-    servers = _rag_servers_module.list_servers(db)
+    servers = _rag_servers.list_servers(db)
     return [
         queries.ChatRagState(server_name=s.name, enabled=True) for s in servers
     ]
@@ -128,7 +129,7 @@ def _chip_states(
     Both lists respect the per-chat settings stored in DB.
 
     Pass ``servers`` when you already hold the list from a prior
-    ``_rag_servers_module.list_servers`` call to avoid a redundant fetch.
+    ``_rag_servers.list_servers`` call to avoid a redundant fetch.
     """
     tool_states = [
         s
@@ -142,7 +143,7 @@ def _chip_states(
         if s.tool_name != RAG_TOOL_NAME
     ]
     if servers is None:
-        servers = _rag_servers_module.list_servers(db)
+        servers = _rag_servers.list_servers(db)
     rag_server_states = queries.get_chat_rag_states(
         db, conversation_id, [s.name for s in servers]
     )
@@ -177,7 +178,7 @@ def settings_endpoint(request: Request, db: DB) -> Response:
     cheap swap into ``#main``. Mirrors the branching pattern in
     ``get_chat_panel_endpoint``.
     """
-    servers = _rag_servers_module.list_servers(db)
+    servers = _rag_servers.list_servers(db)
     default_temperature = queries.get_default_temperature(db)
     default_tool_iteration_cap = queries.get_default_tool_iteration_cap(db)
     default_model = queries.get_default_model(db)
@@ -264,7 +265,7 @@ async def add_server_endpoint(
         )
 
     try:
-        server = _rag_servers_module.create_server(
+        server = _rag_servers.create_server(
             db, name=name_clean, url=url_clean, description=description_clean
         )
     except sqlite3.IntegrityError:
@@ -293,7 +294,7 @@ def delete_server_endpoint(server_id: int, db: DB) -> Response:
     removes the row. The list-description refresh keeps the tool's
     schema in sync with the (now-shrunk) set of source names.
     """
-    _rag_servers_module.delete_server(db, server_id)
+    _rag_servers.delete_server(db, server_id)
     refresh_query_rag_registration()
     return Response(content="", status_code=status.HTTP_200_OK)
 
@@ -315,7 +316,7 @@ def get_server_endpoint(
     A missing id (e.g. another tab deleted the row) returns 404 so HTMX
     leaves the stale row in place rather than blanking it.
     """
-    server = _rag_servers_module.get_server(db, server_id)
+    server = _rag_servers.get_server(db, server_id)
     if server is None:
         return Response(content="", status_code=status.HTTP_404_NOT_FOUND)
     return templates.TemplateResponse(
@@ -345,7 +346,7 @@ def update_server_endpoint(
     delete isn't replaced with anything.
     """
     description_clean = description.strip()[:200]
-    server = _rag_servers_module.update_server_description(
+    server = _rag_servers.update_server_description(
         db, server_id, description_clean
     )
     if server is None:
@@ -964,7 +965,7 @@ async def toggle_chat_rag_server_endpoint(
         conversation = queries.get_conversation(db, conversation_id)
     except LookupError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
-    servers = _rag_servers_module.list_servers(db)
+    servers = _rag_servers.list_servers(db)
     if server_name not in {s.name for s in servers}:
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, f"Unknown RAG server: {server_name}"
@@ -1222,23 +1223,9 @@ class _WorkspaceFileView:
     download_href: str
 
 
-# Mirrors ``_LIST_DIR_CAP`` in app/tools/builtins.py — keep the cap
-# consistent between the model-facing list_directory tool and the user-
-# facing Files tab so neither view can swamp the renderer.
-_FILES_BROWSE_CAP = 200
-
 # UTF-8 text-view ceiling. Larger files are rendered truncated with a
 # "use Download for full file" hint.
 _FILE_VIEW_CAP = 100_000
-
-
-def _format_size_bytes(n: int) -> str:
-    """Pretty-print a byte count (matches ``app.tools.builtins._format_size``)."""
-    if n < 1024:
-        return f"{n} B"
-    if n < 1024 * 1024:
-        return f"{n / 1024:.1f} KB"
-    return f"{n / (1024 * 1024):.1f} MB"
 
 
 def _project_workspace_or_none(project: queries.Project) -> Path | None:
@@ -1345,7 +1332,7 @@ def _browse_workspace(
     # insensitive). Matches `list_directory`'s ordering.
     children = sorted(
         target.iterdir(), key=lambda p: (p.is_file(), p.name.lower())
-    )[:_FILES_BROWSE_CAP]
+    )[:_tools_builtins.LIST_DIR_CAP]
     for child in children:
         child_rel = str(child.relative_to(root))
         if child.is_dir():
@@ -1363,7 +1350,7 @@ def _browse_workspace(
             )
         else:
             try:
-                size = _format_size_bytes(child.stat().st_size)
+                size = format_size_bytes(child.stat().st_size)
             except OSError:
                 size = "?"
             entries.append(
@@ -1433,7 +1420,7 @@ def _read_workspace_file(
             download_href=download_href,
             error="File not found.",
         )
-    size = _format_size_bytes(target.stat().st_size)
+    size = format_size_bytes(target.stat().st_size)
     try:
         text = target.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
@@ -2015,7 +2002,7 @@ async def create_project_chat_endpoint(
     enabled_rag: set[str] | None = (
         set(enabled_rag_raw) if enabled_rag_raw else None
     )
-    rag_servers_list = _rag_servers_module.list_servers(db)
+    rag_servers_list = _rag_servers.list_servers(db)
     queries.seed_chat_rag_servers(
         db,
         chat.id,

@@ -1030,13 +1030,13 @@ def test_list_directory_shows_file_size(
 def test_list_directory_truncates_at_cap(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Directories with more than _LIST_DIR_CAP entries are truncated."""
+    """Directories with more than LIST_DIR_CAP entries are truncated."""
     monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
-    for i in range(_file_builtins._LIST_DIR_CAP + 10):
+    for i in range(_file_builtins.LIST_DIR_CAP + 10):
         (tmp_path / f"file{i:04d}.txt").write_text("x", encoding="utf-8")
     out = _file_builtins.list_directory(".")
-    assert f"showing first {_file_builtins._LIST_DIR_CAP}" in out
-    assert out.count("[file]") == _file_builtins._LIST_DIR_CAP
+    assert f"showing first {_file_builtins.LIST_DIR_CAP}" in out
+    assert out.count("[file]") == _file_builtins.LIST_DIR_CAP
 
 
 def test_list_directory_header_item_count(
@@ -1044,7 +1044,7 @@ def test_list_directory_header_item_count(
 ) -> None:
     """The header reports the true total count even when truncated."""
     monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
-    total = _file_builtins._LIST_DIR_CAP + 5
+    total = _file_builtins.LIST_DIR_CAP + 5
     for i in range(total):
         (tmp_path / f"f{i}.txt").write_text("x", encoding="utf-8")
     out = _file_builtins.list_directory(".")
