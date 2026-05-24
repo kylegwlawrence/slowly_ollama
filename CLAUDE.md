@@ -68,8 +68,17 @@ controlled artifacts, not workspace scratch.
   `_agent_overrides`; new `POST /chats/{id}/agent`; header indicator +
   composer picker (greys the model select). Agents hand off through shared
   conversation history. See `docs/retros/phase16-invokable-agents.md`.
-- **481/481 tests passing**; coverage 97% on `app/` + `main.py`
-  (`app/agents`, `app/render.py`, `app/queries.py` at 100%).
+- **Per-project system prompt (post-16).** Optional ≤200-char prompt on
+  the project settings page (`projects.system_prompt` column; migration
+  backfills empty string on existing DBs). On Normal-chat turns in a
+  project that has one set, it's injected as the `system` message —
+  combined with the (now shortened) `SINGLE_AGENT_SYSTEM_PROMPT` tool-use
+  nudge when tools are sent, used alone when not, and omitted entirely
+  when both are empty (byte-identical to pre-feature behavior for users
+  who don't set a prompt). Agent turns intentionally ignore the project
+  prompt — the agent's own system prompt wins.
+- **605/605 tests passing**; coverage 97% on `app/` + `main.py`
+  (`app/agents`, `app/render.py` at 100%, `app/queries.py` at 99%).
 
 ## Working rules (override Claude defaults where they conflict)
 
