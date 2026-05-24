@@ -1,0 +1,25 @@
+{# Phase 18: inline viewer for archived (compacted-away) rows. Loaded
+   lazily into the summary bubble's disclosure body via hx-get when the
+   user expands it. Renders the archived rows with the same templates as
+   the active chat (so tool cards look familiar) inside a faded wrapper
+   that visually marks them as historical. #}
+<div class="archived-messages">
+  {% if blocks %}
+    {% for block in blocks %}
+      {% if block.kind == "tool_batch" %}
+        {% set card_id = block.card_id %}
+        {% set list_id = block.list_id %}
+        {% set summary_id = block.summary_id %}
+        {% set summary_text = block.summary %}
+        {% set rows = block.rows %}
+        {% set swap_oob = none %}
+        {% include "_tool_card_shell.html" %}
+      {% else %}
+        {% set message = block.message %}
+        {% include "_message.html" %}
+      {% endif %}
+    {% endfor %}
+  {% else %}
+    <small>No archived messages.</small>
+  {% endif %}
+</div>

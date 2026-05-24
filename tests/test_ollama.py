@@ -24,6 +24,7 @@ from app.ollama import (
     maybe_tool_call,
     model_supports_tools,
     stream_chat,
+    summarize_conversation,
 )
 
 
@@ -803,3 +804,132 @@ async def test_model_supports_tools_returns_false_when_ollama_unavailable() -> N
 
     async with _client_with(handler) as client:
         assert await model_supports_tools(client, "llama3") is False
+
+
+# ---------------------------------------------------------------------------
+# Phase 18: summarize_conversation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_summarize_appends_instruction_and_returns_text() -> None:
+    """The helper appends a user-turn instruction and returns stripped text."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200, json={"message": {"content": "  the briefing  "}}
+        )
+
+    async with _client_with(handler) as client:
+        text = await summarize_conversation(
+            client,
+            "llama3:8b",
+            [
+                {"role": "user", "content": "Hi"},
+                {"role": "assistant", "content": "Hello!"},
+            ],
+        )
+
+    assert text == "the briefing"
+    assert captured["path"] == "/api/chat"
+    body = captured["body"]
+    assert body["model"] == "llama3:8b"
+    assert body["stream"] is False
+    # Low-creativity temperature is hardcoded — not the chat's own setting.
+    assert body["options"]["temperature"] == 0.2
+    # History is forwarded; one extra user turn is appended.
+    msgs = body["messages"]
+    assert len(msgs) == 3
+    assert msgs[0] == {"role": "user", "content": "Hi"}
+    assert msgs[1] == {"role": "assistant", "content": "Hello!"}
+    assert msgs[2]["role"] == "user"
+    assert "summarize" in msgs[2]["content"].lower()
+
+
+@pytest.mark.asyncio
+async def test_summarize_passes_num_ctx_when_provided() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200, json={"message": {"content": "x"}}
+        )
+
+    async with _client_with(handler) as client:
+        await summarize_conversation(
+            client, "llama3", [], num_ctx=16384
+        )
+    assert captured["body"]["options"]["num_ctx"] == 16384
+
+
+@pytest.mark.asyncio
+async def test_summarize_omits_num_ctx_when_none() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200, json={"message": {"content": "x"}}
+        )
+
+    async with _client_with(handler) as client:
+        await summarize_conversation(client, "llama3", [])
+    assert "num_ctx" not in captured["body"]["options"]
+
+
+@pytest.mark.asyncio
+async def test_summarize_raises_unavailable_on_transport_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("down")
+
+    async with _client_with(handler) as client:
+        with pytest.raises(OllamaUnavailable):
+            await summarize_conversation(client, "llama3", [])
+
+
+@pytest.mark.asyncio
+async def test_summarize_raises_unavailable_on_5xx() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500)
+
+    async with _client_with(handler) as client:
+        with pytest.raises(OllamaUnavailable):
+            await summarize_conversation(client, "llama3", [])
+
+
+@pytest.mark.asyncio
+async def test_summarize_raises_protocol_error_on_bad_shape() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        # Valid JSON, wrong shape (no `message.content`).
+        return httpx.Response(200, json={"unexpected": "shape"})
+
+    async with _client_with(handler) as client:
+        with pytest.raises(OllamaProtocolError):
+            await summarize_conversation(client, "llama3", [])
+
+
+@pytest.mark.asyncio
+async def test_summarize_raises_protocol_error_on_non_json() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"not json")
+
+    async with _client_with(handler) as client:
+        with pytest.raises(OllamaProtocolError):
+            await summarize_conversation(client, "llama3", [])
+
+
+@pytest.mark.asyncio
+async def test_summarize_returns_empty_string_on_empty_content() -> None:
+    """A blank model reply round-trips as the empty string — the caller
+    decides what to do (the route 502s)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"message": {"content": "   "}})
+
+    async with _client_with(handler) as client:
+        text = await summarize_conversation(client, "llama3", [])
+    assert text == ""

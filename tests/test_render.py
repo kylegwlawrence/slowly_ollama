@@ -9,6 +9,7 @@ from app.queries import Message
 from app.render import (
     DedupedSource,
     MessageBlock,
+    SummaryBlock,
     ToolBatchBlock,
     ToolRowView,
     card_id_for,
@@ -214,6 +215,41 @@ def test_group_messages_unpaired_trailing_call_lands_as_none() -> None:
     assert isinstance(batch, ToolBatchBlock)
     assert len(batch.calls) == 2
     assert batch.calls[1][1] is None
+
+
+def test_group_messages_summary_emits_summary_block() -> None:
+    """Phase 18: a `summary` row produces a `SummaryBlock`, not a plain
+    `MessageBlock`."""
+    msgs = [
+        _msg(id=1, role="summary", content="the briefing"),
+        _msg(id=2, role="user", content="follow-up"),
+        _msg(id=3, role="assistant", content="ok"),
+    ]
+    blocks = group_messages_for_render(msgs)
+    assert len(blocks) == 3
+    assert isinstance(blocks[0], SummaryBlock)
+    assert blocks[0].kind == "summary"
+    assert blocks[0].message.id == 1
+    # The trailing rows remain plain MessageBlocks.
+    assert isinstance(blocks[1], MessageBlock)
+    assert isinstance(blocks[2], MessageBlock)
+
+
+def test_group_messages_summary_flushes_pending_tool_batch() -> None:
+    """A `summary` row appearing after tool rows flushes the tool batch
+    ahead of itself — never folds tool rows into the summary block."""
+    msgs = [
+        _msg(
+            id=1, role="tool_call",
+            content=json.dumps({"name": "current_time", "arguments": {}}),
+        ),
+        _msg(id=2, role="tool_result", content="now"),
+        _msg(id=3, role="summary", content="the briefing"),
+    ]
+    blocks = group_messages_for_render(msgs)
+    assert len(blocks) == 2
+    assert isinstance(blocks[0], ToolBatchBlock)
+    assert isinstance(blocks[1], SummaryBlock)
 
 
 def test_group_messages_end_of_list_flush() -> None:

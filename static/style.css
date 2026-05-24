@@ -1821,3 +1821,127 @@ body {
   font-size: var(--font-size-base);
   line-height: 1.6;
 }
+
+/* ===== Phase 18: manual compaction ======================================= */
+
+/* "Compact" button in the chat-panel header. Mirrors the chip form
+   styling (height + gap) so it sits flush with the temperature / tool-cap
+   chips beside it. The default `chat-panel__compact` is a flat button —
+   not a primary CTA — because compacting is destructive-feeling even
+   when fully reversible, and we want the user to think before clicking. */
+.chat-panel__compact {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin: 0;
+  padding: var(--space-xs) var(--space-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  /* Push to the far right of the wrapping header so it's separated
+     visually from the chips on the left. */
+  margin-left: auto;
+}
+
+.chat-panel__compact:hover {
+  background: var(--accent-tonal);
+  color: var(--accent-tonal-text);
+  border-color: transparent;
+}
+
+.chat-panel__compact[disabled],
+.chat-panel__compact.htmx-request {
+  opacity: 0.6;
+  cursor: progress;
+  pointer-events: none;
+}
+
+.chat-panel__compact .material-symbols-outlined {
+  font-size: 16px;
+}
+
+/* Summary bubble. Distinct from the assistant variant — slightly
+   different background and a left-border accent so a glance tells
+   the user "this is a synthesized view of earlier turns, not
+   something the assistant just said." */
+.message--summary {
+  align-self: stretch;
+  max-width: none;
+  background: var(--accent-tonal);
+  color: var(--accent-tonal-text);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-md);
+  padding: var(--space-md) var(--space-lg);
+}
+
+.message__summary-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  margin-bottom: var(--space-xs);
+}
+
+.message__summary-badge .material-symbols-outlined {
+  font-size: 14px;
+}
+
+.message--summary .message__content {
+  font-size: var(--font-size-base);
+  line-height: 1.55;
+}
+
+.message--summary .message__content * {
+  color: var(--text-primary);
+}
+
+/* Disclosure for the archived originals. Native `<details>` markup,
+   styled to match the rest of the chat surface. */
+.message__summary-archived {
+  margin-top: var(--space-md);
+  border-top: 1px dashed var(--border);
+  padding-top: var(--space-sm);
+}
+
+.message__summary-archived > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-secondary);
+  list-style: none;
+}
+
+.message__summary-archived > summary::-webkit-details-marker {
+  display: none;
+}
+
+.message__summary-archived > summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: var(--space-xs);
+  transition: transform 0.15s;
+}
+
+.message__summary-archived[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.message__summary-archived-body {
+  margin-top: var(--space-md);
+}
+
+/* Faded wrapper for the inline archived-message viewer so the user can
+   visually tell archived rows apart from active ones. */
+.archived-messages {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  opacity: 0.7;
+}

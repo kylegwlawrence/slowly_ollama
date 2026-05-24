@@ -13,6 +13,8 @@ Routes:
     GET    /chats/{id}/stream                — SSE assistant stream
     POST   /chats/{id}/regenerate            — regenerate assistant reply
     POST   /chats/{id}/agent                 — set/clear active agent
+    POST   /chats/{id}/compact                — summarize older turns (phase 18)
+    GET    /chats/{id}/archived               — archived rows for disclosure
     POST   /chats/{id}/tools/{name}          — toggle per-chat tool
     POST   /chats/{id}/rag-servers/{name}    — toggle per-chat RAG server
     PATCH  /chats/{id}/temperature           — set per-chat temperature
@@ -24,7 +26,7 @@ from typing import Annotated
 from fastapi import APIRouter, Form, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 
-from app import generation, ollama, queries
+from app import generation, ollama, queries, render
 from app import rag_servers as _rag_servers
 from app.agents import get_agent
 from app.dependencies import DB, OllamaClient
@@ -306,7 +308,11 @@ async def send_message_endpoint(
     # it's owned by `generation.live_generations`, not by the
     # response generator. A page reload (client disconnect) won't
     # cancel it; consume_generation just attaches a new consumer.
-    history = queries.list_messages(db, conversation_id)
+    #
+    # Phase 18: read only the active rows. The compact endpoint may
+    # have archived an earlier prefix into a `summary` row; sending
+    # the archived rows back would defeat the whole feature.
+    history = queries.list_active_messages(db, conversation_id)
     try:
         await generation.start_generation(
             client=client,
@@ -394,7 +400,10 @@ async def regenerate_endpoint(
     except LookupError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
 
-    history = queries.list_messages(db, conversation_id)
+    # Phase 18: regenerate operates on active rows only. The persisted
+    # assistant row being replaced is by definition active, so the
+    # "last active row must be assistant" gate still works.
+    history = queries.list_active_messages(db, conversation_id)
     if not history or history[-1].role != "assistant":
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
@@ -488,6 +497,214 @@ async def set_chat_agent_endpoint(
         )
 
     return HTMLResponse(content=indicator_html + chips_oob)
+
+
+# Phase 18: number of trailing (user/assistant/summary) rows to keep active
+# when the user clicks Compact. Captures the current working thread without
+# being so generous that the prompt stays bloated. Hardcoded for v1; a
+# per-chat knob is the natural "out of scope" thread once we have usage
+# data.
+_KEEP_RECENT_ON_COMPACT = 4
+
+
+def _split_for_compact(
+    active: list[queries.Message], keep_recent: int
+) -> tuple[list[queries.Message], list[queries.Message]]:
+    """Split active rows into ``(to-summarize, to-keep)`` halves.
+
+    ``keep_recent`` is counted in renderable rows (``user`` / ``assistant`` /
+    a prior ``summary``); attached ``tool_call`` / ``tool_result`` rows
+    travel with the kept assistant turn they belong to. Leaving an orphan
+    ``tool_result`` at the head of the kept window would 400 Ollama on
+    the next turn (the wire format requires a preceding ``assistant`` row
+    with ``tool_calls`` for every ``role: "tool"`` message).
+
+    A prior ``summary`` row counts as renderable for the split because
+    re-compacting deliberately *subsumes* it — the prior summary becomes
+    part of the new compaction corpus, and the new summary replaces it.
+
+    Args:
+        active: Rows from :func:`queries.list_active_messages`, oldest first.
+        keep_recent: How many renderable rows to keep unarchived. Must be
+            >= 1; callers pass ``_KEEP_RECENT_ON_COMPACT``.
+
+    Returns:
+        ``(to_summarize, to_keep)``. Either list may be empty: an empty
+        ``to_summarize`` means there's nothing older than the kept window
+        (the caller should 422), and an empty ``to_keep`` cannot occur in
+        practice because the user message that triggered the call sits
+        at the tail.
+    """
+    # Walk from the end; once we've seen `keep_recent` renderable rows,
+    # the boundary is at that index. If the chat has FEWER than
+    # `keep_recent` renderable rows total, the loop exits without
+    # breaking — in that case there's nothing to compact, so we keep
+    # everything and return an empty `to_summarize`. The route then
+    # 422s with "Nothing to compact yet."
+    keep_idx: int | None = None
+    renderables_seen = 0
+    for i in range(len(active) - 1, -1, -1):
+        if active[i].role in ("user", "assistant", "summary"):
+            renderables_seen += 1
+            if renderables_seen >= keep_recent:
+                keep_idx = i
+                break
+    if keep_idx is None:
+        return [], list(active)
+    # Slide forward past any leading tool_* rows on the kept side so the
+    # kept window doesn't start with an orphan tool_result. (A leading
+    # tool_call without its assistant context is also illegal in the
+    # wire format; the slide-forward handles both.)
+    while keep_idx < len(active) and active[keep_idx].role in (
+        "tool_call", "tool_result",
+    ):
+        keep_idx += 1
+    return active[:keep_idx], active[keep_idx:]
+
+
+@router.post(
+    "/chats/{conversation_id}/compact", response_class=HTMLResponse
+)
+async def compact_chat_endpoint(
+    request: Request,
+    conversation_id: int,
+    db: DB,
+    client: OllamaClient,
+) -> Response:
+    """Summarize the older portion of a chat into a single ``summary`` row.
+
+    Phase 18. Keeps the most-recent ``_KEEP_RECENT_ON_COMPACT`` renderable
+    messages active; archives everything older (including any prior
+    ``summary`` row); inserts a fresh ``summary`` row carrying the
+    model-generated briefing. Returns the re-rendered messages container
+    so HTMX can swap it in place.
+
+    Raises:
+        HTTPException 404: Unknown conversation.
+        HTTPException 409: A generation is in flight for this chat —
+            compacting mid-stream would race the producer's history reads.
+        HTTPException 422: Nothing to compact yet (the chat has fewer than
+            ``_KEEP_RECENT_ON_COMPACT`` + 1 active renderable rows).
+        HTTPException 502: Ollama returned a body we couldn't parse, or
+            returned an empty summary.
+        HTTPException 503: Ollama is unreachable.
+    """
+    try:
+        conversation = queries.get_conversation(db, conversation_id)
+    except LookupError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
+
+    # In-flight gate. The producer's `working_history = list_active_messages`
+    # rebuild inside the tool-call loop would race the archive UPDATE
+    # below; refusing here is simpler and safer than coordinating.
+    state = generation.live_generations.get(conversation_id)
+    if state is not None and not state.done:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Cannot compact while a response is generating.",
+        )
+
+    active = queries.list_active_messages(db, conversation_id)
+    to_summarize, to_keep = _split_for_compact(
+        active, _KEEP_RECENT_ON_COMPACT
+    )
+    if not to_summarize:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Nothing to compact yet.",
+        )
+    # The cutoff is the FIRST kept row's id, not the summary row's id.
+    # Every row in `to_summarize` has id < to_keep[0].id (rows are
+    # ordered by created_at, id). Using the summary's id would archive
+    # the kept rows too — they were all appended BEFORE the summary, so
+    # all of their ids are also less than the summary's id.
+    archive_cutoff_id = to_keep[0].id
+
+    # Effective num_ctx for the summarization call: project override or
+    # global default. Matches what `_run_generation` would use for a
+    # normal turn, so a project that pinned a larger context window
+    # still gets the benefit when summarizing a long history.
+    num_ctx = _resolve_num_ctx(db, conversation_id)
+
+    try:
+        summary_text = await ollama.summarize_conversation(
+            client,
+            conversation.model,
+            generation.build_history_payload(to_summarize),
+            num_ctx=num_ctx,
+        )
+    except OllamaUnavailable as e:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(e))
+    except OllamaProtocolError as e:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(e))
+
+    if not summary_text:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            "Compaction model returned empty text.",
+        )
+
+    # Insert the summary, then archive everything older than the kept
+    # window. The summary row's id is > every prior row's id (SQLite's
+    # rowid is monotonic), so it's NOT included in the archived range.
+    queries.append_message(
+        db, conversation_id, "summary", summary_text
+    )
+    queries.archive_messages_before(
+        db, conversation_id, archive_cutoff_id
+    )
+
+    # Re-render the whole messages container. Cheaper than crafting an
+    # OOB delta for "the head N rows go away + a summary bubble appears"
+    # — one user action per page load, simpler wins.
+    messages = queries.list_messages(db, conversation_id)
+    blocks = render.group_messages_for_render(messages)
+    archived_count = queries.count_archived_messages(db, conversation_id)
+    return templates.TemplateResponse(
+        request=request,
+        name="_messages_inner.html",
+        context={
+            "conversation": conversation,
+            "blocks": blocks,
+            "archived_count": archived_count,
+            "pending_stream_url": None,
+        },
+    )
+
+
+@router.get(
+    "/chats/{conversation_id}/archived", response_class=HTMLResponse
+)
+async def archived_messages_endpoint(
+    request: Request, conversation_id: int, db: DB,
+) -> Response:
+    """Render the archived (compacted-away) messages for inline disclosure.
+
+    Phase 18: powered by the ``<details>`` element on the summary bubble.
+    The fetch is lazy (``hx-trigger="toggle once``) so the chat panel
+    doesn't pay to render archived rows on every panel mount.
+
+    Archived ``summary`` rows are intentionally hidden — they're stale
+    by definition (the next compact subsumed them) and surfacing them
+    would only confuse the viewer.
+
+    Raises:
+        HTTPException 404: Unknown conversation.
+    """
+    try:
+        queries.get_conversation(db, conversation_id)
+    except LookupError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
+    rows = [
+        m for m in queries.list_messages(db, conversation_id)
+        if m.archived_at is not None and m.role != "summary"
+    ]
+    blocks = render.group_messages_for_render(rows)
+    return templates.TemplateResponse(
+        request=request,
+        name="_archived_messages.html",
+        context={"blocks": blocks},
+    )
 
 
 @router.post(

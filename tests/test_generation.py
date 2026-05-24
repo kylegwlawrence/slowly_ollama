@@ -1336,6 +1336,38 @@ def test_build_history_payload_handles_tool_roles() -> None:
     assert out[3] == {"role": "assistant", "content": "the time is..."}
 
 
+def test_build_history_payload_maps_summary_to_system_role() -> None:
+    """Phase 18: a `summary` row serializes as a `system` message with
+    an "Earlier conversation summary:" prefix so the model treats it as
+    background context for the current turn."""
+    now = datetime.now(timezone.utc)
+    history = [
+        Message(
+            id=1, conversation_id=1, role="summary",
+            content="the user asked X and we found Y.",
+            created_at=now,
+        ),
+        Message(
+            id=2, conversation_id=1, role="user",
+            content="follow-up question",
+            created_at=now,
+        ),
+    ]
+    out = _build_history_payload(history)
+    assert len(out) == 2
+    assert out[0]["role"] == "system"
+    assert "Earlier conversation summary" in out[0]["content"]
+    assert "the user asked X and we found Y." in out[0]["content"]
+    assert out[1] == {"role": "user", "content": "follow-up question"}
+
+
+def test_build_history_payload_alias_is_public() -> None:
+    """Phase 18: the public alias `build_history_payload` points at the
+    same function the internal name `_build_history_payload` does."""
+    from app.generation import _build_history_payload, build_history_payload
+    assert build_history_payload is _build_history_payload
+
+
 def test_build_history_payload_skips_malformed_tool_call_rows() -> None:
     """A tool_call row with invalid JSON in `content` is silently
     skipped — better than crashing every subsequent chat turn for

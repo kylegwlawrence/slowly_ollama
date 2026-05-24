@@ -276,6 +276,27 @@ class MessageBlock:
 
 
 @dataclass(frozen=True)
+class SummaryBlock:
+    """A synthetic ``summary`` row produced by the manual-compact endpoint.
+
+    Phase 18. Distinct from :class:`MessageBlock` so the chat panel can
+    style it differently (a "compacted history" badge + a disclosure
+    revealing the archived originals) without conditional branches in
+    the message template. The archived-row count is bound from the
+    render context — kept off the dataclass so
+    :func:`group_messages_for_render` stays a pure messages → blocks
+    transformer.
+
+    Attributes:
+        message: The persisted ``role = 'summary'`` row.
+        kind: Template discriminator. Class-level constant.
+    """
+
+    message: Message
+    kind: ClassVar[str] = "summary"
+
+
+@dataclass(frozen=True)
 class ToolBatchBlock:
     """One assistant turn's tool invocations, grouped for the aggregated card.
 
@@ -332,11 +353,14 @@ class ToolBatchBlock:
         return summary_text(len(self.calls), done=True)
 
 
-Block = MessageBlock | ToolBatchBlock
+Block = MessageBlock | ToolBatchBlock | SummaryBlock
 
 
 _TOOL_ROLES = frozenset({"tool_call", "tool_result"})
-_RENDERABLE_MESSAGE_ROLES = frozenset({"user", "assistant"})
+# Phase 18: `summary` is renderable too — it gets its own SummaryBlock,
+# but for the loop's flush/skip logic it behaves the same way as a
+# user/assistant row (flushes any pending tool batch ahead of itself).
+_RENDERABLE_MESSAGE_ROLES = frozenset({"user", "assistant", "summary"})
 
 
 def group_messages_for_render(messages: list[Message]) -> list[Block]:
@@ -383,6 +407,12 @@ def group_messages_for_render(messages: list[Message]) -> list[Block]:
     for m in messages:
         if m.role in _TOOL_ROLES:
             pending_rows.append(m)
+        elif m.role == "summary":
+            # Phase 18: synthetic compaction row. Flush any tool batch
+            # ahead of it (defensive — in practice no tool rows survive
+            # the compact, which archives them) then emit its own block.
+            flush_batch()
+            blocks.append(SummaryBlock(message=m))
         elif m.role in _RENDERABLE_MESSAGE_ROLES:
             flush_batch()
             blocks.append(MessageBlock(message=m))

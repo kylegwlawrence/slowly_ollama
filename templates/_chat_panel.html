@@ -44,6 +44,22 @@
     {% if supports_tools %}
     {% include "_chat_tool_chips.html" %}
     {% endif %}
+    {# Phase 18: manual compaction. POSTs to /chats/{id}/compact and
+       swaps in the re-rendered #messages container. `hx-confirm` is the
+       browser-native dialog; `hx-indicator` swaps in the spinner span
+       during the 1-5s Ollama round-trip. `hx-disabled-elt` keeps the
+       user from double-clicking it. #}
+    <button class="chat-panel__compact"
+            type="button"
+            hx-post="/chats/{{ conversation.id }}/compact"
+            hx-target="#messages"
+            hx-swap="outerHTML"
+            hx-confirm="Compact this chat? The earlier conversation will be summarized; originals stay in the database."
+            hx-disabled-elt="this"
+            title="Summarize the older portion of this chat to shrink the prompt sent to Ollama.">
+      <span class="material-symbols-outlined" aria-hidden="true">compress</span>
+      <span class="chat-panel__compact-label">Compact</span>
+    </button>
   </header>
 
   {# app.js keeps the bottom of the conversation in view via a
@@ -52,43 +68,10 @@
      append) scrolls #messages to its scrollHeight. Events bubble, so
      token swaps into the streaming placeholder also trigger it.
 
-     Iteration source is `blocks` (from app.render.group_messages_for_render).
-     Consecutive tool_call / tool_result rows fold into one
-     ToolBatchBlock so they render as a single aggregated card
-     above the assistant message that used them. Standalone
-     user/assistant messages render via _message.html as before. #}
-  <div id="messages" class="messages">
-    {% for block in blocks %}
-      {% if block.kind == "tool_batch" %}
-        {% set card_id = block.card_id %}
-        {% set list_id = block.list_id %}
-        {% set summary_id = block.summary_id %}
-        {% set summary_text = block.summary %}
-        {% set rows = block.rows %}
-        {% set swap_oob = none %}
-        {% include "_tool_card_shell.html" %}
-      {% else %}
-        {% set message = block.message %}
-        {% include "_message.html" %}
-      {% endif %}
-    {% endfor %}
-    {# `pending_stream_url` is set when an assistant generation needs
-       a streaming placeholder. Three callers (phase 12g):
-       - POST /chats: user just sent the first message; placeholder
-         waits for the freshly-spawned generation's tokens.
-       - POST /chats/{id}/messages: same shape, second-message path.
-       - GET /chats/{id} reload while a live generation exists:
-         placeholder attaches as a consumer for the in-flight task.
-       Rendering inline (rather than via an OOB swap into `#messages`)
-       sidesteps an ordering race: at OOB-processing time `#main` has
-       just been replaced, and HTMX may not see the freshly-injected
-       `#messages` reliably. #}
-    {% if pending_stream_url is defined and pending_stream_url %}
-      {% set conversation_id = conversation.id %}
-      {% set stream_url = pending_stream_url %}
-      {% include "_assistant_placeholder.html" %}
-    {% endif %}
-  </div>
+     The messages container itself lives in _messages_inner.html so the
+     compact endpoint (phase 18) can return just that fragment for an
+     outerHTML swap. #}
+  {% include "_messages_inner.html" %}
 
   {# Form reset on successful submit + initial-mount scroll + the
      tool-card tick driver all live in app.js — see the `.message-form`

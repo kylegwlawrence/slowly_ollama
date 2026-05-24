@@ -9,6 +9,7 @@ from app.queries._models import Message, Role
 
 def _row_to_message(row: sqlite3.Row) -> Message:
     """Map a ``messages`` row to the :class:`Message` dataclass."""
+    archived_at_raw = row["archived_at"]
     return Message(
         id=row["id"],
         conversation_id=row["conversation_id"],
@@ -17,6 +18,11 @@ def _row_to_message(row: sqlite3.Row) -> Message:
         created_at=datetime.fromisoformat(row["created_at"]),
         prompt_tokens=row["prompt_tokens"],
         eval_tokens=row["eval_tokens"],
+        archived_at=(
+            datetime.fromisoformat(archived_at_raw)
+            if archived_at_raw is not None
+            else None
+        ),
     )
 
 
@@ -62,7 +68,7 @@ def append_message(
             "  prompt_tokens, eval_tokens)"
             " VALUES (?, ?, ?, ?, ?, ?)"
             " RETURNING id, conversation_id, role, content, created_at,"
-            "  prompt_tokens, eval_tokens;",
+            "  prompt_tokens, eval_tokens, archived_at;",
             (conversation_id, role, content, now,
              prompt_tokens, eval_tokens),
         ).fetchone()
@@ -91,13 +97,110 @@ def list_messages(
     """
     rows = conn.execute(
         "SELECT id, conversation_id, role, content, created_at,"
-        "  prompt_tokens, eval_tokens"
+        "  prompt_tokens, eval_tokens, archived_at"
         " FROM messages"
         " WHERE conversation_id = ?"
         " ORDER BY created_at ASC, id ASC;",
         (conversation_id,),
     ).fetchall()
     return [_row_to_message(r) for r in rows]
+
+
+def list_active_messages(
+    conn: sqlite3.Connection, conversation_id: int
+) -> list[Message]:
+    """Return non-archived messages in a conversation, oldest first.
+
+    Used by the generation layer (Phase 18): archived rows are excluded
+    from the prompt sent to Ollama so that the user's manual ``Compact``
+    action actually shrinks per-turn context. Rendering still uses
+    ``list_messages`` (the full list) so the chat panel can show a
+    ``▸ N archived messages`` disclosure.
+
+    Args:
+        conn: Open SQLite connection.
+        conversation_id: Id of the conversation whose active messages to fetch.
+
+    Returns:
+        Messages with ``archived_at IS NULL`` ordered by ``created_at ASC``
+        (with ``id ASC`` as a stable tiebreaker). An active ``summary`` row,
+        when present, is included — it's the synthetic replacement the
+        Compact endpoint produced and is the row Ollama should see.
+    """
+    rows = conn.execute(
+        "SELECT id, conversation_id, role, content, created_at,"
+        "  prompt_tokens, eval_tokens, archived_at"
+        " FROM messages"
+        " WHERE conversation_id = ? AND archived_at IS NULL"
+        " ORDER BY created_at ASC, id ASC;",
+        (conversation_id,),
+    ).fetchall()
+    return [_row_to_message(r) for r in rows]
+
+
+def archive_messages_before(
+    conn: sqlite3.Connection,
+    conversation_id: int,
+    cutoff_message_id: int,
+) -> int:
+    """Mark every active row in ``conversation_id`` with id < cutoff as archived.
+
+    Phase 18: invoked by the manual-compact endpoint after the synthetic
+    ``summary`` row has been inserted. The cutoff is the summary row's id,
+    which (being the most recently inserted) is greater than every prior
+    row, so ``id < cutoff`` selects everything except the summary itself.
+    Bumps the conversation's ``updated_at`` so the sidebar's sort key
+    reflects the change.
+
+    Args:
+        conn: Open SQLite connection.
+        conversation_id: Conversation whose rows to archive.
+        cutoff_message_id: Archive rows with ``id < cutoff_message_id``.
+
+    Returns:
+        Number of rows updated. Zero if nothing matched (idempotent
+        re-run, or a chat with no prior history).
+    """
+    now = _now_iso()
+    with conn:
+        cursor = conn.execute(
+            "UPDATE messages SET archived_at = ?"
+            " WHERE conversation_id = ?"
+            "   AND id < ?"
+            "   AND archived_at IS NULL;",
+            (now, conversation_id, cutoff_message_id),
+        )
+        if cursor.rowcount > 0:
+            conn.execute(
+                "UPDATE conversations SET updated_at = ? WHERE id = ?;",
+                (now, conversation_id),
+            )
+        return cursor.rowcount
+
+
+def count_archived_messages(
+    conn: sqlite3.Connection, conversation_id: int
+) -> int:
+    """Return the count of archived rows in a conversation.
+
+    Phase 18: feeds the ``N archived messages`` disclosure on the summary
+    bubble. Returns 0 for conversations that have never been compacted
+    (which is the common case — the disclosure is hidden client-side
+    when the count is 0).
+
+    Args:
+        conn: Open SQLite connection.
+        conversation_id: Conversation to count archived rows for.
+
+    Returns:
+        The integer count.
+    """
+    row = conn.execute(
+        "SELECT COUNT(*) FROM messages"
+        " WHERE conversation_id = ? AND archived_at IS NOT NULL;",
+        (conversation_id,),
+    ).fetchone()
+    return row[0]
 
 
 def replace_last_assistant_message(
@@ -148,7 +251,7 @@ def replace_last_assistant_message(
             "  prompt_tokens = ?, eval_tokens = ?"
             " WHERE id = ?"
             " RETURNING id, conversation_id, role, content, created_at,"
-            "  prompt_tokens, eval_tokens;",
+            "  prompt_tokens, eval_tokens, archived_at;",
             (new_content, prompt_tokens, eval_tokens, latest["id"]),
         ).fetchone()
         conn.execute(

@@ -20,6 +20,14 @@ Role = Literal[
     "assistant",
     "tool_call",
     "tool_result",
+    # Phase 18: synthetic row produced by the manual-compact endpoint.
+    # Its `content` is the model-generated summary of an earlier
+    # portion of the chat; serialized as a `system` message when sent
+    # to Ollama (see app.generation.build_history_payload). At most one
+    # active (archived_at IS NULL) summary row exists per chat at a time
+    # — re-compacting archives the prior summary alongside the newly-old
+    # turns.
+    "summary",
 ]
 
 
@@ -141,6 +149,10 @@ class Message:
     # `app.ollama.ChatChunk` for the source-of-truth interpretation.
     prompt_tokens: int | None = None
     eval_tokens: int | None = None
+    # Phase 18: when set, the row was hidden from the prompt by the
+    # manual-compact endpoint. NULL = active. Set in
+    # `archive_messages_before`; never written by `append_message`.
+    archived_at: datetime | None = None
 
 
 @dataclass(frozen=True)

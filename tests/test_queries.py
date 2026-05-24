@@ -18,6 +18,8 @@ from app.queries import (
     ChatRagState,
     ChatToolState,
     append_message,
+    archive_messages_before,
+    count_archived_messages,
     count_assistant_messages,
     create_conversation,
     delete_conversation,
@@ -31,6 +33,7 @@ from app.queries import (
     get_enabled_rag_server_names,
     get_enabled_tool_names,
     get_setting,
+    list_active_messages,
     list_conversations,
     list_messages,
     rename_conversation,
@@ -391,6 +394,132 @@ def test_count_assistant_messages_zero_for_unknown_id(
 ) -> None:
     """An id with no rows returns 0 cleanly — no LookupError."""
     assert count_assistant_messages(conn, 999) == 0
+
+
+# ---------------------------------------------------------------------------
+# Phase 18: archive / list-active / count-archived helpers
+# ---------------------------------------------------------------------------
+
+
+def test_append_message_summary_role_round_trips(
+    conn: sqlite3.Connection,
+) -> None:
+    """The Phase-18 ``summary`` role inserts and reads back cleanly."""
+    c = create_conversation(conn, name="t", model="m")
+    msg = append_message(conn, c.id, "summary", "the briefing")
+    assert msg.role == "summary"
+    assert msg.archived_at is None
+    rows = list_messages(conn, c.id)
+    assert any(r.role == "summary" for r in rows)
+
+
+def test_list_active_messages_excludes_archived(
+    conn: sqlite3.Connection,
+) -> None:
+    c = create_conversation(conn, name="t", model="m")
+    append_message(conn, c.id, "user", "u1")
+    append_message(conn, c.id, "assistant", "a1")
+    append_message(conn, c.id, "user", "u2")
+    summary = append_message(conn, c.id, "summary", "summary text")
+    archive_messages_before(conn, c.id, summary.id)
+
+    active = list_active_messages(conn, c.id)
+    # Only the summary row should be left active (its id is > all
+    # previous ids, so archive_messages_before doesn't touch it).
+    assert [m.role for m in active] == ["summary"]
+    assert active[0].content == "summary text"
+
+
+def test_list_active_messages_excludes_archived_summary(
+    conn: sqlite3.Connection,
+) -> None:
+    """A prior archived summary is excluded — the active list shows only
+    rows that should go to Ollama on the next turn."""
+    c = create_conversation(conn, name="t", model="m")
+    summary1 = append_message(conn, c.id, "summary", "first")
+    append_message(conn, c.id, "user", "follow-up")
+    summary2 = append_message(conn, c.id, "summary", "second")
+    archive_messages_before(conn, c.id, summary2.id)
+
+    active = list_active_messages(conn, c.id)
+    assert [m.content for m in active] == ["second"]
+    # And the first summary is in the full listing but archived.
+    all_rows = list_messages(conn, c.id)
+    archived = [m for m in all_rows if m.archived_at is not None]
+    assert any(m.content == "first" for m in archived)
+
+
+def test_archive_messages_before_returns_rowcount(
+    conn: sqlite3.Connection,
+) -> None:
+    c = create_conversation(conn, name="t", model="m")
+    append_message(conn, c.id, "user", "u1")
+    append_message(conn, c.id, "assistant", "a1")
+    summary = append_message(conn, c.id, "summary", "s")
+    n = archive_messages_before(conn, c.id, summary.id)
+    assert n == 2
+
+
+def test_archive_messages_before_is_idempotent(
+    conn: sqlite3.Connection,
+) -> None:
+    c = create_conversation(conn, name="t", model="m")
+    append_message(conn, c.id, "user", "u1")
+    summary = append_message(conn, c.id, "summary", "s")
+    n1 = archive_messages_before(conn, c.id, summary.id)
+    n2 = archive_messages_before(conn, c.id, summary.id)
+    assert n1 == 1
+    assert n2 == 0
+
+
+def test_archive_messages_before_bumps_updated_at(
+    conn: sqlite3.Connection,
+) -> None:
+    """Archiving bumps the parent conversation's updated_at so the
+    sidebar's sort key reflects the action."""
+    c = create_conversation(conn, name="t", model="m")
+    append_message(conn, c.id, "user", "u1")
+    summary = append_message(conn, c.id, "summary", "s")
+    # Snapshot updated_at after the append, then archive.
+    before = get_conversation(conn, c.id).updated_at
+    # Sleep just enough for the now_iso() string to advance (~ms).
+    import time
+    time.sleep(0.002)
+    archive_messages_before(conn, c.id, summary.id)
+    after = get_conversation(conn, c.id).updated_at
+    assert after > before
+
+
+def test_archive_messages_before_no_op_does_not_bump_updated_at(
+    conn: sqlite3.Connection,
+) -> None:
+    """When the WHERE clause matches zero rows, updated_at is not bumped."""
+    c = create_conversation(conn, name="t", model="m")
+    before = get_conversation(conn, c.id).updated_at
+    import time
+    time.sleep(0.002)
+    n = archive_messages_before(conn, c.id, cutoff_message_id=99999)
+    after = get_conversation(conn, c.id).updated_at
+    # Empty conversation, nothing to archive: rowcount 0, updated_at intact.
+    assert n == 0
+    assert after == before
+
+
+def test_count_archived_messages_counts_only_archived(
+    conn: sqlite3.Connection,
+) -> None:
+    c = create_conversation(conn, name="t", model="m")
+    append_message(conn, c.id, "user", "u1")
+    append_message(conn, c.id, "assistant", "a1")
+    summary = append_message(conn, c.id, "summary", "s")
+    archive_messages_before(conn, c.id, summary.id)
+    assert count_archived_messages(conn, c.id) == 2
+
+
+def test_count_archived_messages_zero_for_unknown_id(
+    conn: sqlite3.Connection,
+) -> None:
+    assert count_archived_messages(conn, 999) == 0
 
 
 # ---------------------------------------------------------------------------
