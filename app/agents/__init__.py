@@ -59,7 +59,7 @@ AGENTS: dict[str, AgentSpec] = {
         description="Gathers information with tools and reports findings.",
         model="granite4.1:8b",
         system_prompt=RESEARCH_AGENT_PROMPT,
-        tools=frozenset({"current_time", "query_rag"}),
+        tools=frozenset({"current_time", "query_rag", "fetch_github_file"}),
         # granite4.1:8b is tool-capable and fast on 16GB. It is NOT a
         # thinking model, so think MUST stay False — Ollama 400s on
         # think=true for a model without the capability.

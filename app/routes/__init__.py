@@ -40,6 +40,7 @@ from app.routes.files import router as _files_router
 from app.routes.projects import router as _projects_router
 from app.routes.settings import router as _settings_router
 from app.tools import builtins as _tools_builtins  # noqa: F401
+from app.tools import github as _github_tool  # noqa: F401
 from app.tools import rag as _rag_tool  # noqa: F401
 
 router = APIRouter()

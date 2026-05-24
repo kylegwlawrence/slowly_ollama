@@ -403,5 +403,8 @@ def format_tool_invocation(name: str, arguments: dict) -> str:
         pattern = arguments.get("pattern", "*")
         path = arguments.get("path", ".")
         return f'searching {path} for "{pattern}"'
+    if name == "fetch_github_file":
+        url = arguments.get("url", "?")
+        return f"fetching {url}"
     args_str = ", ".join(f"{k}={v!r}" for k, v in arguments.items())
     return f"calling {name}({args_str})"

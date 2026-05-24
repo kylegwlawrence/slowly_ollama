@@ -77,3 +77,19 @@ def file_tool_root() -> Path | None:
     if not raw:
         return None
     return Path(raw).expanduser().resolve()
+
+
+def github_token() -> str | None:
+    """Return the GitHub personal access token, or ``None`` if unset.
+
+    Used by ``fetch_github_file`` to authenticate raw.githubusercontent.com
+    requests. Optional: when unset the tool still works for public repos
+    (subject to GitHub's 60 req/hr unauthenticated rate limit); when set
+    it unlocks private repos and the 5k req/hr authenticated quota.
+
+    Returns:
+        The token string, or ``None`` when ``GITHUB_TOKEN`` is unset or
+        empty.
+    """
+    raw = os.environ.get("GITHUB_TOKEN")
+    return raw or None
