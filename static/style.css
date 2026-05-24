@@ -490,31 +490,6 @@ body {
   padding: 0;
 }
 
-/* Phase 13g: silent-fallback banner. Shown above #messages when
-   agentic mode is globally enabled but the chat's pinned model
-   can't do tools — explains why the agentic loop isn't running.
-   Tinted with the danger token (matching .form-error) so it reads
-   as an "informational warning" without introducing a new colour. */
-.chat-panel__agentic-skipped {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  margin: var(--space-md) var(--space-xl) 0;
-  padding: var(--space-sm) var(--space-md);
-  background: color-mix(in srgb, var(--danger) 8%, transparent);
-  color: var(--text-primary);
-  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
-  border-radius: var(--radius-md);
-  font-size: 13px;
-}
-
-.chat-panel__agentic-skipped code {
-  background: var(--surface);
-  padding: 0 var(--space-xs);
-  border-radius: var(--radius-sm);
-  font-size: 12px;
-}
-
 .messages {
   flex: 1;
   overflow-y: auto;
@@ -1316,67 +1291,16 @@ body {
   font-size: 12px;
 }
 
-/* ===== Phase 13e: agentic-mode settings ================================
-   Settings page section for the global multi-agent toggle. The label
-   wraps its native <input type="checkbox"> so the checkbox and text
-   are aligned on the same baseline; we don't restyle the checkbox
-   itself so it still looks like the system control everywhere. */
-
+/* Reusable muted help-text inside a settings section (mirrors the
+   `.settings__subtitle` muting but sits inside a section instead of
+   the page header). */
 .settings__section-help {
-  /* Used by the agentic section's intro paragraph; mirrors the
-     existing `.settings__subtitle` muting but sits inside a section
-     instead of the page header. */
   color: var(--text-secondary);
   margin: 0;
 }
 
-.agentic-mode-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-sm);
-  cursor: pointer;
-  font-size: 14px;
-  /* Pico applies a bottom margin to labels; flatten it so the prompts
-     <details> below sits at the section's normal gap rather than an
-     extra label-margin's worth of space. */
-  margin: 0;
-}
-
-.agentic-sub-toggles {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-sm);
-  margin-top: var(--space-md);
-  padding-left: var(--space-md);
-  border-left: 2px solid var(--border);
-}
-
-.agentic-sub-toggles__help {
-  color: var(--text-secondary);
-  font-size: 13px;
-  margin: 0 0 var(--space-xs);
-}
-
-.agentic-sub-toggle {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-sm);
-  cursor: pointer;
-  margin: 0;
-}
-
-.agentic-sub-toggle__label {
-  display: flex;
-  flex-direction: column;
-  font-size: 14px;
-}
-
-.agentic-sub-toggle__label > small {
-  color: var(--text-secondary);
-  font-size: 12px;
-  margin-top: 2px;
-}
-
+/* Read-only collapsible viewer for each agent's system prompt on the
+   settings page. */
 .agentic-prompts {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -1487,28 +1411,6 @@ body {
 /* Chip row in the composer sits between the input pill and the model toolbar */
 .composer__form .tool-chips {
   padding: var(--space-xs) 0;
-}
-
-/* ===== Phase 15: settings agentic "Coming soon" ========================= */
-
-.settings__coming-soon {
-  display: inline-block;
-  margin-left: var(--space-sm);
-  padding: var(--space-xs) var(--space-sm);
-  background: var(--surface-hover);
-  color: var(--text-secondary);
-  border-radius: var(--radius-pill);
-  font-size: 11px;
-  font-weight: 400;
-  vertical-align: middle;
-}
-
-.agentic-fieldset--disabled {
-  border: none;
-  padding: 0;
-  margin: 0;
-  opacity: 0.5;
-  pointer-events: none;
 }
 
 /* ===== Phase 17b: Projects UI polish ==================================== */
