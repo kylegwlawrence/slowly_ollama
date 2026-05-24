@@ -1,0 +1,27 @@
+{# One project row for the unified sidebar's #projects-list.
+
+   Render context:
+     project: the Project being rendered.
+     oob: when truthy, wrap the row in a
+          `<ul hx-swap-oob="afterbegin:#projects-list">` so HTMX
+          OOB-prepends it into the sidebar list. Non-outerHTML OOB
+          modes unwrap their root element, so the wrapper <ul> is
+          required — a top-level <li> would lose its parent context.
+     active: when truthy, render the row with aria-current="page" so
+          the active-state CSS highlights it. Only the sidebar's
+          initial server render passes this; OOB inserts leave it
+          falsy (app.js's click handler manages aria-current at runtime).
+   #}
+{%- if oob -%}
+<ul hx-swap-oob="afterbegin:#projects-list">
+{%- endif %}
+<li class="chat-item project-item"
+    data-project-id="{{ project.id }}"
+    {%- if active|default(false) %} aria-current="page"{% endif %}>
+  <a id="project-sidebar-link-{{ project.id }}"
+     href="/projects/{{ project.id }}/chats"
+     hx-get="/projects/{{ project.id }}/chats"
+     hx-target="#main" hx-swap="innerHTML"
+     hx-push-url="true">{{ project.name }}</a>
+</li>
+{%- if oob %}</ul>{% endif %}

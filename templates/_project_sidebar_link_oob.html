@@ -1,0 +1,13 @@
+{# Sidebar project link as an OOB swap target.
+
+   Used by PATCH /projects/{id} to update the sidebar row's visible
+   project name when the user renames a project. Matches the row's <a>
+   by id and uses outerHTML so the saved HTMX attributes are preserved.
+
+   Context: project. #}
+<a id="project-sidebar-link-{{ project.id }}"
+   href="/projects/{{ project.id }}/chats"
+   hx-get="/projects/{{ project.id }}/chats"
+   hx-target="#main" hx-swap="innerHTML"
+   hx-push-url="true"
+   hx-swap-oob="true">{{ project.name }}</a>
