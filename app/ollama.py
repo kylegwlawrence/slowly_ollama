@@ -98,13 +98,13 @@ def create_client() -> httpx.AsyncClient:
     Timeout policy: httpx's default is 5 seconds across all phases,
     which is far too tight for a local chat model's first-token
     latency on cold load (a 7B model can take 10-30 seconds to warm
-    up the first time it's used in a session). We loosen READ to 120
-    seconds — long enough for any reasonable cold-start — while
-    keeping CONNECT at 5 seconds (a localhost connect that takes
-    longer than that means Ollama is wedged, not slow). Per-call
-    overrides still win, e.g. ``generate_title`` passes ``timeout=10``
-    to bound how long the SSE connection stays open after the
-    user-visible reply.
+    up the first time it's used in a session). We loosen READ to 600
+    seconds (10 minutes) — long enough for any reasonable cold-start
+    and large context processing — while keeping CONNECT at 5 seconds
+    (a localhost connect that takes longer than that means Ollama is
+    wedged, not slow). Per-call overrides still win, e.g.
+    ``generate_title`` passes ``timeout=10`` to bound how long the SSE
+    connection stays open after the user-visible reply.
 
     Returns:
         A freshly built ``httpx.AsyncClient`` with ``base_url`` and a
@@ -116,7 +116,7 @@ def create_client() -> httpx.AsyncClient:
     """
     return httpx.AsyncClient(
         base_url=ollama_host(),
-        timeout=httpx.Timeout(300.0, connect=5.0),
+        timeout=httpx.Timeout(600.0, connect=5.0),
     )
 
 
