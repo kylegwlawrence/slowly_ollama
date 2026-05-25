@@ -470,7 +470,8 @@ body {
 }
 
 .chat-panel__model {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
   background: var(--accent-tonal);
   color: var(--accent-tonal-text);
   padding: var(--space-xs) var(--space-sm);
@@ -481,6 +482,7 @@ body {
      the badge styling above, and switch to a click cursor so the user
      discovers the unload affordance on hover. */
   border: none;
+  margin: 0;
   font-family: inherit;
   line-height: inherit;
   cursor: pointer;
