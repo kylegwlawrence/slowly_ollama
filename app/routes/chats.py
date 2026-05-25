@@ -346,7 +346,18 @@ async def send_message_endpoint(
         conversation_id=conversation_id,
         stream_url=f"/chats/{conversation_id}/stream",
     )
-    return HTMLResponse(content=user_html + placeholder_html)
+    # OOB-swap the header model chip back to "loaded": the generation we
+    # just spawned will (re)load the model in Ollama. If the chip is
+    # already loaded this is a no-op visually; if the user had just
+    # clicked unload, this flips it back to the accent colour.
+    spec = get_agent(conversation.active_agent)
+    indicator_oob = templates.get_template("_agent_indicator.html").render(
+        conversation=conversation,
+        active_agent_spec=spec,
+        model_loaded=True,
+        oob=True,
+    )
+    return HTMLResponse(content=user_html + placeholder_html + indicator_oob)
 
 
 @router.get("/chats/{conversation_id}/stream")
@@ -438,7 +449,15 @@ async def regenerate_endpoint(
         conversation_id=conversation_id,
         stream_url=f"/chats/{conversation_id}/stream",
     )
-    return HTMLResponse(content=placeholder_html)
+    # Same chip-reset as send_message: regen will reload the model too.
+    spec = get_agent(conversation.active_agent)
+    indicator_oob = templates.get_template("_agent_indicator.html").render(
+        conversation=conversation,
+        active_agent_spec=spec,
+        model_loaded=True,
+        oob=True,
+    )
+    return HTMLResponse(content=placeholder_html + indicator_oob)
 
 
 @router.post("/chats/{conversation_id}/agent", response_class=HTMLResponse)
@@ -478,9 +497,16 @@ async def set_chat_agent_endpoint(
         db, conversation_id, spec.name if spec else None
     )
 
+    # The effective model can change with the agent (each agent has its
+    # own assigned model), so re-probe residency before re-rendering
+    # the chip rather than carrying over the old state.
+    effective_model = spec.model if spec else conversation.model
+    model_loaded = await ollama.is_model_loaded(client, effective_model)
+
     indicator_html = templates.get_template("_agent_indicator.html").render(
         conversation=conversation,
         active_agent_spec=spec,
+        model_loaded=model_loaded,
         oob=True,
     )
 
@@ -497,6 +523,56 @@ async def set_chat_agent_endpoint(
         )
 
     return HTMLResponse(content=indicator_html + chips_oob)
+
+
+@router.post(
+    "/chats/{conversation_id}/unload-model",
+    response_class=HTMLResponse,
+)
+async def unload_chat_model_endpoint(
+    conversation_id: int,
+    db: DB,
+    client: OllamaClient,
+) -> Response:
+    """Unload the chat's currently-effective model from Ollama's memory.
+
+    Triggered by clicking the header model chip. The "effective" model is
+    the active agent's assigned model when an agent is invoked, otherwise
+    the chat's pinned model — same rule the indicator uses to decide what
+    to display. We unload whatever the user sees in the chip.
+
+    Returns the chip fragment with ``data-state="unloaded"`` so HTMX can
+    swap it in place. The next message-send POST will OOB-swap it back to
+    ``loaded`` because the generation request implicitly reloads the model.
+
+    Raises:
+        HTTPException 404: When the conversation is unknown.
+        HTTPException 502: When Ollama is unreachable. The chip stays in
+            its previous state because HTMX won't swap on a non-2xx by
+            default — better than lying that the model was unloaded.
+    """
+    try:
+        conversation = queries.get_conversation(db, conversation_id)
+    except LookupError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
+
+    spec = get_agent(conversation.active_agent)
+    effective_model = spec.model if spec else conversation.model
+
+    try:
+        await ollama.unload_model(client, effective_model)
+    except OllamaUnavailable as e:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            f"Couldn't reach Ollama to unload: {e}",
+        )
+
+    indicator_html = templates.get_template("_agent_indicator.html").render(
+        conversation=conversation,
+        active_agent_spec=spec,
+        model_loaded=False,
+    )
+    return HTMLResponse(content=indicator_html)
 
 
 # Phase 18: number of trailing (user/assistant/summary) rows to keep active

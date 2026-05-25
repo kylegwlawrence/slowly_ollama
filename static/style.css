@@ -476,6 +476,26 @@ body {
   border-radius: var(--radius-pill);
   font-size: 12px;
   font-weight: 500;
+  /* The chip is a <button> — strip native button chrome so it inherits
+     the badge styling above, and switch to a click cursor so the user
+     discovers the unload affordance on hover. */
+  border: none;
+  font-family: inherit;
+  line-height: inherit;
+  cursor: pointer;
+}
+
+.chat-panel__model:hover {
+  filter: brightness(0.95);
+}
+
+/* Unloaded state: the user clicked the chip and Ollama dropped the model
+   from memory. Light grey surface + dark grey text in BOTH themes — the
+   colours are deliberately neutral so the chip reads as "off" rather than
+   "another colour mode". Hardcoded greys (not vars) for the same reason. */
+.chat-panel__model[data-state="unloaded"] {
+  background: #d8d8d8;
+  color: #4a4a4a;
 }
 
 /* Wrapper form for a single chip in the header (temperature, tool

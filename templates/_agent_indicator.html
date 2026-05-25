@@ -1,22 +1,39 @@
-{# Header indicator (phase 16): which agent (if any) is driving this chat and
-   on which model.
+{# Header indicator (phase 16 + post-phase-19): which agent (if any) is
+   driving this chat, on which model, AND whether that model is currently
+   resident in Ollama.
 
    - Normal (no active agent): just the chat's pinned model, exactly as the
      pre-phase-16 `chat-panel__model` span showed.
    - Agent active: the agent label + its assigned model.
 
+   The chip is a <button>. Clicking it POSTs to
+   ``/chats/{id}/unload-model`` which evicts the model from Ollama's memory
+   and OOB-swaps the chip back as "unloaded". Sending a new message OOB-swaps
+   it back to the loaded state. ``model_loaded`` (bool) controls the colour:
+   the loaded state uses the sage accent surface; the unloaded state uses a
+   muted light grey so the user can see at a glance that nothing is resident.
+
    Stable id so the agent-picker endpoint can OOB-swap it on change. Pass
-   `oob=True` from that endpoint to add `hx-swap-oob`; the initial header
+   ``oob=True`` from that endpoint to add ``hx-swap-oob``; the initial header
    render leaves it off.
 
-   Context: `conversation`, `active_agent_spec` (an AgentSpec or None). #}
-<span id="agent-indicator-{{ conversation.id }}"
-      class="chat-panel__model{% if active_agent_spec %} chat-panel__model--agent{% endif %}"
-      {% if oob %}hx-swap-oob="true" {% endif %}data-role="agent-indicator">
+   Context: ``conversation``, ``active_agent_spec`` (an AgentSpec or None),
+   ``model_loaded`` (bool, defaults to True if the caller forgot — better to
+   render the chip in its normal colour than to lie about residency). #}
+<button id="agent-indicator-{{ conversation.id }}"
+        type="button"
+        class="chat-panel__model{% if active_agent_spec %} chat-panel__model--agent{% endif %}"
+        data-state="{% if model_loaded|default(True) %}loaded{% else %}unloaded{% endif %}"
+        data-role="agent-indicator"
+        hx-post="/chats/{{ conversation.id }}/unload-model"
+        hx-target="this"
+        hx-swap="outerHTML"
+        title="{% if model_loaded|default(True) %}Click to unload this model from Ollama's memory{% else %}Unloaded — the next message will reload it{% endif %}"
+        {% if oob %}hx-swap-oob="true" {% endif %}>
   {%- if active_agent_spec -%}
     <span class="material-symbols-outlined">smart_toy</span>
     Agent: {{ active_agent_spec.label }} ({{ active_agent_spec.model }})
   {%- else -%}
     {{ conversation.model }}
   {%- endif -%}
-</span>
+</button>

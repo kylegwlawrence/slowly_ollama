@@ -450,6 +450,15 @@ async def project_chat_panel_endpoint(
 
     active_agent_spec = get_agent(conversation.active_agent)
 
+    # Reflect Ollama's actual memory state in the header chip. The
+    # "effective" model is the agent's model when an agent is active,
+    # else the chat's pinned model — same rule the indicator uses to
+    # decide what text to render.
+    effective_model = (
+        active_agent_spec.model if active_agent_spec else conversation.model
+    )
+    model_loaded = await ollama.is_model_loaded(client, effective_model)
+
     return _render_project_page(
         request,
         db=db,
@@ -465,6 +474,7 @@ async def project_chat_panel_endpoint(
             "tool_states": tool_states,
             "rag_server_states": rag_server_states,
             "active_agent_spec": active_agent_spec,
+            "model_loaded": model_loaded,
         },
     )
 
@@ -578,6 +588,10 @@ async def create_project_chat_endpoint(
         rag_server_states=rag_server_states,
         agents=list_agents(),
         active_agent_spec=agent_spec,
+        # Brand-new chat: we just kicked off start_generation, which is
+        # (re)loading the effective model right now. Skip the /api/ps
+        # round trip and render the chip in its loaded colour.
+        model_loaded=True,
         project=project,
     )
 

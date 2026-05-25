@@ -288,6 +288,108 @@ def reset_capability_cache() -> None:
     _capability_cache = None
 
 
+# ---------------------------------------------------------------------------
+# Memory residency (post-phase-19 "unload" chip)
+# ---------------------------------------------------------------------------
+#
+# Ollama lazy-loads each model on first use and keeps it resident for ~5 min
+# of idle (the default `keep_alive`). The header model chip exposes a manual
+# unload so the user can free VRAM without waiting for the idle timer, and
+# `/api/ps` lets us colour the chip to reflect the actual residency state.
+
+
+async def list_loaded_models(client: httpx.AsyncClient) -> list[str]:
+    """Return the names of models currently held in Ollama's memory.
+
+    Wraps ``GET /api/ps`` — Ollama's "what's resident right now" endpoint.
+    Distinct from :func:`list_models`, which reports every *installed*
+    model regardless of memory state.
+
+    Args:
+        client: An ``httpx.AsyncClient`` pointed at the Ollama host
+            (typically from ``create_client``).
+
+    Returns:
+        Loaded model names in the order Ollama returned them. Empty
+        list when nothing is loaded.
+
+    Raises:
+        OllamaUnavailable: Ollama is unreachable, the request timed
+            out, or the server returned a non-2xx status.
+        OllamaProtocolError: Ollama responded but the body wasn't
+            valid JSON or didn't have the expected shape.
+    """
+    try:
+        response = await client.get("/api/ps")
+        response.raise_for_status()
+    except (httpx.HTTPError, httpx.InvalidURL) as e:
+        raise OllamaUnavailable(f"Ollama request failed: {e}") from e
+
+    try:
+        return [model["name"] for model in response.json()["models"]]
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        raise OllamaProtocolError(
+            f"Ollama returned an unexpected /api/ps shape: {e}"
+        ) from e
+
+
+async def is_model_loaded(client: httpx.AsyncClient, name: str) -> bool:
+    """Best-effort check: is ``name`` resident in Ollama right now?
+
+    Wraps :func:`list_loaded_models` and swallows Ollama errors —
+    callers use this purely to colour the header chip, so a transient
+    /api/ps failure should default to "looks loaded" (the chip stays in
+    its normal colour) rather than fail the whole chat-panel render.
+
+    Args:
+        client: An ``httpx.AsyncClient`` pointed at the Ollama host.
+        name: The model identifier to check (e.g. ``"llama3.1:8b"``).
+
+    Returns:
+        True if /api/ps lists ``name``. False only when /api/ps
+        succeeded AND ``name`` was absent. On any failure, returns
+        True — better to show the chip as loaded and let the next
+        click correct it than to lie about residency.
+    """
+    try:
+        return name in await list_loaded_models(client)
+    except (OllamaUnavailable, OllamaProtocolError):
+        return True
+
+
+async def unload_model(client: httpx.AsyncClient, name: str) -> None:
+    """Ask Ollama to evict ``name`` from memory immediately.
+
+    Ollama's unload protocol: POST ``/api/generate`` (or ``/api/chat``)
+    with ``keep_alive: 0`` and no prompt. The server drops the model
+    from VRAM/RAM and replies with a small JSON ack. This is the same
+    mechanism Ollama uses for its own idle eviction, just triggered on
+    demand.
+
+    Unloading a model that isn't loaded is a no-op on Ollama's side and
+    still returns 200 — the caller doesn't need to check residency first.
+
+    Args:
+        client: An ``httpx.AsyncClient`` pointed at the Ollama host.
+        name: The model identifier to evict (e.g. ``"llama3.1:8b"``).
+
+    Raises:
+        OllamaUnavailable: Ollama is unreachable, the request timed out,
+            or the server returned a non-2xx status. The chip-flip in the
+            UI is best-effort; the caller decides whether to surface this
+            to the user.
+    """
+    try:
+        response = await client.post(
+            "/api/generate",
+            json={"model": name, "keep_alive": 0},
+            timeout=10.0,
+        )
+        response.raise_for_status()
+    except (httpx.HTTPError, httpx.InvalidURL) as e:
+        raise OllamaUnavailable(f"Ollama unload failed: {e}") from e
+
+
 async def stream_chat(
     client: httpx.AsyncClient,
     model: str,
