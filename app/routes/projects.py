@@ -32,6 +32,8 @@ from app.routes._helpers import (
     _chip_states,
     _placeholder_name,
     _project_context,
+    _sidebar_rag_context,
+    _spawn_health_refresh,
 )
 from app.tools import TOOLS
 from app.templates import templates
@@ -308,6 +310,16 @@ def _render_project_page(
         # highlight correctly. Default None for the empty-state /
         # Files / Settings tabs.
         "active_chat_id": None,
+        # Phase 19: sidebar Sources section defaults — overridden via
+        # `extra` on chat-panel routes that compute the real values.
+        # Always present so templates can read them without |default
+        # gymnastics, and so the partial renders an empty (invisible)
+        # wrapper as a stable OOB target on chat-less pages.
+        "active_conversation": None,
+        "active_chat_supports_tools": False,
+        "active_chat_agent_active": False,
+        "rag_server_states": [],
+        "rag_health": {},
         # Most tabs need agents + defaults available; include them so
         # included partials don't have to re-fetch.
         **_project_context(db, composer=active_tab == "chats"),
@@ -459,6 +471,10 @@ async def project_chat_panel_endpoint(
     )
     model_loaded = await ollama.is_model_loaded(client, effective_model)
 
+    sidebar_ctx = await _sidebar_rag_context(
+        db, conversation, supports_tools=supports_tools
+    )
+
     return _render_project_page(
         request,
         db=db,
@@ -475,6 +491,7 @@ async def project_chat_panel_endpoint(
             "rag_server_states": rag_server_states,
             "active_agent_spec": active_agent_spec,
             "model_loaded": model_loaded,
+            **sidebar_ctx,
         },
     )
 
@@ -564,6 +581,9 @@ async def create_project_chat_endpoint(
         on_complete="append",
         **_agent_overrides(chat),
     )
+    # Phase 19: warm the RAG health cache so a freshly-created chat's
+    # sidebar Sources section reflects current server health.
+    _spawn_health_refresh(db)
 
     supports_tools = await ollama.model_supports_tools(client, chat.model)
     if supports_tools:
@@ -607,7 +627,23 @@ async def create_project_chat_endpoint(
         f'<ul hx-swap-oob="afterbegin:#chats-list">{item_html}</ul>'
     )
 
-    body = panel_html + oob_sidebar_row
+    # Phase 19: OOB-swap the sidebar Sources section so it reflects the new
+    # active chat. The pre-existing sidebar in DOM has an empty
+    # #sidebar-rag-section wrapper (always-rendered in _sidebar.html);
+    # OOB outerHTML-swap with `oob=true` replaces it with the populated
+    # section for the new chat.
+    sidebar_ctx = await _sidebar_rag_context(
+        db, chat, supports_tools=supports_tools, servers=rag_servers_list
+    )
+    oob_sidebar_rag = templates.get_template(
+        "_sidebar_rag_section.html"
+    ).render(
+        conversation=chat,
+        oob=True,
+        **sidebar_ctx,
+    )
+
+    body = panel_html + oob_sidebar_row + oob_sidebar_rag
     response = HTMLResponse(
         content=body, status_code=status.HTTP_201_CREATED
     )

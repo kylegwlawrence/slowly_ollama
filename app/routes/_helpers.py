@@ -5,9 +5,10 @@ context, the chip-state lookup, the agent-overrides resolver, etc. from
 one place rather than reaching across to a sibling sub-module.
 """
 
+import asyncio
 import sqlite3
 
-from app import ollama, queries
+from app import ollama, queries, rag_health
 from app import rag_servers as _rag_servers
 from app.agents import get_agent, list_agents
 from app.tools import RAG_TOOL_NAME, TOOLS
@@ -26,20 +27,6 @@ def _default_tool_states() -> list[queries.ChatToolState]:
         queries.ChatToolState(tool_name=name, enabled=True)
         for name in TOOLS
         if name != RAG_TOOL_NAME
-    ]
-
-
-def _default_rag_server_states(
-    db: sqlite3.Connection,
-) -> list[queries.ChatRagState]:
-    """Return ChatRagState list with all configured RAG servers enabled.
-
-    Used by the empty-state composer so per-server chips default to on
-    before a chat is created.
-    """
-    servers = _rag_servers.list_servers(db)
-    return [
-        queries.ChatRagState(server_name=s.name, enabled=True) for s in servers
     ]
 
 
@@ -75,6 +62,87 @@ def _chip_states(
         db, conversation_id, [s.name for s in servers]
     )
     return tool_states, rag_server_states
+
+
+def _spawn_health_refresh(db: sqlite3.Connection) -> None:
+    """Fire-and-forget RAG-server health refresh (phase 19).
+
+    Called from send / regenerate / create-chat endpoints right after
+    ``start_generation`` so the cache is freshly populated by the time
+    the next sidebar render asks for it. Doesn't block the response —
+    the user shouldn't pay probe latency on every send.
+
+    A server that went down between chat-open and send-time will show
+    red on the next sidebar render (chat switch, page reload, chip
+    toggle response). Within the current request the user already
+    pressed Send, so a "warn before send" UI isn't possible here
+    anyway; ``query_rag`` will surface the actual failure mid-stream.
+    """
+    servers = _rag_servers.list_servers(db)
+    if servers:
+        asyncio.create_task(rag_health.get_health_map(servers, force=True))
+
+
+async def _sidebar_rag_context(
+    db: sqlite3.Connection,
+    conversation: queries.Conversation | None,
+    *,
+    supports_tools: bool,
+    servers: list | None = None,
+) -> dict:
+    """Build the context vars the sidebar's RAG section needs (phase 19).
+
+    Returns keys consumable by ``_sidebar.html``'s guard:
+      ``active_conversation``
+      ``active_chat_supports_tools``
+      ``active_chat_agent_active``
+      ``rag_server_states``
+      ``rag_health``
+
+    When ``conversation`` is None (no active chat), returns the minimal
+    shape with empty lists — the guard in ``_sidebar.html`` shorts the
+    section to hidden. When an agent is active or no servers are
+    configured, also returns empty ``rag_health`` (no need to probe).
+
+    Probes server health in parallel via the cache; render-time cost is
+    one ``asyncio.gather`` per chat-panel render (cache-hit fast path:
+    sub-millisecond).
+    """
+    if conversation is None or not supports_tools:
+        return {
+            "active_conversation": conversation,
+            "active_chat_supports_tools": supports_tools,
+            "active_chat_agent_active": False,
+            "rag_server_states": [],
+            "rag_health": {},
+        }
+
+    if servers is None:
+        servers = _rag_servers.list_servers(db)
+    rag_server_states = queries.get_chat_rag_states(
+        db, conversation.id, [s.name for s in servers]
+    )
+    agent_active = (
+        conversation.active_agent is not None
+        and get_agent(conversation.active_agent) is not None
+    )
+    if agent_active or not servers:
+        return {
+            "active_conversation": conversation,
+            "active_chat_supports_tools": supports_tools,
+            "active_chat_agent_active": agent_active,
+            "rag_server_states": rag_server_states,
+            "rag_health": {},
+        }
+
+    health_map = await rag_health.get_health_map(servers)
+    return {
+        "active_conversation": conversation,
+        "active_chat_supports_tools": supports_tools,
+        "active_chat_agent_active": False,
+        "rag_server_states": rag_server_states,
+        "rag_health": health_map,
+    }
 
 
 def _placeholder_name(content: str) -> str:
@@ -174,5 +242,4 @@ def _project_context(
     }
     if composer:
         ctx["default_tool_states"] = _default_tool_states()
-        ctx["default_rag_server_states"] = _default_rag_server_states(db)
     return ctx

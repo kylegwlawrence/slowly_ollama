@@ -23,7 +23,7 @@ from app import queries
 from app import rag_servers as _rag_servers
 from app.agents import list_agents
 from app.dependencies import DB
-from app.rag_servers import probe_rag_health
+from app.rag_health import probe_rag_health
 from app.templates import templates
 from app.tools.rag import refresh_query_rag_registration
 

@@ -41,3 +41,17 @@
     {% endif %}
   </div>
 </section>
+{# Phase 19: OOB-swap the sidebar Sources section ONLY on HTMX requests.
+   On a full page load, the sidebar is re-rendered fresh with the right
+   chat already active — no OOB needed. (Plain browsers ignore the
+   `hx-swap-oob` attribute and would render the partial inline at the
+   bottom of the page; that's the bug this guard prevents.) For HTMX
+   chat-switching only the project page fragment is returned, so we
+   piggyback an OOB section render so the sidebar's #sidebar-rag-section
+   updates to match the newly-active chat. When no chat is active,
+   active_conversation is None and the partial emits an empty wrapper. #}
+{% if request.headers.get("HX-Request") %}
+{% set conversation = active_conversation %}
+{% set oob = true %}
+{% include "_sidebar_rag_section.html" %}
+{% endif %}
