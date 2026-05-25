@@ -1,4 +1,4 @@
-"""Unit tests for ``app.rag_health.probe_rag_health``.
+"""Unit tests for ``app.rag_servers.probe_rag_health``.
 
 Uses ``httpx.MockTransport`` to canned-response a fake /health
 endpoint so the tests are hermetic — no real network involved.
@@ -7,8 +7,8 @@ endpoint so the tests are hermetic — no real network involved.
 import httpx
 import pytest
 
-from app import rag_health
-from app.rag_health import _health_url, probe_rag_health
+from app import rag_servers
+from app.rag_servers import _health_url, probe_rag_health
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +66,7 @@ def _install_transport(
         kwargs["transport"] = httpx.MockTransport(handler)
         return real_async_client(*args, **kwargs)
 
-    monkeypatch.setattr(rag_health.httpx, "AsyncClient", _factory)
+    monkeypatch.setattr(rag_servers.httpx, "AsyncClient", _factory)
 
 
 @pytest.mark.asyncio
