@@ -78,6 +78,7 @@
   --accent: #94bfc8;
   --accent-tonal: #285162;
   --accent-tonal-text: #b3cbda;
+  --accent-hover: #548ba2;
   --danger: #f28b82;
   /* Lighter sage-leaning green so the check_circle glyph reads
      against the dark surface without going neon. */
