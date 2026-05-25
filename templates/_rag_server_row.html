@@ -27,7 +27,7 @@
              aria-label="Server name" placeholder="e.g. arxiv">
       <input type="text" name="url" value="{{ server.url }}" required
              aria-label="Server URL" placeholder="e.g. http://host:8002/arxiv">
-      <textarea name="description" maxlength="200" rows="2"
+      <textarea name="description" maxlength="400" rows="2"
                 aria-label="Edit description for {{ server.name }}"
                 placeholder="What's in this RAG server? e.g. 'PubMed abstracts on cardiology, 2020-2024'">{{ server.description }}</textarea>
       <div class="rag-server__edit-error form-error" role="alert" hidden></div>

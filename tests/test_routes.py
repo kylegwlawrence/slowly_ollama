@@ -2119,11 +2119,11 @@ def test_settings_add_server_persists_description(
     assert "Papers on CS and ML" in response.text
 
 
-def test_settings_add_server_truncates_description_at_200_chars(
+def test_settings_add_server_truncates_description_at_400_chars(
     make_client: ClientFactory,
 ) -> None:
-    """The route silently truncates descriptions longer than 200 chars."""
-    long_desc = "x" * 250
+    """The route silently truncates descriptions longer than 400 chars."""
+    long_desc = "x" * 450
     with make_client(_ollama_unreachable) as client:
         response = client.post(
             "/settings/servers",
@@ -2131,9 +2131,9 @@ def test_settings_add_server_truncates_description_at_200_chars(
         )
 
     assert response.status_code == 200
-    # Exactly 200 'x' chars — not 250, not 201.
-    assert "x" * 200 in response.text
-    assert "x" * 201 not in response.text
+    # Exactly 400 'x' chars — not 450, not 401.
+    assert "x" * 400 in response.text
+    assert "x" * 401 not in response.text
 
 
 def test_settings_add_server_strips_description_whitespace(
@@ -2317,21 +2317,21 @@ def test_settings_update_server_description_persists(
     assert "edited in place" in settings.text
 
 
-def test_settings_update_server_description_truncates_at_200_chars(
+def test_settings_update_server_description_truncates_at_400_chars(
     make_client: ClientFactory,
 ) -> None:
-    """An overlong description is silently truncated to 200 chars."""
+    """An overlong description is silently truncated to 400 chars."""
     with make_client(_ollama_unreachable) as client:
         server_id = _add_server_and_get_id(client, "arxiv", "http://x/arxiv")
         response = client.patch(
             f"/settings/servers/{server_id}",
-            data={"description": "x" * 250},
+            data={"description": "x" * 450},
         )
         settings = client.get("/settings")
 
     assert response.status_code == 200
-    assert "x" * 200 in settings.text
-    assert "x" * 201 not in settings.text
+    assert "x" * 400 in settings.text
+    assert "x" * 401 not in settings.text
 
 
 def test_settings_update_server_description_strips_whitespace(

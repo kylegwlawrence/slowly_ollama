@@ -114,9 +114,9 @@ async def add_server_endpoint(
     """
     name_clean = name.strip()
     url_clean = url.strip()
-    # 200-char cap: maxlength="200" on the textarea is a client-side
+    # 400-char cap: maxlength="400" on the textarea is a client-side
     # hint only; silently truncate here as belt-and-suspenders.
-    description_clean = description.strip()[:200]
+    description_clean = description.strip()[:400]
 
     healthy, reason = await probe_rag_health(name_clean, url_clean)
     if not healthy:
@@ -207,13 +207,13 @@ async def update_server_endpoint(
     When only ``description`` is provided (legacy / description-only path),
     updates just the description field — no re-probe required.
 
-    Truncates description to 200 chars server-side (belt-and-suspenders
+    Truncates description to 400 chars server-side (belt-and-suspenders
     against clients that bypass the ``maxlength`` attribute).
 
     A missing id returns 404 so a stale row from another tab's delete
     isn't replaced with anything.
     """
-    description_clean = description.strip()[:200]
+    description_clean = description.strip()[:400]
     name_clean = name.strip() if name else None
     url_clean = url.strip() if url else None
 
