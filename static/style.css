@@ -1148,6 +1148,7 @@ body {
   margin: 0;
 }
 
+.rag-server__edit input[type="text"],
 .rag-server__edit textarea {
   font-size: 13px;
   padding: var(--space-xs) var(--space-sm);
@@ -1157,6 +1158,9 @@ body {
   color: var(--text-primary);
   height: auto;
   margin: 0;
+}
+
+.rag-server__edit textarea {
   resize: vertical;
 }
 

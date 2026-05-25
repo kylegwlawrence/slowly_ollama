@@ -188,28 +188,53 @@ def get_server_endpoint(
 
 
 @router.patch("/settings/servers/{server_id}", response_class=HTMLResponse)
-def update_server_endpoint(
+async def update_server_endpoint(
     server_id: int,
     request: Request,
     db: DB,
     description: Annotated[str, Form()] = "",
+    name: Annotated[str | None, Form()] = None,
+    url: Annotated[str | None, Form()] = None,
 ) -> Response:
-    """Update a server's description in place; return the view-mode row.
+    """Update a server's name, URL, and description; return the view-mode row.
 
-    Only the description is editable inline — name/URL edits would need a
-    health re-probe and a tool-registry rename, so those still go through
-    delete + re-add. Truncates to 200 chars to match the add-server form's
-    cap (the textarea's ``maxlength`` is a client-side hint only), then
-    refreshes the query_rag registration so the tool's ``source`` hint
-    reflects the edited description.
+    When ``name`` and ``url`` are both provided (the full-edit form path),
+    re-probes the server health before writing — same guarantee as the add
+    form: a row only stays in SQLite if the underlying database is reachable
+    and healthy. A failed probe returns 502 plain text; a name collision
+    returns 409.
 
-    A missing id returns 404 so a stale row left over from another tab's
-    delete isn't replaced with anything.
+    When only ``description`` is provided (legacy / description-only path),
+    updates just the description field — no re-probe required.
+
+    Truncates description to 200 chars server-side (belt-and-suspenders
+    against clients that bypass the ``maxlength`` attribute).
+
+    A missing id returns 404 so a stale row from another tab's delete
+    isn't replaced with anything.
     """
     description_clean = description.strip()[:200]
-    server = _rag_servers.update_server_description(
-        db, server_id, description_clean
-    )
+    name_clean = name.strip() if name else None
+    url_clean = url.strip() if url else None
+
+    if name_clean and url_clean:
+        healthy, reason = await probe_rag_health(name_clean, url_clean)
+        if not healthy:
+            return HTMLResponse(reason, status_code=status.HTTP_502_BAD_GATEWAY)
+        try:
+            server = _rag_servers.update_server(
+                db, server_id, name_clean, url_clean, description_clean
+            )
+        except sqlite3.IntegrityError:
+            return HTMLResponse(
+                f"Server name '{html.escape(name_clean)}' already in use.",
+                status_code=status.HTTP_409_CONFLICT,
+            )
+    else:
+        server = _rag_servers.update_server_description(
+            db, server_id, description_clean
+        )
+
     if server is None:
         return Response(content="", status_code=status.HTTP_404_NOT_FOUND)
     refresh_query_rag_registration()

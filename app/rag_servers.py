@@ -163,14 +163,46 @@ def get_server(conn: sqlite3.Connection, server_id: int) -> RagServer | None:
     return _row_to_server(row) if row else None
 
 
+def update_server(
+    conn: sqlite3.Connection,
+    server_id: int,
+    name: str,
+    url: str,
+    description: str,
+) -> RagServer | None:
+    """Update a server's name, URL, and description in place.
+
+    Args:
+        conn: Open SQLite connection.
+        server_id: Id of the server to update.
+        name: New unique source identifier. Raises ``IntegrityError`` on
+            collision with another row; the route converts this to a 409.
+        url: New full base URL.
+        description: New human-readable summary of the source's contents.
+
+    Returns:
+        The updated RagServer, or ``None`` if no row has that id (the
+        route maps ``None`` to a 404).
+
+    Raises:
+        sqlite3.IntegrityError: ``name`` collides with a different existing
+            row (UNIQUE constraint).
+    """
+    now = _now_iso()
+    with conn:
+        row = conn.execute(
+            "UPDATE rag_servers SET name = ?, url = ?, description = ?, updated_at = ?"
+            " WHERE id = ?"
+            " RETURNING id, name, url, description, created_at, updated_at;",
+            (name, url, description, now, server_id),
+        ).fetchone()
+    return _row_to_server(row) if row else None
+
+
 def update_server_description(
     conn: sqlite3.Connection, server_id: int, description: str
 ) -> RagServer | None:
     """Update a server's description in place and bump ``updated_at``.
-
-    Only the description is editable inline — name and URL changes would
-    need a health re-probe and a tool-registry rename, so those still go
-    through delete + re-add.
 
     Args:
         conn: Open SQLite connection.
@@ -183,9 +215,6 @@ def update_server_description(
     """
     now = _now_iso()
     with conn:
-        # RETURNING gives us the post-update row without a follow-up SELECT;
-        # a missing id yields no row (fetchone() -> None), which the route
-        # treats as a 404.
         row = conn.execute(
             "UPDATE rag_servers SET description = ?, updated_at = ?"
             " WHERE id = ?"
