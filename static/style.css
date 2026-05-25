@@ -75,9 +75,9 @@
   --text-secondary: #9e9e9e;
   /* Sage green reads well on dark; accent-tonal becomes a very dark sage
      panel, accent-tonal-text flips to the green itself so it's readable. */
-  --accent: #ca9c9c;
-  --accent-tonal: #5f3434;
-  --accent-tonal-text: #dab3b3;
+  --accent: #94bfc8;
+  --accent-tonal: #285162;
+  --accent-tonal-text: #b3cbda;
   --danger: #f28b82;
   /* Lighter sage-leaning green so the check_circle glyph reads
      against the dark surface without going neon. */
