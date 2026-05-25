@@ -3814,3 +3814,133 @@ def test_chat_panel_renders_plain_row_for_legacy_plain_text_tool_result(
     # But NOT the expandable form — no sources were stored.
     assert "tool-row--expandable" not in text
     assert "tool-row__chevron" not in text
+
+
+# ---------------------------------------------------------------------------
+# POST /chats/{id}/unload-model (header model chip)
+# ---------------------------------------------------------------------------
+
+
+def _unload_capable_handler(seen: list[dict]) -> Callable[
+    [httpx.Request], httpx.Response
+]:
+    """Handler that records unload POSTs and stays tool-capable elsewhere.
+
+    Routes /api/generate (the unload protocol — POST + keep_alive: 0) to a
+    200, captures the JSON body in ``seen``, and falls through to the
+    existing tool-capable defaults so /api/tags + /api/show still work.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/generate":
+            seen.append(json.loads(request.content))
+            return httpx.Response(200, json={"model": "llama3", "done": True})
+        return _tool_capable_handler(request)
+
+    return handler
+
+
+def test_unload_model_endpoint_unloads_chat_pinned_model(
+    make_client: ClientFactory,
+) -> None:
+    """Click the chip on a Normal chat → POSTs /api/generate keep_alive:0
+    for the chat's pinned model, returns the chip in the unloaded state."""
+    db_path = Path(os.environ["DB_PATH"])
+    initialize_database(db_path)
+    with open_connection(db_path) as conn:
+        chat = queries.create_conversation(conn, name="t", model="llama3")
+
+    seen: list[dict] = []
+    with make_client(_unload_capable_handler(seen)) as client:
+        response = client.post(f"/chats/{chat.id}/unload-model")
+
+    assert response.status_code == 200
+    # Ollama got the documented unload request.
+    assert seen == [{"model": "llama3", "keep_alive": 0}]
+    # Chip is returned in the unloaded state (so HTMX swaps it grey).
+    assert f'id="agent-indicator-{chat.id}"' in response.text
+    assert 'data-state="unloaded"' in response.text
+    # No hx-swap-oob — this is a direct hx-target="this" swap, not OOB.
+    assert "hx-swap-oob" not in response.text
+
+
+def test_unload_model_endpoint_uses_agent_model_when_agent_active(
+    make_client: ClientFactory,
+) -> None:
+    """Agent mode → unload the agent's assigned model, not the chat's
+    pinned model (the chip shows the agent's model)."""
+    from app.agents import get_agent
+
+    db_path = Path(os.environ["DB_PATH"])
+    initialize_database(db_path)
+    with open_connection(db_path) as conn:
+        chat = queries.create_conversation(
+            conn, name="t", model="llama3", active_agent="research"
+        )
+
+    research_model = get_agent("research").model
+    assert research_model != "llama3", "fixture assumption: research agent uses a non-default model"
+
+    seen: list[dict] = []
+    with make_client(_unload_capable_handler(seen)) as client:
+        response = client.post(f"/chats/{chat.id}/unload-model")
+
+    assert response.status_code == 200
+    assert seen == [{"model": research_model, "keep_alive": 0}]
+
+
+def test_unload_model_endpoint_404s_on_unknown_chat(
+    make_client: ClientFactory,
+) -> None:
+    db_path = Path(os.environ["DB_PATH"])
+    initialize_database(db_path)
+    with make_client(_unload_capable_handler([])) as client:
+        response = client.post("/chats/999/unload-model")
+    assert response.status_code == 404
+
+
+def test_unload_model_endpoint_502s_when_ollama_unreachable(
+    make_client: ClientFactory,
+) -> None:
+    """Ollama down at click time → 502 so HTMX leaves the chip alone
+    instead of lying that the unload succeeded."""
+    db_path = Path(os.environ["DB_PATH"])
+    initialize_database(db_path)
+    with open_connection(db_path) as conn:
+        chat = queries.create_conversation(conn, name="t", model="llama3")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/generate":
+            raise httpx.ConnectError("ollama down")
+        return _tool_capable_handler(request)
+
+    with make_client(handler) as client:
+        response = client.post(f"/chats/{chat.id}/unload-model")
+    assert response.status_code == 502
+
+
+def test_send_message_oob_swaps_chip_back_to_loaded(
+    make_client: ClientFactory,
+) -> None:
+    """Sending a message OOB-swaps the chip back to the loaded state so
+    a previously-unloaded chip flips back to its accent colour."""
+    db_path = Path(os.environ["DB_PATH"])
+    initialize_database(db_path)
+    with open_connection(db_path) as conn:
+        chat = queries.create_conversation(conn, name="t", model="llama3")
+
+    stream_body = (
+        b'{"message":{"role":"assistant","content":"hi"},"done":false}\n'
+        b'{"message":{"role":"assistant","content":""},"done":true}\n'
+    )
+    with make_client(_stream_handler(stream_body)) as client:
+        response = client.post(
+            f"/chats/{chat.id}/messages",
+            data={"content": "hello"},
+        )
+
+    assert response.status_code == 200
+    # The OOB chip is appended after the user bubble + placeholder.
+    assert f'id="agent-indicator-{chat.id}"' in response.text
+    assert 'data-state="loaded"' in response.text
+    assert 'hx-swap-oob="true"' in response.text

@@ -19,12 +19,15 @@ from app.ollama import (
     OllamaUnavailable,
     create_client,
     generate_title,
+    is_model_loaded,
+    list_loaded_models,
     list_models,
     list_tool_capable_models,
     maybe_tool_call,
     model_supports_tools,
     stream_chat,
     summarize_conversation,
+    unload_model,
 )
 
 
@@ -933,3 +936,137 @@ async def test_summarize_returns_empty_string_on_empty_content() -> None:
     async with _client_with(handler) as client:
         text = await summarize_conversation(client, "llama3", [])
     assert text == ""
+
+
+# ---------------------------------------------------------------------------
+# list_loaded_models / is_model_loaded / unload_model (header chip)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_loaded_models_returns_names_from_ps() -> None:
+    """list_loaded_models extracts the ``name`` field from /api/ps."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/ps"
+        return httpx.Response(
+            200,
+            json={
+                "models": [
+                    {"name": "llama3:latest", "size_vram": 4_000_000_000},
+                    {"name": "qwen2.5:7b", "size_vram": 3_500_000_000},
+                ]
+            },
+        )
+
+    async with _client_with(handler) as client:
+        names = await list_loaded_models(client)
+
+    assert names == ["llama3:latest", "qwen2.5:7b"]
+
+
+@pytest.mark.asyncio
+async def test_list_loaded_models_returns_empty_when_nothing_resident() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"models": []})
+
+    async with _client_with(handler) as client:
+        assert await list_loaded_models(client) == []
+
+
+@pytest.mark.asyncio
+async def test_list_loaded_models_unavailable_on_5xx() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500)
+
+    async with _client_with(handler) as client:
+        with pytest.raises(OllamaUnavailable):
+            await list_loaded_models(client)
+
+
+@pytest.mark.asyncio
+async def test_list_loaded_models_protocol_error_on_wrong_shape() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"wrong_key": []})
+
+    async with _client_with(handler) as client:
+        with pytest.raises(OllamaProtocolError):
+            await list_loaded_models(client)
+
+
+@pytest.mark.asyncio
+async def test_is_model_loaded_true_when_listed() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"models": [{"name": "llama3"}]})
+
+    async with _client_with(handler) as client:
+        assert await is_model_loaded(client, "llama3") is True
+
+
+@pytest.mark.asyncio
+async def test_is_model_loaded_false_when_absent() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"models": [{"name": "qwen2.5"}]})
+
+    async with _client_with(handler) as client:
+        assert await is_model_loaded(client, "llama3") is False
+
+
+@pytest.mark.asyncio
+async def test_is_model_loaded_defaults_true_on_ollama_failure() -> None:
+    """A /api/ps failure must NOT flip the chip to "unloaded" — we'd
+    rather show the chip in its normal colour than lie about residency."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("boom")
+
+    async with _client_with(handler) as client:
+        assert await is_model_loaded(client, "llama3") is True
+
+
+@pytest.mark.asyncio
+async def test_is_model_loaded_defaults_true_on_protocol_error() -> None:
+    """A garbled /api/ps body is also swallowed — same rationale as above."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"<html>not json</html>")
+
+    async with _client_with(handler) as client:
+        assert await is_model_loaded(client, "llama3") is True
+
+
+@pytest.mark.asyncio
+async def test_unload_model_posts_keep_alive_zero() -> None:
+    """unload_model POSTs /api/generate with keep_alive=0 (Ollama's
+    documented unload protocol)."""
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/generate"
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"model": "llama3", "done": True})
+
+    async with _client_with(handler) as client:
+        await unload_model(client, "llama3")
+
+    assert seen["body"] == {"model": "llama3", "keep_alive": 0}
+
+
+@pytest.mark.asyncio
+async def test_unload_model_raises_unavailable_on_5xx() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500)
+
+    async with _client_with(handler) as client:
+        with pytest.raises(OllamaUnavailable):
+            await unload_model(client, "llama3")
+
+
+@pytest.mark.asyncio
+async def test_unload_model_raises_unavailable_on_connect_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("Connection refused")
+
+    async with _client_with(handler) as client:
+        with pytest.raises(OllamaUnavailable):
+            await unload_model(client, "llama3")
