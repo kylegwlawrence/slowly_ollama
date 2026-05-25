@@ -35,6 +35,8 @@ from app.routes._helpers import (
     _agent_overrides,
     _chip_states,
     _resolve_num_ctx,
+    _sidebar_rag_context,
+    _spawn_health_refresh,
 )
 from app.templates import templates
 from app.tools import TOOLS
@@ -333,6 +335,9 @@ async def send_message_endpoint(
             '<div class="error">A reply is already streaming for this chat.</div>',
             status_code=status.HTTP_409_CONFLICT,
         )
+    # Phase 19: warm the RAG health cache so the next sidebar render
+    # reflects current reality. Background task — adds no latency here.
+    _spawn_health_refresh(db)
 
     # Render the user bubble + assistant placeholder as one fragment.
     # The browser receives them both, swaps them into #messages, and
@@ -442,6 +447,8 @@ async def regenerate_endpoint(
             '<div class="error">A reply is already streaming for this chat.</div>',
             status_code=status.HTTP_409_CONFLICT,
         )
+    # Phase 19: warm the RAG health cache (see send_message_endpoint).
+    _spawn_health_refresh(db)
 
     placeholder_html = templates.get_template(
         "_assistant_placeholder.html"
@@ -511,7 +518,8 @@ async def set_chat_agent_endpoint(
     )
 
     chips_oob = ""
-    if await ollama.model_supports_tools(client, conversation.model):
+    supports_tools = await ollama.model_supports_tools(client, conversation.model)
+    if supports_tools:
         tool_states, rag_server_states = _chip_states(db, conversation_id)
         chips_oob = templates.get_template("_chat_tool_chips.html").render(
             conversation=conversation,
@@ -522,7 +530,21 @@ async def set_chat_agent_endpoint(
             oob=True,
         )
 
-    return HTMLResponse(content=indicator_html + chips_oob)
+    # Phase 19: agent state changes whether the sidebar Sources section
+    # should be visible (Normal → show, named agent → hide). OOB-swap the
+    # section so it reflects the new agent state.
+    sidebar_ctx = await _sidebar_rag_context(
+        db, conversation, supports_tools=supports_tools
+    )
+    sidebar_rag_oob = templates.get_template(
+        "_sidebar_rag_section.html"
+    ).render(
+        conversation=conversation,
+        oob=True,
+        **sidebar_ctx,
+    )
+
+    return HTMLResponse(content=indicator_html + chips_oob + sidebar_rag_oob)
 
 
 @router.post(
@@ -836,10 +858,12 @@ async def toggle_chat_rag_server_endpoint(
     server_name: str,
     db: DB,
 ) -> Response:
-    """Toggle one RAG server on/off for a conversation; return the chip bar.
+    """Toggle one RAG server on/off for a conversation; return the sidebar
+    Sources section (phase 19 — chips moved out of the chat header).
 
-    Called by an HTMX hx-post on each per-server chip. Returns the full
-    chip bar for innerHTML swap into ``#chat-tool-chips``.
+    Called by an HTMX hx-post on each per-server chip in the sidebar.
+    Each chip's ``hx-target="#sidebar-rag-section"`` + ``hx-swap="outerHTML"``
+    consumes the rendered section directly.
 
     404s when the conversation is unknown or the server name is not in the
     currently-configured set — prevents toggling phantom servers.
@@ -857,16 +881,16 @@ async def toggle_chat_rag_server_endpoint(
             status.HTTP_404_NOT_FOUND, f"Unknown RAG server: {server_name}"
         )
     queries.toggle_chat_rag_server(db, conversation_id, server_name)
-    tool_states, rag_server_states = _chip_states(db, conversation_id, servers=servers)
+    sidebar_ctx = await _sidebar_rag_context(
+        db, conversation, supports_tools=True, servers=servers
+    )
     return templates.TemplateResponse(
         request=request,
-        name="_tool_chips.html",
+        name="_sidebar_rag_section.html",
         context={
             "conversation": conversation,
-            "tool_states": tool_states,
-            "rag_server_states": rag_server_states,
-            "supports_tools": True,
-            "is_composer": False,
+            "oob": False,
+            **sidebar_ctx,
         },
     )
 
