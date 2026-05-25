@@ -2253,8 +2253,8 @@ def _add_server_and_get_id(client: object, name: str, url: str) -> int:
 def test_settings_get_server_edit_mode_renders_textarea(
     make_client: ClientFactory,
 ) -> None:
-    """GET /settings/servers/{id}?edit=1 returns the row with an editable
-    description textarea pre-filled with the current description."""
+    """GET /settings/servers/{id}?edit=1 returns the row with editable
+    name, url, and description fields pre-filled with current values."""
     with make_client(_ollama_unreachable) as client:
         server_id = _add_server_and_get_id(client, "arxiv", "http://x/arxiv")
         # Give it a known description first.
@@ -2267,6 +2267,10 @@ def test_settings_get_server_edit_mode_renders_textarea(
     assert "<textarea" in response.text
     assert 'name="description"' in response.text
     assert "current text" in response.text
+    assert 'name="name"' in response.text
+    assert 'name="url"' in response.text
+    assert 'value="arxiv"' in response.text
+    assert 'value="http://x/arxiv"' in response.text
     assert f'hx-patch="/settings/servers/{server_id}"' in response.text
 
 
@@ -2357,6 +2361,70 @@ def test_settings_update_server_missing_id_returns_404(
             "/settings/servers/9999", data={"description": "nope"}
         )
     assert response.status_code == 404
+
+
+def test_settings_update_server_name_and_url(
+    make_client: ClientFactory,
+) -> None:
+    """PATCH with name/url updates all three fields and returns view-mode row."""
+    with make_client(_ollama_unreachable) as client:
+        server_id = _add_server_and_get_id(client, "arxiv", "http://x/arxiv")
+        response = client.patch(
+            f"/settings/servers/{server_id}",
+            data={
+                "name": "pubmed",
+                "url": "http://x/pubmed",
+                "description": "new desc",
+            },
+        )
+        settings = client.get("/settings")
+
+    assert response.status_code == 200
+    assert "pubmed" in response.text
+    assert "http://x/pubmed" in response.text
+    assert "new desc" in response.text
+    assert "<textarea" not in response.text  # view mode
+    # Durable.
+    assert "pubmed" in settings.text
+    assert "http://x/pubmed" in settings.text
+
+
+def test_settings_update_server_name_collision_returns_409(
+    make_client: ClientFactory,
+) -> None:
+    """PATCH with a name that already belongs to another server returns 409."""
+    with make_client(_ollama_unreachable) as client:
+        _add_server_and_get_id(client, "taken", "http://x/taken")
+        server_id = _add_server_and_get_id(client, "arxiv", "http://x/arxiv")
+        response = client.patch(
+            f"/settings/servers/{server_id}",
+            data={"name": "taken", "url": "http://x/arxiv", "description": ""},
+        )
+
+    assert response.status_code == 409
+    assert "taken" in response.text
+
+
+def test_settings_update_server_unhealthy_returns_502(
+    make_client: ClientFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PATCH with a new name/url that fails the health probe returns 502."""
+
+    async def _unhealthy(name: str, base_url: str) -> tuple[bool, str]:
+        return (False, f"'{name}' not found in /health response.")
+
+    with make_client(_ollama_unreachable) as client:
+        # Add the server while the default healthy stub is still active.
+        server_id = _add_server_and_get_id(client, "arxiv", "http://x/arxiv")
+        # Now swap in the unhealthy stub for the edit PATCH.
+        monkeypatch.setattr("app.routes.settings.probe_rag_health", _unhealthy)
+        response = client.patch(
+            f"/settings/servers/{server_id}",
+            data={"name": "bad", "url": "http://x/bad", "description": ""},
+        )
+
+    assert response.status_code == 502
 
 
 def test_settings_get_lists_existing_servers(

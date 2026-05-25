@@ -20,6 +20,7 @@ from app.rag_servers import (
     delete_server,
     get_server,
     list_servers,
+    update_server,
     update_server_description,
 )
 
@@ -158,6 +159,40 @@ def test_update_description_missing_id_returns_none(
 ) -> None:
     """Updating a missing id returns None rather than raising (route -> 404)."""
     assert update_server_description(conn, 999, "ignored") is None
+
+
+def test_update_server_changes_all_fields(conn: sqlite3.Connection) -> None:
+    """update_server rewrites name, url, and description and advances updated_at."""
+    s = create_server(conn, "arxiv", "http://host:8002/arxiv", description="old")
+
+    updated = update_server(conn, s.id, "pubmed", "http://host:8002/pubmed", "new desc")
+
+    assert updated is not None
+    assert updated.id == s.id
+    assert updated.name == "pubmed"
+    assert updated.url == "http://host:8002/pubmed"
+    assert updated.description == "new desc"
+    assert updated.created_at == s.created_at
+    assert updated.updated_at >= s.updated_at
+    # Durable.
+    fetched = get_server(conn, s.id)
+    assert fetched.name == "pubmed"
+    assert fetched.url == "http://host:8002/pubmed"
+
+
+def test_update_server_name_collision_raises(conn: sqlite3.Connection) -> None:
+    """update_server raises IntegrityError when the new name collides with another row."""
+    create_server(conn, "taken", "http://host:8002/taken")
+    s = create_server(conn, "arxiv", "http://host:8002/arxiv")
+
+    import pytest as _pytest
+    with _pytest.raises(sqlite3.IntegrityError):
+        update_server(conn, s.id, "taken", "http://host:8002/arxiv", "")
+
+
+def test_update_server_missing_id_returns_none(conn: sqlite3.Connection) -> None:
+    """update_server returns None when no row has that id (route -> 404)."""
+    assert update_server(conn, 999, "x", "http://x/x", "") is None
 
 
 def test_delete_removes_row(conn: sqlite3.Connection) -> None:

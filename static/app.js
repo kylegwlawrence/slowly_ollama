@@ -256,6 +256,21 @@ document.body.addEventListener('htmx:afterRequest', (e) => {
       setHealthIcon(icon, 'fail');
     }
   }
+
+  if (form.matches('.rag-server__edit')) {
+    // On failure (4xx/5xx) HTMX leaves the edit form in place; surface
+    // the plain-text reason in the inline error div so the user knows
+    // what to fix.  On success HTMX swaps the whole <li> back to view
+    // mode, so no cleanup is needed here.
+    if (!e.detail.successful) {
+      const err = form.querySelector('.rag-server__edit-error');
+      if (err) {
+        err.textContent =
+          e.detail.xhr.responseText || 'Failed to save server.';
+        err.hidden = false;
+      }
+    }
+  }
 });
 
 // ---------------------------------------------------------------------

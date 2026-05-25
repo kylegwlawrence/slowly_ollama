@@ -15,16 +15,22 @@
   <div class="rag-server__name">{{ server.name }}</div>
   <code class="rag-server__url">{{ server.url }}</code>
   {% if editing %}
-    {# Edit mode: only the description is editable. Save PATCHes the new
-       text and swaps back the view-mode row; Cancel re-GETs the row
-       (view mode) so any in-progress edit is discarded. #}
+    {# Edit mode: name, URL, and description are all editable. Save
+       PATCHes all three fields (with a health re-probe for name/URL) and
+       swaps back the view-mode row; Cancel re-GETs the row (view mode)
+       so any in-progress edit is discarded. #}
     <form class="rag-server__edit"
           hx-patch="/settings/servers/{{ server.id }}"
           hx-target="#rag-server-{{ server.id }}"
           hx-swap="outerHTML">
+      <input type="text" name="name" value="{{ server.name }}" required
+             aria-label="Server name" placeholder="e.g. arxiv">
+      <input type="text" name="url" value="{{ server.url }}" required
+             aria-label="Server URL" placeholder="e.g. http://host:8002/arxiv">
       <textarea name="description" maxlength="200" rows="2"
                 aria-label="Edit description for {{ server.name }}"
                 placeholder="What's in this RAG server? e.g. 'PubMed abstracts on cardiology, 2020-2024'">{{ server.description }}</textarea>
+      <div class="rag-server__edit-error form-error" role="alert" hidden></div>
       <div class="rag-server__edit-actions">
         <button type="submit" class="rag-server__save">Save</button>
         <button type="button" class="rag-server__cancel"
