@@ -761,6 +761,26 @@ def test_format_tool_invocation_search_files_missing_args_uses_defaults() -> Non
     assert "." in label
 
 
+def test_format_tool_invocation_write_file_shows_only_path() -> None:
+    """write_file shows the path only — content is omitted from the card."""
+    from app.tools import format_tool_invocation
+
+    label = format_tool_invocation(
+        "write_file", {"path": "notes/plan.md", "content": "# Big document\n..."}
+    )
+    assert "notes/plan.md" in label
+    assert "Big document" not in label
+
+
+def test_format_tool_invocation_write_file_missing_path_uses_placeholder() -> None:
+    """write_file with no path arg falls back to '?'."""
+    from app.tools import format_tool_invocation
+
+    label = format_tool_invocation("write_file", {})
+    assert "?" in label
+    assert "content" not in label
+
+
 # ---------------------------------------------------------------------------
 # File tools: read_file / write_file (sandboxed to FILE_TOOL_ROOT)
 # ---------------------------------------------------------------------------

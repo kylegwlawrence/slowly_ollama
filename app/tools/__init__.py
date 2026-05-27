@@ -406,5 +406,8 @@ def format_tool_invocation(name: str, arguments: dict) -> str:
     if name == "fetch_github_file":
         url = arguments.get("url", "?")
         return f"fetching {url}"
+    if name == "write_file":
+        path = arguments.get("path", "?")
+        return f"writing {path}"
     args_str = ", ".join(f"{k}={v!r}" for k, v in arguments.items())
     return f"calling {name}({args_str})"
