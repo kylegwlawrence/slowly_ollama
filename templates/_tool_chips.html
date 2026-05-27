@@ -27,7 +27,6 @@
              value="{{ state.tool_name }}"
              {% if state.enabled %}checked{% endif %}
              class="tool-chip__checkbox">
-      <span class="tool-chip__check">{% if state.enabled %}✓{% else %}✕{% endif %}</span>
       <span class="tool-chip__label">{{ state.tool_name }}</span>
     </label>
     {% else %}
@@ -35,7 +34,6 @@
             hx-post="/chats/{{ conversation.id }}/tools/{{ state.tool_name }}"
             hx-target="#chat-tool-chips"
             hx-swap="innerHTML">
-      <span class="tool-chip__check">{% if state.enabled %}✓{% else %}✕{% endif %}</span>
       <span class="tool-chip__label">{{ state.tool_name }}</span>
     </button>
     {% endif %}
