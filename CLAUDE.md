@@ -14,17 +14,15 @@ end-user setup and `docs/plans/PLAN.md` for the build-time roadmap.
 | Question | Read this |
 |---|---|
 | What are we building and why? | `docs/plans/PLAN.md` |
-| What's the latest shipped phase? | `docs/plans/phase16-invokable-agents.md` + retro |
-| What did we learn from prior phases? | `docs/retros/` (per-phase, 6 through 16) |
+| What's the latest shipped phase? | `docs/plans/phase19-sidebar-rag-chips.md` + retro |
+| What did we learn from prior phases? | `docs/retros/` (per-phase, 6 through 19) |
 | How to write a phase retro? | `docs/retros/RETRO_INSTRUCTIONS.md` |
 | Accumulated conventions + gotchas | `docs/CONVENTIONS.md` |
 | Recent code reviews + cleanup notes | `docs/code_reviews/` |
 | Test strategy + how to run | `tests/README.md` |
 | End-user setup | `README.md` |
 
-Treat `PLAN.md` as the build-order spine. Each phase has its own plan in
-`docs/plans/` and its retro in `docs/retros/`. Plans and retros are version-
-controlled artifacts, not workspace scratch.
+Plans and retros in `docs/plans/` / `docs/retros/` are version-controlled artifacts, not workspace scratch.
 
 ## Current state
 
@@ -33,27 +31,29 @@ under its own `docs/plans/phase<N>-*.md` (+ retro). Phases 0–11 shipped v1.
 Highlights since:
 
 - **Phase 12 (tool-calling + RAG).** `@tool` decorator + registry, server-side
-  tool-calling loop, tool-card UI, resumable generation, capability-filtered
-  model dropdown with a generation-side fallback so chats on a now-non-capable
-  model degrade to plain chat instead of 400ing.
-- **Phases 13–14 REMOVED in Phase 16.** The automatic research → review →
-  generation loop and its toggles/verdict tools/agentic SSE events/extra
-  roles were all deleted. Retros remain as history; the code does not.
-- **Phase 15 / 15b (per-chat chips).** `chat_tool_settings` /
-  `chat_rag_settings` gate which tools + RAG servers a chat may use.
-  `query_rag` is gated solely by per-server chips (≥1 enabled), not a tool chip.
-- **Phase 16 (user-invoked agents).** Named agents (`app/agents/`) the user
-  picks from the composer; "Normal" is default. Agent = model + prompt + tool
-  allowlist + `think`, reusing `_run_generation` via `_agent_overrides`.
-  Roster: **Research** (`granite4.1:8b`, `current_time` + `query_rag`) and
-  **Content Generator** (file tools); both `think=False`. Per-chat
-  `active_agent` persisted; agents hand off through shared history.
-- **Per-project system prompt (post-16).** Optional ≤200-char prompt
-  (`projects.system_prompt`) injected as `system` on Normal-chat turns in that
-  project, combined with `SINGLE_AGENT_SYSTEM_PROMPT` when tools are sent.
-  Agent turns intentionally ignore it — the agent's own prompt wins.
+  tool loop, tool-card UI, resumable generation, capability-filtered model
+  dropdown with a generation-side fallback.
+- **Phases 13–14 REMOVED in Phase 16.** Retros remain as history; code does not.
+- **Phase 15 / 15b (per-chat chips).** `chat_tool_settings` / `chat_rag_settings`
+  gate tools + RAG per chat. `query_rag` gated solely by per-server chips.
+- **Phase 16 (user-invoked agents).** Named agents (`app/agents/`) picked from
+  the chat header. Agent = model + prompt + tool allowlist + `think` via
+  `_agent_overrides`. Roster: **Research** + **Content Generator**; both `think=False`.
+- **Phase 17 (projects).** Projects above chats; per-project workspace subdir
+  under `FILE_TOOL_ROOT`, default model/agent, ≤200-char system prompt injected
+  on Normal turns. URL spine `/projects/{id}/chats/{id}`. `app/queries/` and
+  `app/routes/` refactored into packages.
+- **Phase 18 (manual compaction).** Compact button summarizes old turns into a
+  `summary` row; originals soft-archived (`messages.archived_at`). Generation
+  uses `list_active_messages`. `KEEP_RECENT = 2`.
+- **Phase 19 (sidebar RAG chips).** RAG chips moved to sidebar "Sources" section
+  with TTL-cached health state (green/grey/red, 60 s, `app/rag_health.py`).
+  Fire-and-forget refresh on send. Composer drops RAG checkboxes; new chats
+  default all-on.
+- **Post-19.** `fetch_github_file` tool; clickable model chip unloads from
+  Ollama; inline RAG server name/URL editing.
 
-**605/605 tests passing**; coverage 97% on `app/` + `main.py`.
+**696/697 tests passing** (known failure: compact threshold test needs KEEP_RECENT 4→2 update); coverage 97% on `app/` + `main.py`.
 
 ## Working rules (override Claude defaults where they conflict)
 
@@ -87,8 +87,6 @@ Highlights since:
 - **SQLite** — persistence (single shared connection on `app.state.db`)
 - **Pico CSS classless** + hand-written `static/style.css`
 - **Material Symbols Outlined** — vendored woff2 under `static/`
-- **markdown** — assistant message rendering
-- **python-dotenv** — `.env` loading
 - **pytest** + **pytest-asyncio** + **pytest-cov** — mock-only Ollama
 
 Versions pinned in `requirements.txt`; transitive deps intentionally unpinned.
@@ -101,18 +99,34 @@ app/
   config.py            # .env-backed accessors
   connection.py        # SQLite opener (WAL, foreign_keys)
   db.py                # Schema init + idempotent migrations
-  queries.py           # All SQL; `Role` literal; chips + app_settings helpers
+  queries/             # All SQL; Role literal; dataclasses; helpers
+    _models.py         # Message, Conversation, Project dataclasses + Role
+    conversations.py   # Conversation CRUD
+    messages.py        # Message CRUD; list_active_messages; archive helpers
+    projects.py        # Project CRUD + slugify_project_name
+    chat_state.py      # Per-chat tool/RAG chip state queries
+    settings.py        # app_settings key/value store
   dependencies.py      # `DB` / `OllamaClient` Annotated aliases
   ollama.py            # /api/chat (stream) + /api/tags + /api/show
+                       #   + summarize_conversation (compaction)
+  projects.py          # Per-project workspace helpers + legacy migration
   rag_servers.py       # RAG server CRUD
-  rag_health.py        # /health probe for newly-added RAG servers
+  rag_health.py        # TTL-cached /health probe; get_health_map
   templates.py         # Jinja2 instance + markdown filter
-  routes.py            # Thin HTTP layer — HTML or SSE-of-HTML
+  routes/              # Thin HTTP layer — HTML or SSE-of-HTML
+    _helpers.py        # Shared helpers: chip states, sidebar RAG context
+    chats.py           # Chat CRUD, send, stream, compact, agent, tool chips
+    projects.py        # /projects/* and /projects/{id}/files routes
+    settings.py        # /settings route
+    files.py           # Workspace-browse helpers used by routes/projects.py
   generation.py        # SSE producer; per-agent overrides
                        #   (model/prompt/tools/think)
   render.py            # Render-shaped views + tool-card OOB helpers
   agents/              # AgentSpec + AGENTS registry + prompts
-  tools/               # @tool decorator + registry; builtins.py + rag.py
+  tools/               # @tool decorator + registry
+    builtins.py        # current_time + workspace file tools
+    rag.py             # query_rag tool
+    github.py          # fetch_github_file tool
 templates/             # Jinja fragments
 static/                # Pico, HTMX, htmx-ext-sse, Material Symbols, style.css
 tests/                 # Per-module unit tests + integration journeys
@@ -147,8 +161,8 @@ overrides via `_agent_overrides`. The producer task is owned by the module-
 level `live_generations` dict, NOT the HTTP request — a reload cancels the
 consumer but the producer keeps running, so the next consumer replays the
 event log from index 0. Each turn persists its own message row
-(`role` ∈ `user` / `assistant` / `tool_call` / `tool_result`); tool execution
-caps at 5 iterations per turn.
+(`role` ∈ `user` / `assistant` / `tool_call` / `tool_result` / `summary`);
+tool execution caps at 5 iterations per turn.
 
 ## Key gotchas (one-liners; deep dives in `docs/CONVENTIONS.md`)
 
