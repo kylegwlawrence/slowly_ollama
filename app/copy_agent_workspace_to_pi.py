@@ -3,13 +3,13 @@
 Copy agent workspace to Raspberry Pi via rsync.
 
 Usage:
-    python copy_to_pi.py [source] [pihost] [dest]
+    python copy_agent_workspace_to_pi.py [source] [pihost] [dest]
 
 Defaults are configured in .env (COPY_SOURCE, COPY_PIHOST, COPY_DEST)
 
 Example:
-    python copy_to_pi.py  # uses defaults from .env
-    python copy_to_pi.py agent_workspace/physics_lessons raspberrypi6 /home/user/agent_workspaces/physics_lessons
+    python copy_agent_workspace_to_pi.py  # uses defaults from .env
+    python copy_agent_workspace_to_pi.py agent_workspace/physics-lessons raspberrypi6 /home/user/agent_workspaces/physics-lessons
 """
 
 import argparse
