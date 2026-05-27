@@ -104,21 +104,24 @@ Tests use an in-memory SQLite database and mock the Ollama client — no live Ol
 ```
 main.py              # FastAPI app entry point (lifespan, mounts)
 app/
-  config.py          # Env var accessors (OLLAMA_HOST, DB_PATH)
+  config.py          # Env var accessors (OLLAMA_HOST, DB_PATH, FILE_TOOL_ROOT)
   connection.py      # SQLite connection helper
-  db.py              # Schema initialization (CREATE TABLE IF NOT EXISTS)
-  queries.py         # SQL queries for chats and messages
-  rag_servers.py     # SQL queries for configured RAG servers
-  dependencies.py    # FastAPI dependency functions (db, ollama client)
+  db.py              # Schema initialization + idempotent migrations
+  projects.py        # Per-project workspace helpers + legacy file migration
+  rag_servers.py     # RAG server CRUD
+  rag_health.py      # TTL-cached /health probe for RAG servers
   ollama.py          # httpx client for Ollama /api/chat, /api/tags, /api/show
-  rag_health.py      # /health probe for newly-added RAG servers
-  templates.py       # Jinja2 instance + markdown filter
-  routes.py          # HTTP routes (chat CRUD, streaming, settings)
   generation.py      # Background-task producer driving the SSE stream
   render.py          # Render-shaped views + tool-card OOB HTML helpers
+  templates.py       # Jinja2 instance + markdown filter
+  dependencies.py    # FastAPI dependency functions (db, ollama client)
+  queries/           # SQL queries, dataclasses, Role literal
+  routes/            # HTTP routes split by concern (chats, projects, settings)
+  agents/            # Named agents (Research, Content Generator)
   tools/             # Tool-calling system
     builtins.py      # Built-in tools (current_time, read_file, write_file, list_directory, search_files)
-    rag.py           # RAG query tool
+    rag.py           # RAG query tool (query_rag)
+    github.py        # GitHub file fetching tool (fetch_github_file)
 templates/           # Jinja2/HTMX HTML templates
 static/              # Vendored CSS + JS (Pico, HTMX, Material Symbols)
 tests/               # pytest test suite (+ conftest.py for shared fixtures)
@@ -132,11 +135,12 @@ docs/code_reviews/   # Dated code reviews
 ## Features
 
 - **Persistent conversations** — chats and messages stored in SQLite, survive restarts
-- **Per-chat model selection** — pick any tool-capable model available in your local Ollama instance
+- **Projects** — organize chats into named projects; each project has its own workspace directory, default model/agent, optional system prompt (≤200 chars, injected on Normal turns), and a read-only Files tab to browse workspace files
+- **Per-chat model selection** — pick any tool-capable model from your local Ollama instance; click the model chip in the chat header to unload it from Ollama memory
 - **Streaming responses** — assistant replies stream token-by-token via SSE
 - **Reload-safe generation** — a page reload during a reply attaches a new consumer to the in-flight stream instead of cancelling it
-- **Tool calling** — extensible tool system; built-in tools: `current_time`, `query_rag` (RAG retrieval), and a workspace file suite (`read_file`, `write_file`, `list_directory`, `search_files`) gated on `FILE_TOOL_ROOT`
-- **RAG support** — register external retrieval servers from `/settings` and let the model query them via the `query_rag` tool
-- **User-invoked agents** — pick a named agent (Research, Content Generator) from the composer; each agent has its own model, system prompt, and tool allowlist
-- **Per-project system prompt** — set a short (≤200 char) system prompt on the project settings page; it's prepended to every Normal-chat turn in that project (ignored on agent turns, which use the agent's own prompt)
+- **Manual chat compaction** — summarize the older portion of a chat to shrink the Ollama prompt; originals are soft-archived and viewable through a disclosure in the summary bubble
+- **Tool calling** — extensible tool system; built-in tools: `current_time`, `fetch_github_file`, `query_rag` (RAG retrieval), and a workspace file suite (`read_file`, `write_file`, `list_directory`, `search_files`) gated on `FILE_TOOL_ROOT`
+- **RAG support** — register external retrieval servers from `/settings`; per-chat source chips appear in the sidebar with health state (green/grey/red), refreshed in the background on each send
+- **User-invoked agents** — pick a named agent (Research, Content Generator) from the chat header; each agent has its own model, system prompt, and tool allowlist
 - **Fully local** — no telemetry, no cloud API calls, works offline
