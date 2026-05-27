@@ -602,7 +602,7 @@ async def unload_chat_model_endpoint(
 # being so generous that the prompt stays bloated. Hardcoded for v1; a
 # per-chat knob is the natural "out of scope" thread once we have usage
 # data.
-_KEEP_RECENT_ON_COMPACT = 4
+_KEEP_RECENT_ON_COMPACT = 2
 
 
 def _split_for_compact(
