@@ -76,7 +76,7 @@
   /* Sage green reads well on dark; accent-tonal becomes a very dark sage
      panel, accent-tonal-text flips to the green itself so it's readable. */
   --accent: #577c8b;
-  --accent-tonal: #3b6b80;
+  --accent-tonal: #25434f;
   --accent-tonal-text: #b3cbda;
   --accent-hover: #548ba2;
   --danger: #f28b82;
@@ -464,7 +464,7 @@ body {
 
 .chat-panel__name {
   margin: 0;
-  font-size: 18px;
+  font-size: 24px;
   font-weight: 500;
   color: var(--text-primary);
 }
@@ -1614,7 +1614,7 @@ body {
 
 .project-page__name {
   margin: 0;
-  font-size: 22px;
+  font-size: 18px;
   font-weight: 500;
   color: var(--text-primary);
 }
