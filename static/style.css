@@ -474,14 +474,14 @@ body {
   align-items: center;
   background: var(--accent-tonal);
   color: var(--accent-tonal-text);
-  padding: var(--space-xs) var(--space-sm);
+  padding: 0 var(--space-sm);
   border-radius: var(--radius-lg);
   font-size: 12px;
   font-weight: 500;
   /* The chip is a <button> — strip native button chrome so it inherits
      the badge styling above, and switch to a click cursor so the user
      discovers the unload affordance on hover. */
-  border: none;
+  border: 0;
   margin: 0;
   font-family: inherit;
   line-height: inherit;
@@ -497,7 +497,7 @@ body {
    colours are deliberately neutral so the chip reads as "off" rather than
    "another colour mode". Hardcoded greys (not vars) for the same reason. */
 .chat-panel__model[data-state="unloaded"] {
-  background: #d8d8d8;
+  background: #bcbcbc;
   color: #4a4a4a;
 }
 
@@ -1388,7 +1388,7 @@ body {
 .tool-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-xs);
+  gap: var(--space-sm);
   align-items: center;
 }
 
@@ -1401,9 +1401,9 @@ body {
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
-  border: 1px solid transparent;
+  border: 0;
   background: none;
-  line-height: 1;
+  line-height: 1.1;
   margin: 0;
   width: auto;
   transition: background 0.15s ease, color 0.15s ease,
@@ -1462,7 +1462,7 @@ body {
 
 .sidebar__rag-section {
   border-top: 1px solid var(--border);
-  padding: var(--space-md) var(--space-sm) var(--space-sm);
+  padding: var(--space-sm) var(--space-sm);
   display: flex;
   flex-direction: column;
   gap: var(--space-sm);
