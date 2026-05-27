@@ -76,7 +76,7 @@
   /* Sage green reads well on dark; accent-tonal becomes a very dark sage
      panel, accent-tonal-text flips to the green itself so it's readable. */
   --accent: #94bfc8;
-  --accent-tonal: #285162;
+  --accent-tonal: #3b6b80;
   --accent-tonal-text: #b3cbda;
   --accent-hover: #548ba2;
   --danger: #f28b82;
@@ -1411,7 +1411,7 @@ body {
 }
 
 .tool-chip--on {
-  background: #ffffff;
+  background: var(--accent-tonal);
   color: var(--accent-tonal-text);
   border-color: var(--accent);
 }
