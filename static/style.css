@@ -1411,9 +1411,9 @@ body {
 }
 
 .tool-chip--on {
-  background: var(--accent-tonal);
+  background: #ffffff;
   color: var(--accent-tonal-text);
-  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  border-color: var(--accent);
 }
 
 .tool-chip--on:hover {
@@ -1432,10 +1432,6 @@ body {
   opacity: 1;
   background: var(--surface-hover);
   color: var(--text-primary);
-}
-
-.tool-chip__check {
-  font-size: 11px;
 }
 
 .tool-chip__label {
@@ -1515,10 +1511,6 @@ body {
   background: color-mix(in srgb, var(--danger) 10%, transparent);
 }
 
-.tool-chip--unavailable .tool-chip__check {
-  color: var(--danger);
-  font-weight: 700;
-}
 
 /* ===== Phase 17b: Projects UI polish ==================================== */
 

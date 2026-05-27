@@ -57,9 +57,6 @@
                 hx-target="#sidebar-rag-section"
                 hx-swap="outerHTML"
                 {%- if _red %} title="Server unreachable — clicking still toggles; query_rag will surface the error if you send"{% endif %}>
-          <span class="tool-chip__check">
-            {%- if _red -%}!{%- elif state.enabled -%}✓{%- else -%}✕{%- endif -%}
-          </span>
           <span class="tool-chip__label">{{ state.server_name.removesuffix('_rag') }}</span>
         </button>
       </li>
