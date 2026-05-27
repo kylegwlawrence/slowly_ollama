@@ -534,13 +534,13 @@ body {
 }
 
 .message__content {
-  line-height: 1.55;
+  line-height: 1.25;
   font-size: var(--font-size-base);
 }
 
 /* User messages are plain text — preserve their newlines and spacing. */
 .message--user .message__content {
-  white-space: pre-wrap;
+  white-space: normal;
 }
 
 /* ===== Markdown output inside assistant bubbles ========================== */
