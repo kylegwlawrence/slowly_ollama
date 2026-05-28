@@ -93,20 +93,29 @@ def find_latest_remote_folder(host: str, remote_base: str) -> str:
     return f"{remote_base}/{latest}"
 
 
-def copy_to_remote(local_source: str, host: str, remote_base: str) -> None:
-    """Rsync local_source into a new timestamped folder on host."""
-    source_path = Path(local_source)
-    if not source_path.exists():
-        print(f"ERROR: Source directory does not exist: {local_source}")
+def copy_to_remote(local_source: str, host: str, remote_base: str, workspace: str | None = None) -> None:
+    """Rsync local_source into a new timestamped folder on host.
+
+    Args:
+        local_source: Local base directory.
+        host: Remote hostname.
+        remote_base: Base path on remote where timestamped folders are created.
+        workspace: Optional subfolder to copy instead of the full workspace.
+    """
+    src_path = Path(local_source) / workspace if workspace else Path(local_source)
+    if not src_path.exists():
+        print(f"ERROR: Source directory does not exist: {src_path}")
         sys.exit(1)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     remote_dest = f"{remote_base}/{timestamp}"
+    if workspace:
+        remote_dest = f"{remote_dest}/{workspace}"
 
     print("=" * 50)
     print("Copying workspace to remote host")
     print("=" * 50)
-    print(f"Source : {local_source}")
+    print(f"Source : {src_path}")
     print(f"Dest   : {host}:{remote_dest}")
     print("=" * 50)
 
@@ -117,7 +126,7 @@ def copy_to_remote(local_source: str, host: str, remote_base: str) -> None:
     run_command(["ssh", host, f"mkdir -p {remote_dest}"], "Directory creation")
 
     print("Copying files...")
-    src = local_source if local_source.endswith("/") else f"{local_source}/"
+    src = str(src_path) if str(src_path).endswith("/") else f"{src_path}/"
     result = subprocess.run(
         ["rsync", "-avz", "--progress", *RSYNC_EXCLUDES, src, f"{host}:{remote_dest}/"],
         text=True,
@@ -133,27 +142,36 @@ def copy_to_remote(local_source: str, host: str, remote_base: str) -> None:
     print(f"\nTo verify: ssh {host} 'ls -la {remote_dest}'")
 
 
-def copy_from_remote(host: str, remote_base: str, local_dest: str) -> None:
-    """Rsync the latest timestamped folder from host into local_dest."""
-    Path(local_dest).mkdir(parents=True, exist_ok=True)
+def copy_from_remote(host: str, remote_base: str, local_dest: str, workspace: str | None = None) -> None:
+    """Rsync the latest timestamped folder from host into local_dest.
+
+    Args:
+        host: Remote hostname.
+        remote_base: Base path on remote containing timestamped folders.
+        local_dest: Local base directory to sync into.
+        workspace: Optional subfolder to pull instead of the full workspace.
+    """
+    dest_path = Path(local_dest) / workspace if workspace else Path(local_dest)
+    dest_path.mkdir(parents=True, exist_ok=True)
 
     print("=" * 50)
     print("Copying workspace from remote host")
     print("=" * 50)
     print(f"Remote base : {host}:{remote_base}")
-    print(f"Local dest  : {local_dest}")
+    print(f"Local dest  : {dest_path}")
     print("=" * 50)
 
     if not test_ssh_connection(host):
         sys.exit(1)
 
     latest = find_latest_remote_folder(host, remote_base)
-    print(f"Latest backup: {host}:{latest}")
+    remote_src = f"{latest}/{workspace}" if workspace else latest
+    print(f"Latest backup: {host}:{remote_src}")
 
     print("Copying files...")
-    remote_src = latest if latest.endswith("/") else f"{latest}/"
+    remote_src_slash = remote_src if remote_src.endswith("/") else f"{remote_src}/"
     result = subprocess.run(
-        ["rsync", "-avz", "--progress", *RSYNC_EXCLUDES, f"{host}:{remote_src}", f"{local_dest}/"],
+        ["rsync", "-avz", "--progress", *RSYNC_EXCLUDES, f"{host}:{remote_src_slash}", f"{dest_path}/"],
         text=True,
     )
     if result.returncode != 0:
@@ -163,8 +181,8 @@ def copy_from_remote(host: str, remote_base: str, local_dest: str) -> None:
     print("=" * 50)
     print("✓ Copy complete!")
     print("=" * 50)
-    print(f"Files are now at: {local_dest}")
-    print(f"\nTo verify: ls -la {local_dest}")
+    print(f"Files are now at: {dest_path}")
+    print(f"\nTo verify: ls -la {dest_path}")
 
 
 def main():
@@ -186,6 +204,12 @@ Examples:
 
   %(prog)s --source pop-os:/home/documents/projects/agent_workspaces --dest agent_workspace
       # latest backup on pop-os → local agent_workspace
+
+  %(prog)s --dest pop-os:/home/documents/projects/agent_workspaces --workspace physics-lessons
+      # local agent_workspace/physics-lessons → pop-os (timestamped)
+
+  %(prog)s --source pop-os:/home/documents/projects/agent_workspaces --dest agent_workspace --workspace physics-lessons
+      # physics-lessons from latest pop-os backup → local agent_workspace/physics-lessons
         """
     )
 
@@ -198,6 +222,11 @@ Examples:
         "--dest", "-d",
         default=default_dest,
         help=f"Destination (local path or host:/path). Default: REMOTE_PATH or {default_dest}",
+    )
+    parser.add_argument(
+        "--workspace", "-w",
+        default=None,
+        help="Subfolder to copy instead of the full workspace (e.g. physics-lessons)",
     )
 
     args = parser.parse_args()
@@ -214,10 +243,10 @@ Examples:
 
     if dest_remote:
         host, remote_base = dest_remote
-        copy_to_remote(args.source, host, remote_base)
+        copy_to_remote(args.source, host, remote_base, workspace=args.workspace)
     else:
         host, remote_base = source_remote
-        copy_from_remote(host, remote_base, args.dest)
+        copy_from_remote(host, remote_base, args.dest, workspace=args.workspace)
 
 
 if __name__ == "__main__":
