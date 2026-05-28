@@ -221,7 +221,7 @@ body {
   padding: var(--space-xs) var(--space-md);
   background: var(--bg);
   color: var(--text-primary);
-  font-size: 14px;
+  font-size: 12px;
   /* Pico's select gets a generous height + bottom margin meant for
      full-page forms; reset to match the toolbar's compact baseline. */
   height: auto;
@@ -239,7 +239,7 @@ body {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: var(--space-xs) var(--space-md);
-  font-size: 14px;
+  font-size: 12px;
 }
 
 .tool-chip.temp-chip:hover {
@@ -512,6 +512,7 @@ body {
   align-items: center;
   margin: 0;
   padding: 0;
+  font-size: 12px;
 }
 
 .messages {
@@ -882,7 +883,7 @@ body {
   padding: var(--space-xs) var(--space-md);
   background: var(--bg);
   color: var(--text-primary);
-  font-size: 14px;
+  font-size: 12px;
   line-height: 1;
   height: auto;
   margin: 0;
@@ -1025,7 +1026,7 @@ body {
   text-decoration: none;
   padding: var(--space-xs) var(--space-sm);
   border-radius: var(--radius-md);
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .sidebar__settings:hover {
@@ -1038,7 +1039,7 @@ body {
    (RAG servers in 12c; more to come) is a `.settings__section`. */
 
 .settings {
-  max-width: 720px;
+  max-width: 800px;
   margin: 0 auto;
   padding: var(--space-xl);
   display: flex;
