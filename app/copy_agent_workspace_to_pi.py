@@ -98,9 +98,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s                      # use defaults: agent_workspace → raspberryweb-host:/home/user/agent_workspaces
-  %(prog)s my_folder            # custom source, default host and dest
-  %(prog)s my_folder mypi /opt  # all custom
+  %(prog)s                                          # use defaults from .env
+  %(prog)s --source my_folder                       # custom source
+  %(prog)s --host mypi --dest /opt/backups          # custom host and dest
+  %(prog)s --source my_folder --host mypi --dest /opt/backups
         """
     )
 
@@ -110,20 +111,17 @@ Examples:
     default_dest = os.getenv("COPY_DEST", "/home/user/agent_workspaces")
 
     parser.add_argument(
-        "source",
-        nargs="?",
+        "--source", "-s",
         default=default_source,
         help=f"Source directory to copy (default: {default_source})"
     )
     parser.add_argument(
-        "pihost",
-        nargs="?",
+        "--host",
         default=default_pihost,
         help=f"Raspberry Pi hostname (default: {default_pihost})"
     )
     parser.add_argument(
-        "dest",
-        nargs="?",
+        "--dest", "-d",
         default=default_dest,
         help=f"Destination path on Pi (default: {default_dest})"
     )
@@ -144,26 +142,26 @@ Examples:
     print("Copying workspace to Raspberry Pi")
     print("=" * 50)
     print(f"Source: {args.source}")
-    print(f"Destination: {args.pihost}:{timestamped_dest}")
+    print(f"Destination: {args.host}:{timestamped_dest}")
     print("=" * 50)
 
     # Test SSH connection
-    if not test_ssh_connection(args.pihost):
+    if not test_ssh_connection(args.host):
         sys.exit(1)
 
     # Create destination directory
-    create_dest_directory(args.pihost, timestamped_dest)
+    create_dest_directory(args.host, timestamped_dest)
 
     # Rsync files
-    rsync_files(args.source, args.pihost, timestamped_dest)
+    rsync_files(args.source, args.host, timestamped_dest)
 
     print("=" * 50)
     print("✓ Copy complete!")
     print("=" * 50)
-    print(f"Files are now at: {args.pihost}:{timestamped_dest}")
+    print(f"Files are now at: {args.host}:{timestamped_dest}")
     print()
     print("To verify, run:")
-    print(f"  ssh {args.pihost} 'ls -la {timestamped_dest}'")
+    print(f"  ssh {args.host} 'ls -la {timestamped_dest}'")
 
 
 if __name__ == "__main__":
