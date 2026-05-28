@@ -1996,11 +1996,12 @@ body {
 .message--summary {
   align-self: stretch;
   max-width: 75%;
-  background: var(--accent-tonal);
   color: var(--accent-tonal-text);
-  border: 1.5px dotted var(--accent);
+  border: 1px solid var(--accent-tonal);
   border-radius: var(--radius-lg);
   padding: var(--space-md) var(--space-lg);
+  background-color: var(--surface);
+  box-shadow: 0 0 12px 2px var(--accent-tonal) ;
 }
 
 .message__summary-badge {
@@ -2011,9 +2012,10 @@ body {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--accent);
+  color: var(--accent-tonal-text);
   margin-bottom: var(--space-xs);
   border-radius: 0;
+  background-color: var(--accent-tonal);
 }
 
 .message__summary-badge .material-symbols-outlined {
