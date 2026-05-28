@@ -75,8 +75,8 @@
   --text-secondary: #9e9e9e;
   /* Sage green reads well on dark; accent-tonal becomes a very dark sage
      panel, accent-tonal-text flips to the green itself so it's readable. */
-  --accent: #577c8b;
-  --accent-tonal: #25434f;
+  --accent: #94bfc8;
+  --accent-tonal: #285162;
   --accent-tonal-text: #b3cbda;
   --accent-hover: #548ba2;
   --danger: #f28b82;
