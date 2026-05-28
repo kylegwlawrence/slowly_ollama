@@ -22,6 +22,7 @@ from fastapi.responses import HTMLResponse
 from app import queries
 from app import rag_servers as _rag_servers
 from app.agents import list_agents
+from app.config import remote_ollama_host, remote_ollama_model
 from app.dependencies import DB
 from app.rag_health import probe_rag_health
 from app.templates import templates
@@ -45,18 +46,30 @@ def settings_endpoint(request: Request, db: DB) -> Response:
     default_model = queries.get_default_model(db)
     default_num_ctx = queries.get_default_num_ctx(db)
     agents = list_agents()
+    # Phase 20b: surface remote-Ollama state to the settings template.
+    # remote_configured is the gate for showing the toggle vs the
+    # "set env vars first" hint; remote_host/_model are read-only labels.
+    remote_host = remote_ollama_host()
+    remote_model = remote_ollama_model()
+    remote_configured = bool(remote_host and remote_model)
+    remote_enabled = queries.get_remote_ollama_enabled(db)
+    settings_ctx = {
+        "servers": servers,
+        "default_temperature": default_temperature,
+        "default_tool_iteration_cap": default_tool_iteration_cap,
+        "default_model": default_model,
+        "default_num_ctx": default_num_ctx,
+        "agents": agents,
+        "remote_configured": remote_configured,
+        "remote_host": remote_host,
+        "remote_model": remote_model,
+        "remote_enabled": remote_enabled,
+    }
     if request.headers.get("HX-Request"):
         return templates.TemplateResponse(
             request=request,
             name="_settings.html",
-            context={
-                "servers": servers,
-                "default_temperature": default_temperature,
-                "default_tool_iteration_cap": default_tool_iteration_cap,
-                "default_model": default_model,
-                "default_num_ctx": default_num_ctx,
-                "agents": agents,
-            },
+            context=settings_ctx,
         )
     return templates.TemplateResponse(
         request=request,
@@ -77,11 +90,7 @@ def settings_endpoint(request: Request, db: DB) -> Response:
             # `{% set servers = rag_servers %}` adapter resolves it for
             # the included _settings.html fragment.
             "rag_servers": servers,
-            "default_temperature": default_temperature,
-            "default_tool_iteration_cap": default_tool_iteration_cap,
-            "default_model": default_model,
-            "default_num_ctx": default_num_ctx,
-            "agents": agents,
+            **{k: v for k, v in settings_ctx.items() if k != "servers"},
         },
     )
 
@@ -311,6 +320,32 @@ async def set_default_num_ctx_endpoint(
     value, so no swap is needed.
     """
     queries.set_default_num_ctx(db, num_ctx)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/settings/remote-ollama-enabled",
+    response_class=Response,
+)
+async def set_remote_ollama_enabled_endpoint(
+    db: DB,
+    enabled: Annotated[str, Form()] = "0",
+) -> Response:
+    """Persist the app-wide Remote Ollama enable flag (phase 20b).
+
+    Called by the checkbox in ``_settings.html`` via ``hx-post`` on the
+    ``change`` event. HTMX submits the checkbox's ``value`` only when
+    the box is checked; when unchecked the field is absent. The form
+    field uses ``hx-vals="js:{enabled: this.checked ? '1' : '0'}"`` so
+    both states arrive as an explicit "1" / "0" instead of relying on
+    the absence pattern — keeps the endpoint dumb and idempotent.
+
+    Returns 204 No Content — the checkbox UI already shows the user's
+    choice, no swap needed. The next chat panel render reflects the
+    new state automatically (dropdown filtered, header indicator
+    re-resolved against the toggle).
+    """
+    queries.set_remote_ollama_enabled(db, enabled == "1")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

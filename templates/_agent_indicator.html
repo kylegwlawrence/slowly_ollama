@@ -33,6 +33,8 @@
   {%- if active_agent_spec -%}
     <span class="material-symbols-outlined">smart_toy</span>
     Agent: {{ active_agent_spec.label }} ({{ active_agent_spec.model }})
+    {%- set host_label = active_agent_spec | agent_host_label -%}
+    {%- if host_label %} · {{ host_label }}{%- endif -%}
   {%- else -%}
     {{ conversation.model }}
   {%- endif -%}

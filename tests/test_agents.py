@@ -1,7 +1,33 @@
 """Phase 16: tests for the user-invoked agent registry."""
 
-from app import agents
-from app.agents import AGENTS, AgentSpec, get_agent, list_agents
+from pathlib import Path
+
+import pytest
+
+from app import agents, queries
+from app.agents import (
+    AGENTS,
+    AgentSpec,
+    agent_host_label,
+    enabled_agents,
+    get_agent,
+    list_agents,
+)
+from app.connection import open_connection
+from app.db import initialize_database
+
+
+@pytest.fixture
+def _db(tmp_path: Path):
+    """Open a fresh SQLite connection with the schema initialized.
+
+    Used by phase-20b tests that need the ``app_settings`` table to
+    drive the ``enabled_agents`` / ``_resolve_active_spec`` toggle.
+    """
+    db_path = tmp_path / "chats.db"
+    initialize_database(db_path)
+    with open_connection(db_path) as conn:
+        yield conn
 
 
 def test_registry_contains_expected_agents() -> None:
@@ -158,6 +184,84 @@ def test_build_remote_agent_populated_when_env_set(monkeypatch) -> None:
     assert "current_time" in spec.tools
     assert "query_rag" in spec.tools
     assert "fetch_github_file" in spec.tools
+
+
+def test_agent_host_label_extracts_hostname() -> None:
+    """`agent_host_label` extracts the hostname from a typical Ollama URL."""
+    spec = AgentSpec(
+        name="x", label="X", description="d", model="m", system_prompt="p",
+        ollama_host="http://host1:11434",
+    )
+    assert agent_host_label(spec) == "host1"
+
+
+def test_agent_host_label_returns_none_for_local_agent() -> None:
+    """A local agent (ollama_host=None) returns None so the template short-circuits."""
+    spec = AgentSpec(
+        name="x", label="X", description="d", model="m", system_prompt="p",
+    )
+    assert agent_host_label(spec) is None
+
+
+def test_agent_host_label_returns_none_for_none_spec() -> None:
+    """Passing None (Normal chat — no active agent) returns None."""
+    assert agent_host_label(None) is None
+
+
+def test_agent_host_label_falls_back_to_raw_url_when_unparseable() -> None:
+    """A value urlparse can't extract a hostname from falls back to the raw
+    string — better to show something than swallow the label."""
+    spec = AgentSpec(
+        name="x", label="X", description="d", model="m", system_prompt="p",
+        ollama_host="not-a-url",
+    )
+    # urlparse parses "not-a-url" as a path with no hostname; we fall back
+    # to the raw value.
+    assert agent_host_label(spec) == "not-a-url"
+
+
+def test_enabled_agents_includes_remote_when_toggle_default(_db) -> None:
+    """Default state (no row) → toggle is True → remote agent (if present)
+    is included alongside local agents."""
+    # Inject a remote spec directly into AGENTS so the test doesn't depend on
+    # REMOTE_OLLAMA_HOST env state. Snapshot + restore so other tests aren't
+    # affected.
+    saved = AGENTS.get("remote")
+    AGENTS["remote"] = AgentSpec(
+        name="remote", label="Remote", description="d",
+        model="m", system_prompt="p", ollama_host="http://host1:11434",
+    )
+    try:
+        names = {a.name for a in enabled_agents(_db)}
+        assert "remote" in names
+    finally:
+        if saved is None:
+            AGENTS.pop("remote", None)
+        else:
+            AGENTS["remote"] = saved
+
+
+def test_enabled_agents_excludes_remote_when_toggle_off(_db) -> None:
+    """Setting remote_ollama_enabled = False drops every agent with a non-None
+    ollama_host. Local agents (Research, Content Generator) are untouched."""
+    queries.set_remote_ollama_enabled(_db, False)
+
+    saved = AGENTS.get("remote")
+    AGENTS["remote"] = AgentSpec(
+        name="remote", label="Remote", description="d",
+        model="m", system_prompt="p", ollama_host="http://host1:11434",
+    )
+    try:
+        names = {a.name for a in enabled_agents(_db)}
+        assert "remote" not in names
+        # Local agents stay regardless of the toggle.
+        assert "research" in names
+        assert "content_generator" in names
+    finally:
+        if saved is None:
+            AGENTS.pop("remote", None)
+        else:
+            AGENTS["remote"] = saved
 
 
 def test_old_loop_symbols_are_gone() -> None:

@@ -34,6 +34,7 @@ from app.ollama import OllamaProtocolError, OllamaUnavailable
 from app.routes._helpers import (
     _agent_overrides,
     _chip_states,
+    _resolve_active_spec,
     _resolve_num_ctx,
     _sidebar_rag_context,
     _spawn_health_refresh,
@@ -325,7 +326,7 @@ async def send_message_endpoint(
             num_ctx=_resolve_num_ctx(db, conversation_id),
             history=history,
             on_complete="append",
-            **_agent_overrides(conversation),
+            **_agent_overrides(conversation, db),
         )
     except generation.GenerationInProgress:
         # UI gate (placeholder keeps the send button disabled) makes
@@ -355,7 +356,7 @@ async def send_message_endpoint(
     # just spawned will (re)load the model in Ollama. If the chip is
     # already loaded this is a no-op visually; if the user had just
     # clicked unload, this flips it back to the accent colour.
-    spec = get_agent(conversation.active_agent)
+    spec = _resolve_active_spec(conversation, db)
     indicator_oob = templates.get_template("_agent_indicator.html").render(
         conversation=conversation,
         active_agent_spec=spec,
@@ -440,7 +441,7 @@ async def regenerate_endpoint(
             num_ctx=_resolve_num_ctx(db, conversation_id),
             history=prompt_history,
             on_complete="replace",
-            **_agent_overrides(conversation),
+            **_agent_overrides(conversation, db),
         )
     except generation.GenerationInProgress:
         return HTMLResponse(
@@ -457,7 +458,7 @@ async def regenerate_endpoint(
         stream_url=f"/chats/{conversation_id}/stream",
     )
     # Same chip-reset as send_message: regen will reload the model too.
-    spec = get_agent(conversation.active_agent)
+    spec = _resolve_active_spec(conversation, db)
     indicator_oob = templates.get_template("_agent_indicator.html").render(
         conversation=conversation,
         active_agent_spec=spec,
@@ -578,7 +579,7 @@ async def unload_chat_model_endpoint(
     except LookupError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
 
-    spec = get_agent(conversation.active_agent)
+    spec = _resolve_active_spec(conversation, db)
     effective_model = spec.model if spec else conversation.model
 
     try:
@@ -727,11 +728,13 @@ async def compact_chat_endpoint(
     # When an agent is active on this chat, compact through the agent's
     # model + host so the summarizer reuses whatever Ollama instance just
     # streamed the conversation (warm KV cache there, not on the local
-    # Ollama). For Normal chats this collapses to today's behavior:
-    # conversation.model + host=None.
-    spec = get_agent(conversation.active_agent)
-    summarize_model = spec.model if spec else conversation.model
-    summarize_host = spec.ollama_host if spec else None
+    # Ollama). Route through `_agent_overrides` so the phase-20b
+    # remote-Ollama toggle is respected here too — a chat with the
+    # Remote agent selected but the toggle off summarizes locally on the
+    # chat's pinned model instead of trying to reach host1.
+    overrides = _agent_overrides(conversation, db)
+    summarize_model = overrides["model"]
+    summarize_host = overrides["ollama_host"]
     try:
         summary_text = await ollama.summarize_conversation(
             client,

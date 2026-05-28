@@ -10,7 +10,7 @@ import sqlite3
 
 from app import ollama, queries, rag_health
 from app import rag_servers as _rag_servers
-from app.agents import get_agent, list_agents
+from app.agents import enabled_agents, get_agent
 from app.tools import RAG_TOOL_NAME, TOOLS
 
 
@@ -191,7 +191,36 @@ def _resolve_num_ctx(
     return queries.resolve_num_ctx_for_project(db, project.num_ctx)
 
 
-def _agent_overrides(conversation: queries.Conversation) -> dict:
+def _resolve_active_spec(
+    conversation: queries.Conversation, db: sqlite3.Connection
+):
+    """Return the effective AgentSpec for a conversation, honoring the toggle.
+
+    Wraps :func:`app.agents.get_agent` so callers that render the chat
+    header (model chip, agent indicator, unload button) all see the same
+    "what's actually going to run" view: a chat with
+    ``active_agent="remote"`` resolves to ``None`` when the phase-20b
+    Remote Ollama toggle is off, so the indicator shows the chat's
+    pinned model instead of the now-disabled agent label.
+
+    Args:
+        conversation: The chat whose ``active_agent`` to resolve.
+        db: Open SQLite connection — the toggle lives in ``app_settings``.
+
+    Returns:
+        The resolved ``AgentSpec``, or ``None`` for Normal (no agent set,
+        unknown name, OR a remote spec while the toggle is off).
+    """
+    spec = get_agent(conversation.active_agent)
+    if spec is not None and spec.ollama_host is not None:
+        if not queries.get_remote_ollama_enabled(db):
+            return None
+    return spec
+
+
+def _agent_overrides(
+    conversation: queries.Conversation, db: sqlite3.Connection
+) -> dict:
     """Resolve a conversation's active agent into ``start_generation`` kwargs.
 
     Returns the effective ``model`` plus ``system_prompt_override`` /
@@ -199,8 +228,14 @@ def _agent_overrides(conversation: queries.Conversation) -> dict:
     agent, or an unknown/removed agent name) this is the chat's pinned
     model with no overrides, ``think=None`` (omit the flag), and
     ``ollama_host=None`` (local) — i.e. today's plain-chat behavior.
+
+    Phase 20b: when the resolved spec has a non-None ``ollama_host`` AND
+    the app-wide ``remote_ollama_enabled`` toggle is off, fall back to
+    the Normal-overrides path. Chats with ``active_agent="remote"`` then
+    silently degrade to plain chat on the chat's pinned local model —
+    no data loss, no errors, regardless of whether host1 is reachable.
     """
-    spec = get_agent(conversation.active_agent)
+    spec = _resolve_active_spec(conversation, db)
     if spec is None:
         return {
             "model": conversation.model,
@@ -240,7 +275,10 @@ def _project_context(
         "default_temperature": queries.get_default_temperature(db),
         "default_tool_iteration_cap": queries.get_default_tool_iteration_cap(db),
         "global_default_model": queries.get_default_model(db),
-        "agents": list_agents(),
+        # enabled_agents respects the phase-20b remote-Ollama toggle so a
+        # disabled remote agent disappears from the picker without the
+        # registry having to be rebuilt.
+        "agents": enabled_agents(db),
     }
     if composer:
         ctx["default_tool_states"] = _default_tool_states()

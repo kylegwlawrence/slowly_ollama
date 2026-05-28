@@ -185,6 +185,50 @@
     </form>
   </section>
 
+  {# Phase 20b: Remote Ollama toggle. Two states:
+       - remote_configured = False → informational note only, no toggle
+         (the env vars haven't been set, so there's nothing to enable).
+       - remote_configured = True → a checkbox bound to the
+         `remote_ollama_enabled` app_settings key, plus the read-only
+         host + model labels so the user can confirm what's wired up.
+     Form submission semantics: unchecking is the only way the form
+     submits without an `enabled` field, which the endpoint defaults to
+     "0" — so the checked state cleanly maps to "1" and unchecked to
+     "0" with no JS gymnastics. #}
+  <section class="settings__section">
+    <h2 class="settings__section-title">Remote Ollama</h2>
+    {% if remote_configured %}
+      <p class="settings__section-help">
+        The Remote agent routes inference (and compaction) to a second
+        Ollama instance configured via <code>REMOTE_OLLAMA_HOST</code> and
+        <code>REMOTE_OLLAMA_MODEL</code> in <code>.env</code>. Untoggle
+        to hide the agent from the dropdown without restarting — existing
+        chats using it fall back to their pinned local model.
+      </p>
+      <form class="settings__remote-ollama"
+            hx-post="/settings/remote-ollama-enabled"
+            hx-trigger="change"
+            hx-swap="none">
+        <label class="settings__toggle">
+          <input type="checkbox" name="enabled" value="1"
+                 {% if remote_enabled %}checked{% endif %}>
+          Enable Remote agent
+        </label>
+        <p class="settings__field-note">
+          <strong>Host:</strong> <code>{{ remote_host }}</code><br>
+          <strong>Model:</strong> <code>{{ remote_model }}</code>
+        </p>
+      </form>
+    {% else %}
+      <p class="settings__section-help">
+        Set <code>REMOTE_OLLAMA_HOST</code> and
+        <code>REMOTE_OLLAMA_MODEL</code> in <code>.env</code> and restart
+        the server to enable a second Ollama instance (e.g. a
+        VPN-reachable machine) as the "Remote" agent.
+      </p>
+    {% endif %}
+  </section>
+
   {# Read-only view of each agent's system prompt so they're easy to locate
      without digging through source files. Normal has no system prompt (plain
      chat), so only the registered agents appear here. #}

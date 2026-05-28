@@ -1726,6 +1726,151 @@ def test_new_composer_reflects_default_temperature(
     assert 'value="0.3"' in composer.text
 
 
+# ---------------------------------------------------------------------------
+# Phase 20b: Remote Ollama toggle
+# ---------------------------------------------------------------------------
+
+
+def test_settings_remote_section_unconfigured_shows_info_note(
+    make_client: ClientFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No env vars → /settings shows the 'set these env vars first' note and
+    NOT the toggle. We can't unset env vars at request time (the agents
+    module already imported), so we monkeypatch the config accessors that
+    /settings calls."""
+    from app.routes import settings as settings_routes
+    monkeypatch.setattr(settings_routes, "remote_ollama_host", lambda: None)
+    monkeypatch.setattr(settings_routes, "remote_ollama_model", lambda: None)
+
+    with make_client(_ollama_unreachable) as client:
+        response = client.get("/settings", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    # The "set these env vars" hint contains the var name.
+    assert "REMOTE_OLLAMA_HOST" in response.text
+    # The toggle form is absent.
+    assert 'hx-post="/settings/remote-ollama-enabled"' not in response.text
+
+
+def test_settings_remote_section_configured_shows_toggle(
+    make_client: ClientFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both env vars set → /settings renders the toggle form + host/model
+    labels."""
+    from app.routes import settings as settings_routes
+    monkeypatch.setattr(
+        settings_routes, "remote_ollama_host", lambda: "http://host1:11434"
+    )
+    monkeypatch.setattr(
+        settings_routes, "remote_ollama_model", lambda: "llama3.1:70b"
+    )
+
+    with make_client(_ollama_unreachable) as client:
+        response = client.get("/settings", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    assert 'hx-post="/settings/remote-ollama-enabled"' in response.text
+    # Host + model labels are read-only display.
+    assert "http://host1:11434" in response.text
+    assert "llama3.1:70b" in response.text
+    # Default state is enabled (no app_settings row yet) → checkbox checked.
+    assert "checked" in response.text
+
+
+def test_set_remote_ollama_enabled_persists_off(
+    make_client: ClientFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """POST without `enabled` (unchecked form) persists as disabled."""
+    from app.routes import settings as settings_routes
+    monkeypatch.setattr(
+        settings_routes, "remote_ollama_host", lambda: "http://host1:11434"
+    )
+    monkeypatch.setattr(
+        settings_routes, "remote_ollama_model", lambda: "llama3.1:70b"
+    )
+
+    with make_client(_ollama_unreachable) as client:
+        # Form-encoded POST with no `enabled` field — what an unchecked
+        # checkbox submits.
+        resp = client.post("/settings/remote-ollama-enabled", data={})
+        assert resp.status_code == 204
+
+        settings = client.get("/settings", headers={"HX-Request": "true"})
+    # `checked` attribute is absent on the toggle now.
+    assert 'name="enabled" value="1"\n                 checked' not in settings.text
+    # The toggle form is still there; just unchecked.
+    assert 'hx-post="/settings/remote-ollama-enabled"' in settings.text
+
+
+def test_set_remote_ollama_enabled_persists_on(
+    make_client: ClientFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """POST with `enabled=1` (checked checkbox) persists as enabled."""
+    from app.routes import settings as settings_routes
+    monkeypatch.setattr(
+        settings_routes, "remote_ollama_host", lambda: "http://host1:11434"
+    )
+    monkeypatch.setattr(
+        settings_routes, "remote_ollama_model", lambda: "llama3.1:70b"
+    )
+
+    with make_client(_ollama_unreachable) as client:
+        # First disable, then re-enable to make sure the round-trip works
+        # against a non-default starting state.
+        client.post("/settings/remote-ollama-enabled", data={})
+        resp = client.post(
+            "/settings/remote-ollama-enabled", data={"enabled": "1"}
+        )
+        assert resp.status_code == 204
+        settings = client.get("/settings", headers={"HX-Request": "true"})
+    # Checkbox is checked again.
+    assert "checked" in settings.text
+
+
+def test_agent_overrides_respects_remote_toggle(tmp_path: Path) -> None:
+    """`_agent_overrides` returns Normal kwargs for a chat with the Remote
+    agent selected when the toggle is off — degrades cleanly without
+    erroring or trying to reach host1."""
+    from app.agents import AGENTS, AgentSpec
+    from app.routes._helpers import _agent_overrides
+
+    db_path = tmp_path / "chats.db"
+    initialize_database(db_path)
+    # Inject a fake remote agent so the test doesn't depend on env state.
+    saved = AGENTS.get("remote")
+    AGENTS["remote"] = AgentSpec(
+        name="remote", label="Remote", description="d",
+        model="remote-model", system_prompt="be remote",
+        ollama_host="http://host1:11434",
+    )
+    try:
+        with open_connection(db_path) as conn:
+            chat = queries.create_conversation(
+                conn, "test", "local-model"
+            )
+            queries.set_active_agent(conn, chat.id, "remote")
+            chat = queries.get_conversation(conn, chat.id)
+
+            # Toggle ON (default): overrides should reflect the remote spec.
+            ov = _agent_overrides(chat, conn)
+            assert ov["model"] == "remote-model"
+            assert ov["ollama_host"] == "http://host1:11434"
+            assert ov["system_prompt_override"] == "be remote"
+
+            # Toggle OFF: overrides degrade to Normal — chat's pinned model,
+            # no host, no system prompt override.
+            queries.set_remote_ollama_enabled(conn, False)
+            ov = _agent_overrides(chat, conn)
+            assert ov["model"] == "local-model"
+            assert ov["ollama_host"] is None
+            assert ov["system_prompt_override"] is None
+            assert ov["tool_allowlist"] is None
+            assert ov["think"] is None
+    finally:
+        if saved is None:
+            AGENTS.pop("remote", None)
+        else:
+            AGENTS["remote"] = saved
+
+
 def test_settings_renders_default_tool_cap_input(
     make_client: ClientFactory,
 ) -> None:
