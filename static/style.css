@@ -10,7 +10,7 @@
   /* Softer than the Google #e8eaed border — fewer hard edges between
      panels, more of a "single page" feel. */
   --border: #ececec;
-  --text-primary: #1f1f1f;
+  --text-primary: #2a2a2a;
   --text-secondary: #6b6b6b;
   /* Sage green replaces Google blue. Hover is a darker sage; tonal is
      a pale sage surface used for user bubbles, the active sidebar row,
@@ -23,7 +23,7 @@
      sage family rather than introducing a black/white. */
   --accent: #9ccaa6;
   --accent-hover: #7fb38c;
-  --accent-tonal: #c4dfcc;
+  --accent-tonal: #d9efde;
   --accent-tonal-text: #3d6549;
   --accent-on: #1f3a26;
   --danger: #d93025;
@@ -57,7 +57,7 @@
 
   /* Slight type-scale bump so message text reads more like Claude
      (15px vs Pico's 16px default vs phase 8's 14px). */
-  --font-size-base: 15px;
+  --font-size-base: 13px;
 }
 
 
