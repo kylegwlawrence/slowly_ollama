@@ -104,9 +104,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s                          # use defaults from .env
-  %(prog)s my_local_folder          # custom local dest, default host and remote base
-  %(prog)s my_folder mypi /opt      # all custom
+  %(prog)s                                              # use defaults from .env
+  %(prog)s --source my_local_folder                    # custom local dest
+  %(prog)s --host mypi --dest /opt/backups             # custom host and remote base
+  %(prog)s --source my_folder --host mypi --dest /opt/backups
         """
     )
 
@@ -115,20 +116,17 @@ Examples:
     default_remote_base = os.getenv("COPY_DEST", "/home/user/agent_workspaces")
 
     parser.add_argument(
-        "local_dest",
-        nargs="?",
+        "--source", "-s",
         default=default_local_dest,
         help=f"Local directory to copy files into (default: {default_local_dest})"
     )
     parser.add_argument(
-        "pihost",
-        nargs="?",
+        "--host",
         default=default_pihost,
         help=f"Raspberry Pi hostname (default: {default_pihost})"
     )
     parser.add_argument(
-        "remote_base",
-        nargs="?",
+        "--dest", "-d",
         default=default_remote_base,
         help=f"Base directory on Pi containing timestamped backups (default: {default_remote_base})"
     )
@@ -136,31 +134,31 @@ Examples:
     args = parser.parse_args()
 
     # Ensure local destination exists
-    local_path = Path(args.local_dest)
+    local_path = Path(args.source)
     local_path.mkdir(parents=True, exist_ok=True)
 
     print("=" * 50)
     print("Copying workspace from Raspberry Pi")
     print("=" * 50)
-    print(f"Remote base: {args.pihost}:{args.remote_base}")
-    print(f"Local dest:  {args.local_dest}")
+    print(f"Remote base: {args.host}:{args.dest}")
+    print(f"Local dest:  {args.source}")
     print("=" * 50)
 
-    if not test_ssh_connection(args.pihost):
+    if not test_ssh_connection(args.host):
         sys.exit(1)
 
-    latest_remote = find_latest_remote_folder(args.pihost, args.remote_base)
-    print(f"Latest backup: {args.pihost}:{latest_remote}")
+    latest_remote = find_latest_remote_folder(args.host, args.dest)
+    print(f"Latest backup: {args.host}:{latest_remote}")
 
-    rsync_files(args.pihost, latest_remote, args.local_dest)
+    rsync_files(args.host, latest_remote, args.source)
 
     print("=" * 50)
     print("✓ Copy complete!")
     print("=" * 50)
-    print(f"Files are now at: {args.local_dest}")
+    print(f"Files are now at: {args.source}")
     print()
     print("To verify, run:")
-    print(f"  ls -la {args.local_dest}")
+    print(f"  ls -la {args.source}")
 
 
 if __name__ == "__main__":
