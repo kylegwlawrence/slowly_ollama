@@ -168,10 +168,8 @@ def copy_from_remote(host: str, remote_base: str, local_dest: str) -> None:
 
 
 def main():
-    default_local = os.getenv("COPY_SOURCE", "agent_workspace")
-    default_pihost = os.getenv("COPY_PIHOST", "raspberrypi6")
-    default_remote_base = os.getenv("COPY_DEST", "/home/user/agent_workspaces")
-    default_dest = f"{default_pihost}:{default_remote_base}"
+    default_local = os.getenv("LOCAL_PATH", "agent_workspace")
+    default_dest = os.getenv("REMOTE_PATH", "raspberrypi6:/home/user/agent_workspaces")
 
     parser = argparse.ArgumentParser(
         description="Copy agent workspace between local machine and a remote host",
@@ -194,12 +192,12 @@ Examples:
     parser.add_argument(
         "--source", "-s",
         default=default_local,
-        help=f"Source (local path or host:/path). Default: {default_local}",
+        help=f"Source (local path or host:/path). Default: LOCAL_PATH or {default_local}",
     )
     parser.add_argument(
         "--dest", "-d",
         default=default_dest,
-        help=f"Destination (local path or host:/path). Default: {default_dest}",
+        help=f"Destination (local path or host:/path). Default: REMOTE_PATH or {default_dest}",
     )
 
     args = parser.parse_args()
