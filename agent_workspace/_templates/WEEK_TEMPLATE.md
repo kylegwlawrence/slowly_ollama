@@ -16,11 +16,11 @@ Metadata → Overview → Learning Outcomes → Key Terms → Session 1 → Sess
 - Pedagogical Approach, Materials Needed, Science Fair extensions
 - "Show students a video and ask…" — reframe as a solo warm-up reading inside Concept Study
 
-**Action verbs (mandatory).** Every Learning Outcome and Session Objective must start with one of:
+**Action verbs (mandatory).** Every Learning Outcome and Session Objective must start with a checkable action verb. Pick from:
 
-**Derive, Apply, Compute, Compare, Explain, Predict, Model, Simulate, Critique.**
+**Derive, Apply, Compute, Compare, Explain, Analyze, Interpret, Predict, Model, Simulate, Argue, Critique, Compose.**
 
-Never write "Understand X" — it is not checkable.
+Never write "Understand X" — it is not checkable. Pick the verb that fits your subject (STEM problems lean Derive / Apply / Compute / Model / Simulate; humanities and social science lean Analyze / Interpret / Argue / Critique; arts and writing lean Compose / Critique).
 
 **Sources & URLs.** Use tools to ground every citation:
 
@@ -28,7 +28,12 @@ Never write "Understand X" — it is not checkable.
 - `fetch_github_file` for a github.com blob URL or raw.githubusercontent.com URL
 - `read_file` for prior week and unit files in this workspace
 
-When a tool confirms a source, write `[verified] URL`. When you cannot confirm, write a placeholder — `{{find a sim for: TOPIC}}`, `{{find source: TOPIC}}`, or `{{find paper: TOPIC}}`. **Never invent a domain, paper title, or textbook chapter number.** Bias to canonical sources: PhET (phet.colorado.edu), IBM Quantum, arXiv, Wolfram Alpha, MIT OCW, NIST, Qiskit, Python library docs.
+When a tool confirms a source, write `[verified] URL`. When you cannot confirm, write a placeholder — `{{find a sim for: TOPIC}}`, `{{find source: TOPIC}}`, or `{{find paper: TOPIC}}`. **Never invent a domain, paper title, or textbook chapter number.** Bias to canonical sources for your subject:
+
+- STEM: arXiv, MIT OCW, Wolfram Alpha, NIST, established subject-specific simulation platforms
+- humanities & social science: JSTOR, Internet Archive, Project MUSE, primary-source archives, university press publications
+- programming: official library / framework documentation, language reference docs
+- general: established academic publishers, peer-reviewed journals, official institutional sites
 
 **Prerequisites.** Use `read_file` on prior week files before listing prereqs. Fill the `**Prerequisite gap**` bullet only when you have inspected upstream files and confirmed the concept is missing. Otherwise delete that bullet.
 
@@ -43,33 +48,33 @@ When a tool confirms a source, write `[verified] URL`. When you cannot confirm, 
 - 1–2 Real-World examples
 - 3 Going Deeper items
 
-## Example of a filled Session 1 (reference only — your topic will differ)
+## Example shape of a filled Session 1 (reference only — replace bracketed prompts with content from your subject)
 
 ### Objective
 
-Apply Newton's second law to compute net force on a mass subject to multiple horizontal forces.
+[Action verb] + [specific concept or skill] + [scope qualifier]. One sentence.
 
 ### Concept Study (~45–60 min)
 
-- PhET: Forces and Motion: Basics — `[verified] https://phet.colorado.edu/sims/html/forces-and-motion-basics/latest/forces-and-motion-basics_en.html` — vary applied force, friction, and mass; observe acceleration.
-- Read: OpenStax *College Physics* §4.3 ("Newton's Second Law of Motion") — derive F = ma from the time derivative of momentum.
+- [Specific source — simulation, textbook chapter, paper, video, primary document]: `[verified] URL` — [what to do with it, e.g., vary parameter X; annotate the central thesis; trace the derivation].
+- [Second specific source]: `[verified] URL` — [what to do with it].
 
 ### Active Engagement (~30–45 min)
 
-- **Derivation.** Starting from p = mv (constant m), differentiate to get dp/dt = m(dv/dt) = ma. Write the derivation in 4–6 lines. Flag where the constant-mass assumption enters and what changes if m varies.
+- **[One of: Derivation / Simulation / Implementation / Close reading / Thought experiment / Composition]**. [Concrete prompt with one assumption to flag explicitly.]
 
-Concrete deliverable expected: a half-page derivation with the constant-mass assumption explicitly flagged.
+Concrete deliverable expected: [one sentence describing the artifact, e.g., a half-page derivation, an annotated text with margin notes, a labeled diagram, a debuggable code snippet, a short composition].
 
 ### Practice (~30–45 min)
 
-1. A 2.0 kg block on a frictionless surface is pulled by a 6.0 N horizontal force. Compute its acceleration.
-2. Same block, with kinetic friction μ_k = 0.20. Compute net force and resulting acceleration. (g = 9.8 m/s².)
-3. Two blocks (1.0 kg and 3.0 kg) are linked by a massless rope on a frictionless surface. A 12 N force pulls the 3.0 kg block. Compute the tension in the rope.
+1. [Problem with concrete specifics — numbers, names, dates, code, or excerpts. Mix conceptual and applied.]
+2. […]
+3. […]
 
 ### Reflection (~5–10 min)
 
-- Which step in the derivation felt least intuitive? Why?
-- How does this session's content connect to last week's kinematics work?
+- [Question: where did your understanding slow down most? Why?]
+- [Question: how does this session relate to prior content — earlier this week, a prior week, or a prior unit?]
 
 ---
 
@@ -92,7 +97,7 @@ By the end of this week you should be able to:
 
 - {{Action verb + object + qualifier}}
 - {{…}}
-- {{4 outcomes total. Use Derive, Apply, Compute, Compare, Explain, Predict, Model, Simulate, Critique. Never "Understand X" — it isn't checkable.}}
+- {{4 outcomes total. Use a checkable action verb from the Agent brief (Derive, Apply, Compute, Compare, Explain, Analyze, Interpret, Predict, Model, Simulate, Argue, Critique, Compose). Never "Understand X" — it isn't checkable.}}
 
 ## Key Terms
 
@@ -114,18 +119,21 @@ Week-specific vocabulary. Broader unit-level terms belong in the parent unit's G
 
 What to read, watch, or derive to absorb the concept.
 
-- {{Specific source: textbook chapter X.Y / video URL / paper / your own derivation prompt}}
+- {{Specific source: textbook chapter X.Y / video URL / paper / primary document / your own derivation or analysis prompt}}
 - {{…}}
 
 ### Active Engagement (~30–45 min)
 
 A solo activity to convert passive concept-study into active understanding. Choose one or combine:
 
+- **Derivation**: {{Derive equation or result X starting from assumption Y}}
 - **Simulation**: {{Run sim X; observe behavior Y; vary parameter Z}}
-- **Derivation**: {{Derive equation X starting from assumption Y}}
-- **Thought experiment**: {{Predict outcome of scenario X; reason about why}}
+- **Implementation**: {{Build or extend a small artifact — code snippet, calculation, diagram}}
+- **Close reading**: {{Annotate source X; identify the central claim and the strongest supporting evidence}}
+- **Thought experiment**: {{Predict the outcome of scenario X; reason about why}}
+- **Composition**: {{Write or compose a short piece in form X with constraint Y}}
 
-Concrete deliverable expected: {{one sentence, e.g., "a plotted graph", "a half-page derivation", "a written prediction with justification"}}.
+Concrete deliverable expected: {{one sentence — e.g., "a plotted graph", "a half-page derivation", "an annotated text", "a debuggable code snippet", "a written prediction with justification"}}.
 
 ### Practice (~30–45 min)
 
@@ -206,7 +214,7 @@ Concrete deliverable expected: {{one sentence, e.g., "a plotted graph", "a half-
 
 ## Real-World Application
 
-Where this week's content shows up in industry, research, or daily life. Be specific — name a real system, technology, or phenomenon.
+Where this week's content shows up outside the curriculum — in industry, research, contemporary practice, or daily life. Be specific — name a real example, work, system, technology, event, or phenomenon.
 
 - {{1–2 grounded examples}}
 
