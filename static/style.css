@@ -1995,11 +1995,11 @@ body {
    something the assistant just said." */
 .message--summary {
   align-self: stretch;
-  max-width: none;
+  max-width: 75%;
   background: var(--accent-tonal);
   color: var(--accent-tonal-text);
-  border-left: 3px solid var(--accent);
-  border-radius: var(--radius-md);
+  border: 1.5px dotted var(--accent);
+  border-radius: var(--radius-lg);
   padding: var(--space-md) var(--space-lg);
 }
 
@@ -2013,6 +2013,7 @@ body {
   letter-spacing: 0.04em;
   color: var(--accent);
   margin-bottom: var(--space-xs);
+  border-radius: 0;
 }
 
 .message__summary-badge .material-symbols-outlined {
