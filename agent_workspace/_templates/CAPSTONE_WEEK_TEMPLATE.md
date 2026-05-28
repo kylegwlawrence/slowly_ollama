@@ -10,7 +10,7 @@ You are filling this template for one **self-study learner** working on a capsto
 
 **Audience.** Address the reader as "you". No "students" / "the class", peer review, debates, group work, or classroom-grading apparatus.
 
-**Sources.** Use tools (`query_rag`, `fetch_github_file`, `read_file`) to ground references to physics from Units 5–9. Mark URLs `[verified]` (tool confirmed) or `[unverified]`. **Never invent a domain, paper, or textbook chapter.**
+**Sources.** Use tools (`query_rag`, `fetch_github_file`, `read_file`) to ground references to content from prior units. Mark URLs `[verified]` (tool confirmed) or `[unverified]`. **Never invent a domain, paper, or textbook chapter.**
 
 **Self-Assessment Rubric.** The Score column stays empty when you fill the template — the learner fills it in after doing the work. Do not score on the learner's behalf.
 
@@ -29,7 +29,7 @@ You are filling this template for one **self-study learner** working on a capsto
 
 - **Capstone phase**: {{Proposal | Execution | Submission}}
 - **Duration**: ~N hours total this week
-- **Prerequisites**: {{prior capstone week (if not Week 31) + specific physics content from Units 5–9 your project draws on}}
+- **Prerequisites**: {{prior capstone week (if not the first) + specific prior-unit content your project draws on}}
 
 ## Phase Overview
 
@@ -70,9 +70,9 @@ Self-grade this week's deliverables. Be honest — the rubric is for you.
 
 | Criterion | What it means | Score (1–5) |
 |-----------|---------------|-------------|
-| **Rigor** | Are claims supported by physics, math, or data? Sources cited where needed? | |
+| **Rigor** | Are claims supported by evidence, reasoning, or data appropriate to the subject? Sources cited where needed? | |
 | **Completeness** | Are all listed deliverables present and finished? No half-done sections? | |
-| **Communication** | Will future-you (in 6 months) understand what you wrote? Is the code readable? | |
+| **Communication** | Will future-you (in 6 months) understand what you wrote? Is the artifact readable on its own? | |
 | **Technical depth** | Does the work engage the hard parts, or stay at surface summary? | |
 
 **Total**: __ / 20
@@ -86,5 +86,5 @@ Write briefly (3–5 sentences each) on 2–3 of these at week end:
 - What surprised you this week?
 - What was harder than expected? Why?
 - What would you do differently next time?
-- How does this week's work connect to a specific Unit 5–9 concept? Which one, and how?
+- How does this week's work connect to a specific prior-unit concept? Which one, and how?
 - What's the single biggest risk to your project right now, and how will you mitigate it?
