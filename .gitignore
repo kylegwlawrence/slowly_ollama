@@ -30,6 +30,11 @@ __pycache__/
 # Claude Code's per-project local settings (e.g. tool permissions)
 .claude/
 
-/agent_workspace
+# Ignore the agent workspace's runtime data (chats, generated outlines, etc.)
+# but track the shared templates folder so the curriculum scaffolding is
+# version-controlled.
+/agent_workspace/*
+!/agent_workspace/_templates/
+!/agent_workspace/_templates/**
 ext_plan.md
 /docs/
