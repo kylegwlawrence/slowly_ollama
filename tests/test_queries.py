@@ -32,6 +32,7 @@ from app.queries import (
     get_default_tool_iteration_cap,
     get_enabled_rag_server_names,
     get_enabled_tool_names,
+    get_remote_ollama_enabled,
     get_setting,
     list_active_messages,
     list_conversations,
@@ -48,6 +49,7 @@ from app.queries import (
     set_default_temperature,
     set_default_tool_iteration_cap,
     set_name_auto,
+    set_remote_ollama_enabled,
     set_setting,
     toggle_chat_rag_server,
     toggle_chat_tool,
@@ -606,6 +608,30 @@ def test_get_default_tool_iteration_cap_falls_back_on_malformed_row(
     """A non-numeric value reads as 5 rather than raising."""
     set_setting(conn, "default_tool_iteration_cap", "not-a-number")
     assert get_default_tool_iteration_cap(conn) == 5
+
+
+def test_remote_ollama_enabled_defaults_true(conn: sqlite3.Connection) -> None:
+    """No row → True. Preserves post-phase-20a behavior on upgrade: a chat
+    using the Remote agent keeps working without anyone touching /settings."""
+    assert get_remote_ollama_enabled(conn) is True
+
+
+def test_remote_ollama_enabled_round_trip(conn: sqlite3.Connection) -> None:
+    """Set True/False round-trips through the typed accessor."""
+    set_remote_ollama_enabled(conn, False)
+    assert get_remote_ollama_enabled(conn) is False
+    set_remote_ollama_enabled(conn, True)
+    assert get_remote_ollama_enabled(conn) is True
+
+
+def test_remote_ollama_enabled_falls_back_on_malformed_row(
+    conn: sqlite3.Connection,
+) -> None:
+    """A garbage value (hand-edited DB) reads as False since it's not "1" —
+    the strict-equality check makes any unknown value fail-closed, which is
+    the safer default when the user might have intended to disable."""
+    set_setting(conn, "remote_ollama_enabled", "yes")
+    assert get_remote_ollama_enabled(conn) is False
 
 
 def test_default_model_default_is_none(conn: sqlite3.Connection) -> None:

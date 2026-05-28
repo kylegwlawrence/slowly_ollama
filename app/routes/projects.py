@@ -579,7 +579,7 @@ async def create_project_chat_endpoint(
         num_ctx=queries.resolve_num_ctx_for_project(db, project.num_ctx),
         history=messages,
         on_complete="append",
-        **_agent_overrides(chat),
+        **_agent_overrides(chat, db),
     )
     # Phase 19: warm the RAG health cache so a freshly-created chat's
     # sidebar Sources section reflects current server health.

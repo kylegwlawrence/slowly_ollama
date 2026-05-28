@@ -216,6 +216,48 @@ def set_default_num_ctx(conn: sqlite3.Connection, num_ctx: int) -> None:
     set_setting(conn, _DEFAULT_NUM_CTX_KEY, str(clamp_num_ctx(num_ctx)))
 
 
+_REMOTE_OLLAMA_ENABLED_KEY = "remote_ollama_enabled"
+
+
+def get_remote_ollama_enabled(conn: sqlite3.Connection) -> bool:
+    """Return whether the Remote Ollama agent is enabled app-wide.
+
+    Default (no row): ``True``. Storing the key explicitly with value
+    ``"0"`` disables the Remote agent everywhere — it's filtered out of
+    the chat-header dropdown and existing chats with
+    ``active_agent="remote"`` degrade to Normal on their next turn.
+    Defaulting to ``True`` preserves the post-phase-20a behavior on
+    upgrade: if you've already set the env vars and used the agent, the
+    DB row simply doesn't exist yet and everything keeps working.
+
+    A malformed row (anything other than ``"1"`` / ``"0"``) is treated
+    as the default — same forgiveness as the other typed accessors here.
+
+    Args:
+        conn: Open SQLite connection.
+    """
+    raw = get_setting(conn, _REMOTE_OLLAMA_ENABLED_KEY, default=None)
+    if raw is None:
+        return True
+    return raw == "1"
+
+
+def set_remote_ollama_enabled(
+    conn: sqlite3.Connection, enabled: bool
+) -> None:
+    """Persist the app-wide Remote Ollama enable flag.
+
+    Stored as ``"1"`` / ``"0"`` since the ``app_settings.value`` column
+    is text.
+
+    Args:
+        conn: Open SQLite connection.
+        enabled: True to keep the Remote agent visible/active, False to
+            hide it from the dropdown and degrade in-flight chats.
+    """
+    set_setting(conn, _REMOTE_OLLAMA_ENABLED_KEY, "1" if enabled else "0")
+
+
 def resolve_num_ctx_for_project(
     conn: sqlite3.Connection, project_num_ctx: int | None
 ) -> int:
