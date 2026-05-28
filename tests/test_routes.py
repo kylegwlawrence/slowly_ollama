@@ -160,7 +160,7 @@ def _default_tool_capable(
     monkeypatch.
     """
 
-    async def _capable(_client: object, _name: str) -> bool:
+    async def _capable(*args, **kwargs) -> bool:
         return True
 
     monkeypatch.setattr(ollama, "model_supports_tools", _capable)
@@ -1902,7 +1902,7 @@ def test_chat_panel_hides_tool_iteration_cap_for_non_tool_model(
 ) -> None:
     """When the model can't do tools, the Tool cap chip is hidden (the cap
     is meaningless without tools)."""
-    async def _not_capable(client_, model_):
+    async def _not_capable(*args, **kwargs):
         return False
 
     monkeypatch.setattr(ollama, "model_supports_tools", _not_capable)

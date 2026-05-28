@@ -5,8 +5,10 @@ from app.agents import AGENTS, AgentSpec, get_agent, list_agents
 
 
 def test_registry_contains_expected_agents() -> None:
-    """The shipped roster is research + content_generator (Normal is implicit)."""
-    assert set(AGENTS) == {"research", "content_generator"}
+    """The shipped roster is at least research + content_generator (Normal is
+    implicit); the optional "remote" agent appears only when its env vars are
+    set, so use a superset check rather than strict equality."""
+    assert {"research", "content_generator"} <= set(AGENTS)
     for spec in AGENTS.values():
         assert isinstance(spec, AgentSpec)
 
@@ -96,6 +98,66 @@ def test_agentspec_is_frozen() -> None:
         pass
     else:  # pragma: no cover - defensive
         raise AssertionError("AgentSpec should be frozen")
+
+
+def test_agentspec_ollama_host_defaults_none_and_is_settable() -> None:
+    """`ollama_host` defaults None (local Ollama) and is opt-in per agent."""
+    bare = AgentSpec(
+        name="x", label="X", description="d", model="m", system_prompt="p"
+    )
+    assert bare.ollama_host is None
+
+    remote = AgentSpec(
+        name="y", label="Y", description="d", model="m",
+        system_prompt="p", ollama_host="http://host1:11434",
+    )
+    assert remote.ollama_host == "http://host1:11434"
+
+
+def test_build_remote_agent_returns_none_when_env_unset(monkeypatch) -> None:
+    """Both env vars missing → no remote agent (matches tool-gating pattern)."""
+    from app.agents import _build_remote_agent
+
+    monkeypatch.delenv("REMOTE_OLLAMA_HOST", raising=False)
+    monkeypatch.delenv("REMOTE_OLLAMA_MODEL", raising=False)
+    assert _build_remote_agent() is None
+
+
+def test_build_remote_agent_returns_none_when_only_host_set(monkeypatch) -> None:
+    """Partial config is treated as no config — drop the agent."""
+    from app.agents import _build_remote_agent
+
+    monkeypatch.setenv("REMOTE_OLLAMA_HOST", "http://host1:11434")
+    monkeypatch.delenv("REMOTE_OLLAMA_MODEL", raising=False)
+    assert _build_remote_agent() is None
+
+
+def test_build_remote_agent_returns_none_when_only_model_set(monkeypatch) -> None:
+    """Partial config is treated as no config — drop the agent."""
+    from app.agents import _build_remote_agent
+
+    monkeypatch.delenv("REMOTE_OLLAMA_HOST", raising=False)
+    monkeypatch.setenv("REMOTE_OLLAMA_MODEL", "llama3.1:70b")
+    assert _build_remote_agent() is None
+
+
+def test_build_remote_agent_populated_when_env_set(monkeypatch) -> None:
+    """Both env vars set → spec carries the host + model + a non-empty allowlist."""
+    from app.agents import _build_remote_agent
+
+    monkeypatch.setenv("REMOTE_OLLAMA_HOST", "http://host1:11434")
+    monkeypatch.setenv("REMOTE_OLLAMA_MODEL", "llama3.1:70b")
+    spec = _build_remote_agent()
+    assert spec is not None
+    assert spec.name == "remote"
+    assert spec.model == "llama3.1:70b"
+    assert spec.ollama_host == "http://host1:11434"
+    # Allowlist names every shipped tool — tools missing from TOOLS at runtime
+    # (file tools without FILE_TOOL_ROOT, query_rag without servers) are
+    # silently dropped by `_agent_tool_specs`.
+    assert "current_time" in spec.tools
+    assert "query_rag" in spec.tools
+    assert "fetch_github_file" in spec.tools
 
 
 def test_old_loop_symbols_are_gone() -> None:

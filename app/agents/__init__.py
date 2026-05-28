@@ -14,7 +14,12 @@ to be added over time by editing `AGENTS`.
 
 from dataclasses import dataclass, field
 
-from app.agents.prompts import CONTENT_GENERATOR_PROMPT, RESEARCH_AGENT_PROMPT
+from app.agents.prompts import (
+    CONTENT_GENERATOR_PROMPT,
+    REMOTE_AGENT_PROMPT,
+    RESEARCH_AGENT_PROMPT,
+)
+from app.config import remote_ollama_host, remote_ollama_model
 
 
 @dataclass(frozen=True)
@@ -39,6 +44,10 @@ class AgentSpec:
             before answering. Set ``True`` ONLY for an agent assigned a
             thinking-capable model — Ollama returns a 400 for ``think: true``
             on a model without the capability.
+        ollama_host: When set, this agent's Ollama calls (chat probe, stream,
+            compaction) target this base URL instead of the local ``OLLAMA_HOST``.
+            ``None`` runs the agent on the local Ollama like every other call.
+            Tools still execute on this server — only inference is offloaded.
     """
 
     name: str
@@ -48,6 +57,7 @@ class AgentSpec:
     system_prompt: str
     tools: frozenset[str] = field(default_factory=frozenset)
     think: bool = False
+    ollama_host: str | None = None
 
 
 # Insertion order is the dropdown order. "Normal" is rendered by the UI as a
@@ -83,6 +93,56 @@ AGENTS: dict[str, AgentSpec] = {
         think=False,
     ),
 }
+
+
+def _build_remote_agent() -> AgentSpec | None:
+    """Return the "Remote" AgentSpec when its env vars are set, else None.
+
+    Same gating pattern as the file tools and query_rag — when EITHER env
+    var is missing we drop the agent from the registry entirely rather
+    than register a degenerate version that would fail on its first turn.
+    Tools still execute on this server; only inference is offloaded.
+
+    Extracted as a function (not inlined) so tests can drive it with
+    monkeypatched env without reimporting the module.
+
+    Returns:
+        A populated AgentSpec when both REMOTE_OLLAMA_HOST and
+        REMOTE_OLLAMA_MODEL are set; None otherwise.
+    """
+    host = remote_ollama_host()
+    model = remote_ollama_model()
+    if not host or not model:
+        return None
+    return AgentSpec(
+        name="remote",
+        label="Remote",
+        description="General-purpose agent running on a second Ollama instance.",
+        model=model,
+        system_prompt=REMOTE_AGENT_PROMPT,
+        # Allow every tool name we know about. Tools gated off at runtime
+        # (file tools without FILE_TOOL_ROOT, query_rag without configured
+        # servers) are simply absent from TOOLS and the allowlist filter
+        # skips them — same fallthrough as the other agents.
+        tools=frozenset({
+            "current_time",
+            "read_file",
+            "write_file",
+            "list_directory",
+            "search_files",
+            "query_rag",
+            "fetch_github_file",
+        }),
+        # think=False is safe on any model. If the remote model is
+        # thinking-capable and reasoning is wanted, flip this and ship.
+        think=False,
+        ollama_host=host,
+    )
+
+
+_remote_agent = _build_remote_agent()
+if _remote_agent is not None:
+    AGENTS[_remote_agent.name] = _remote_agent
 
 
 def list_agents() -> list[AgentSpec]:

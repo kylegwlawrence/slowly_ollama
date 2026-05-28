@@ -288,6 +288,7 @@ async def start_generation(
     tool_allowlist: frozenset[str] | None = None,
     think: bool | None = None,
     num_ctx: int | None = None,
+    ollama_host: str | None = None,
 ) -> GenerationState:
     """Register a GenerationState and spawn the producer task.
 
@@ -307,6 +308,10 @@ async def start_generation(
         think: The invoked agent's Ollama ``think`` flag (True/False), or
             None for Normal chat (omit the flag → Ollama default). Passed
             straight through to the chat calls.
+        ollama_host: The invoked agent's optional remote Ollama base URL.
+            When set, the producer routes every chat call (probe + stream)
+            at that host instead of the shared client's local base_url.
+            None keeps the existing local-Ollama behavior.
 
     Raises:
         GenerationInProgress: if a generation is already running for
@@ -351,6 +356,7 @@ async def start_generation(
             tool_allowlist=tool_allowlist,
             think=think,
             num_ctx=num_ctx,
+            ollama_host=ollama_host,
         )
     )
     state.task.add_done_callback(_make_done_callback(conversation_id))
@@ -658,6 +664,7 @@ async def _run_generation(
     tool_allowlist: frozenset[str] | None = None,
     think: bool | None = None,
     num_ctx: int | None = None,
+    ollama_host: str | None = None,
 ) -> None:
     """Producer body — runs the LLM and writes events to the state.
 
@@ -692,7 +699,8 @@ async def _run_generation(
 
     tools_payload = (
         _enabled_specs
-        if _enabled_specs and await ollama.model_supports_tools(client, model)
+        if _enabled_specs
+        and await ollama.model_supports_tools(client, model, host=ollama_host)
         else None
     )
 
@@ -766,6 +774,7 @@ async def _run_generation(
                     temperature=temperature,
                     think=think,
                     num_ctx=num_ctx,
+                    host=ollama_host,
                 )
             except (OllamaUnavailable, OllamaProtocolError) as e:
                 # Set BEFORE the await — await is a cancellation point;
@@ -887,6 +896,7 @@ async def _run_generation(
                 temperature=temperature,
                 think=think,
                 num_ctx=num_ctx,
+                host=ollama_host,
             ):
                 if chunk.content:
                     chunks.append(chunk.content)

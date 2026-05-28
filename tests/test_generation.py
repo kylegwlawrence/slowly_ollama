@@ -377,7 +377,7 @@ async def test_generation_omits_tools_when_model_not_tool_capable(
     # Stub the capability check to "not tool-capable" so we exercise
     # the `tools_payload = None` branch in _run_generation without
     # having to wire a full /api/tags + /api/show fixture chain.
-    async def _not_capable(_client, _model):
+    async def _not_capable(*args, **kwargs):
         return False
 
     monkeypatch.setattr(ollama, "model_supports_tools", _not_capable)
@@ -1693,6 +1693,33 @@ async def test_start_generation_forwards_agent_overrides(tmp_path, monkeypatch):
     assert calls["last_kwargs"]["system_prompt_override"] == "be an agent"
     assert calls["last_kwargs"]["tool_allowlist"] == frozenset({"current_time"})
     assert calls["last_kwargs"]["think"] is False
+    # Normal turn (no ollama_host kwarg): producer gets None, i.e. local Ollama.
+    assert calls["last_kwargs"]["ollama_host"] is None
+
+
+@pytest.mark.asyncio
+async def test_start_generation_forwards_ollama_host_override(tmp_path, monkeypatch):
+    """A remote agent's ollama_host is forwarded through to the producer so
+    chat calls land on that host instead of the local Ollama."""
+    db_path = tmp_path / "chats.db"
+    conv_id = _setup_chat(db_path)
+    calls = _capture_single_producer(monkeypatch)
+
+    with open_connection(db_path) as db:
+        state = await generation.start_generation(
+            client=None, db=db,
+            conversation_id=conv_id, model="agent-model",
+            history=queries.list_messages(db, conv_id),
+            on_complete="append",
+            system_prompt_override="be remote",
+            tool_allowlist=frozenset(),
+            think=False,
+            ollama_host="http://host1:11434",
+        )
+        await state.task
+
+    assert calls["count"] == 1
+    assert calls["last_kwargs"]["ollama_host"] == "http://host1:11434"
 
 
 @pytest.mark.asyncio

@@ -93,3 +93,37 @@ def github_token() -> str | None:
     """
     raw = os.environ.get("GITHUB_TOKEN")
     return raw or None
+
+
+def remote_ollama_host() -> str | None:
+    """Return the base URL of the remote Ollama instance, or ``None`` if unset.
+
+    Optional second Ollama host (e.g. a VPN-reachable machine).
+    Paired with :func:`remote_ollama_model`: both must be set for the
+    remote agent to register — when either is missing the agent is
+    dropped from the registry rather than registered with a degenerate
+    fallback, matching the gating pattern used by ``query_rag`` and the
+    file tools.
+
+    Returns:
+        The URL string (e.g. ``"http://host1:11434"``) or ``None`` when
+        ``REMOTE_OLLAMA_HOST`` is unset or empty.
+    """
+    raw = os.environ.get("REMOTE_OLLAMA_HOST")
+    return raw or None
+
+
+def remote_ollama_model() -> str | None:
+    """Return the Ollama model tag installed on the remote host, or ``None``.
+
+    Paired with :func:`remote_ollama_host`. The agent pins this tag and
+    never falls back to a local model — if the remote model isn't
+    installed on the remote host, the agent's first turn fails loudly
+    rather than silently routing to the local Ollama.
+
+    Returns:
+        The model tag (e.g. ``"llama3.1:70b"``) or ``None`` when
+        ``REMOTE_OLLAMA_MODEL`` is unset or empty.
+    """
+    raw = os.environ.get("REMOTE_OLLAMA_MODEL")
+    return raw or None

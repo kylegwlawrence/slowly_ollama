@@ -60,6 +60,30 @@ class OllamaProtocolError(Exception):
 
 
 
+def _url(path: str, host: str | None = None) -> str:
+    """Build the URL passed to the shared httpx client.
+
+    When ``host`` is None the path is returned unchanged — httpx merges
+    it with the client's ``base_url`` (the local ``OLLAMA_HOST``). When
+    ``host`` is set, an absolute URL is built that overrides ``base_url``
+    on a per-call basis, so a single shared client can target the local
+    Ollama for most operations and a remote one for agent turns.
+
+    Args:
+        path: The Ollama API path, leading slash included (e.g.
+            ``"/api/chat"``).
+        host: Optional override base URL (e.g. ``"http://host1:11434"``).
+            ``None`` falls through to the client's ``base_url``.
+
+    Returns:
+        Either ``path`` unchanged or ``f"{host}{path}"`` with any
+        trailing slash on ``host`` stripped.
+    """
+    if host is None:
+        return path
+    return f"{host.rstrip('/')}{path}"
+
+
 @dataclass(frozen=True)
 class ChatChunk:
     """One streamed chunk of an assistant response.
@@ -252,7 +276,7 @@ async def list_tool_capable_models(client: httpx.AsyncClient) -> list[str]:
 
 
 async def model_supports_tools(
-    client: httpx.AsyncClient, name: str
+    client: httpx.AsyncClient, name: str, host: str | None = None
 ) -> bool:
     """Best-effort check used to gate the ``tools=`` payload on a chat call.
 
@@ -266,12 +290,36 @@ async def model_supports_tools(
     Args:
         client: An ``httpx.AsyncClient`` pointed at the Ollama host.
         name: The model identifier to check (e.g. ``"llama3.1:8b"``).
+        host: When set, probe this remote host with a single ``/api/show``
+            instead of consulting the local capability cache. The cache
+            is per-process and host-agnostic; mixing remote and local
+            entries would corrupt it. ``None`` keeps the existing
+            cache-warmed local path.
 
     Returns:
         True if the cache lists ``name`` as tool-capable. False if it
-        doesn't, OR if /api/tags failed (we'd rather skip ``tools=``
+        doesn't, OR if the probe failed (we'd rather skip ``tools=``
         and degrade to plain chat than risk a 400).
     """
+    if host is not None:
+        # Direct one-shot probe against the remote host. The cache stays
+        # local-only — remote callers each pay one /api/show round-trip,
+        # which is the same cost the local path pays on a cache miss.
+        try:
+            resp = await client.post(
+                _url("/api/show", host), json={"model": name}
+            )
+            resp.raise_for_status()
+            caps = resp.json().get("capabilities") or []
+            return "completion" in caps and "tools" in caps
+        except (
+            httpx.HTTPError,
+            httpx.InvalidURL,
+            ValueError,
+            KeyError,
+            TypeError,
+        ):
+            return False
     try:
         return name in await list_tool_capable_models(client)
     except (OllamaUnavailable, OllamaProtocolError):
@@ -397,6 +445,7 @@ async def stream_chat(
     temperature: float = 0.8,
     think: bool | None = None,
     num_ctx: int | None = None,
+    host: str | None = None,
 ) -> AsyncIterator[ChatChunk]:
     """Stream a chat completion from Ollama, yielding chunks as they arrive.
 
@@ -444,7 +493,7 @@ async def stream_chat(
         payload["think"] = think
     try:
         async with client.stream(
-            "POST", "/api/chat", json=payload
+            "POST", _url("/api/chat", host), json=payload
         ) as response:
             response.raise_for_status()
             # Ollama emits newline-delimited JSON (NDJSON): one complete
@@ -494,6 +543,7 @@ async def maybe_tool_call(
     temperature: float = 0.8,
     think: bool | None = None,
     num_ctx: int | None = None,
+    host: str | None = None,
 ) -> tuple[list[dict], str]:
     """Single non-streaming /api/chat to detect tool calls.
 
@@ -558,7 +608,7 @@ async def maybe_tool_call(
         payload["think"] = think
 
     try:
-        response = await client.post("/api/chat", json=payload)
+        response = await client.post(_url("/api/chat", host), json=payload)
         response.raise_for_status()
     except (httpx.HTTPError, httpx.InvalidURL) as e:
         raise OllamaUnavailable(f"Ollama request failed: {e}") from e
@@ -596,6 +646,7 @@ async def summarize_conversation(
     history: list[dict[str, str]],
     *,
     num_ctx: int | None = None,
+    host: str | None = None,
 ) -> str:
     """Ask ``model`` to summarize ``history`` into a compact briefing.
 
@@ -670,7 +721,7 @@ async def summarize_conversation(
         # title call. The default 300s read timeout on the shared client
         # would also work; the explicit value documents intent.
         response = await client.post(
-            "/api/chat", json=payload, timeout=120.0
+            _url("/api/chat", host), json=payload, timeout=120.0
         )
         response.raise_for_status()
     except (httpx.HTTPError, httpx.InvalidURL) as e:
