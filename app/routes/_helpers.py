@@ -195,10 +195,10 @@ def _agent_overrides(conversation: queries.Conversation) -> dict:
     """Resolve a conversation's active agent into ``start_generation`` kwargs.
 
     Returns the effective ``model`` plus ``system_prompt_override`` /
-    ``tool_allowlist`` / ``think``. For Normal chat (no agent, or an
-    unknown/removed agent name) this is the chat's pinned model with no
-    overrides and ``think=None`` (omit the flag) — i.e. today's plain-chat
-    behavior.
+    ``tool_allowlist`` / ``think`` / ``ollama_host``. For Normal chat (no
+    agent, or an unknown/removed agent name) this is the chat's pinned
+    model with no overrides, ``think=None`` (omit the flag), and
+    ``ollama_host=None`` (local) — i.e. today's plain-chat behavior.
     """
     spec = get_agent(conversation.active_agent)
     if spec is None:
@@ -207,12 +207,14 @@ def _agent_overrides(conversation: queries.Conversation) -> dict:
             "system_prompt_override": None,
             "tool_allowlist": None,
             "think": None,
+            "ollama_host": None,
         }
     return {
         "model": spec.model,
         "system_prompt_override": spec.system_prompt,
         "tool_allowlist": spec.tools,
         "think": spec.think,
+        "ollama_host": spec.ollama_host,
     }
 
 

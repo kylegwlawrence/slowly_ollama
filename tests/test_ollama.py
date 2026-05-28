@@ -1070,3 +1070,154 @@ async def test_unload_model_raises_unavailable_on_connect_error() -> None:
     async with _client_with(handler) as client:
         with pytest.raises(OllamaUnavailable):
             await unload_model(client, "llama3")
+
+
+# ---------------------------------------------------------------------------
+# host= override (remote-agent routing)
+# ---------------------------------------------------------------------------
+# When a function is called with host="http://pop-os:11434", the outgoing
+# request must hit that host instead of the client's base_url. The shared
+# client still has base_url=http://test from _client_with(); the host=
+# kwarg builds an absolute URL that overrides it on a per-call basis.
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_host_override_targets_remote_url() -> None:
+    """`host=` makes the streaming POST land on the remote URL."""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(
+            200,
+            content=(
+                b'{"message":{"content":"hi"},"done":false}\n'
+                b'{"message":{"content":""},"done":true}\n'
+            ),
+        )
+
+    async with _client_with(handler) as client:
+        async for _ in stream_chat(
+            client, "m", [{"role": "user", "content": "hi"}],
+            host="http://pop-os:11434",
+        ):
+            pass
+
+    assert seen == ["http://pop-os:11434/api/chat"]
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_without_host_uses_client_base_url() -> None:
+    """Default behavior (host=None) still routes through the client's base_url."""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(
+            200,
+            content=(
+                b'{"message":{"content":""},"done":true}\n'
+            ),
+        )
+
+    async with _client_with(handler) as client:
+        async for _ in stream_chat(
+            client, "m", [{"role": "user", "content": "hi"}],
+        ):
+            pass
+
+    assert seen == ["http://test/api/chat"]
+
+
+@pytest.mark.asyncio
+async def test_maybe_tool_call_host_override_targets_remote_url() -> None:
+    """`host=` makes the non-streaming probe land on the remote URL."""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(
+            200, json={"message": {"content": "", "tool_calls": []}}
+        )
+
+    async with _client_with(handler) as client:
+        await maybe_tool_call(
+            client, "m", [{"role": "user", "content": "hi"}],
+            tools=None, host="http://pop-os:11434",
+        )
+
+    assert seen == ["http://pop-os:11434/api/chat"]
+
+
+@pytest.mark.asyncio
+async def test_summarize_conversation_host_override_targets_remote_url() -> None:
+    """`host=` makes compaction's POST land on the remote URL."""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(
+            200, json={"message": {"content": "summary"}}
+        )
+
+    async with _client_with(handler) as client:
+        out = await summarize_conversation(
+            client, "m", [{"role": "user", "content": "x"}],
+            host="http://pop-os:11434",
+        )
+
+    assert seen == ["http://pop-os:11434/api/chat"]
+    assert out == "summary"
+
+
+@pytest.mark.asyncio
+async def test_model_supports_tools_host_does_one_show_probe() -> None:
+    """`host=` triggers a single /api/show against the remote (no cache)."""
+    seen: list[tuple[str, dict]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content or b"{}")
+        seen.append((str(request.url), body))
+        return httpx.Response(
+            200,
+            json={"capabilities": ["completion", "tools"]},
+        )
+
+    async with _client_with(handler) as client:
+        ok = await model_supports_tools(
+            client, "llama3.1:70b", host="http://pop-os:11434"
+        )
+
+    assert ok is True
+    assert seen == [
+        ("http://pop-os:11434/api/show", {"model": "llama3.1:70b"})
+    ]
+
+
+@pytest.mark.asyncio
+async def test_model_supports_tools_host_returns_false_on_failure() -> None:
+    """A failing /api/show probe against the remote degrades to False."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"error": "boom"})
+
+    async with _client_with(handler) as client:
+        ok = await model_supports_tools(
+            client, "m", host="http://pop-os:11434"
+        )
+    assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_model_supports_tools_host_false_when_no_completion_cap() -> None:
+    """Even when /api/show advertises 'tools', missing 'completion' → False
+    (mirrors the local cache filter — embed-only models 400 on /api/chat)."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"capabilities": ["embedding", "tools"]}
+        )
+
+    async with _client_with(handler) as client:
+        ok = await model_supports_tools(
+            client, "m", host="http://pop-os:11434"
+        )
+    assert ok is False

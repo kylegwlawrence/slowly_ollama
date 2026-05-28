@@ -724,12 +724,21 @@ async def compact_chat_endpoint(
     # still gets the benefit when summarizing a long history.
     num_ctx = _resolve_num_ctx(db, conversation_id)
 
+    # When an agent is active on this chat, compact through the agent's
+    # model + host so the summarizer reuses whatever Ollama instance just
+    # streamed the conversation (warm KV cache there, not on the local
+    # Ollama). For Normal chats this collapses to today's behavior:
+    # conversation.model + host=None.
+    spec = get_agent(conversation.active_agent)
+    summarize_model = spec.model if spec else conversation.model
+    summarize_host = spec.ollama_host if spec else None
     try:
         summary_text = await ollama.summarize_conversation(
             client,
-            conversation.model,
+            summarize_model,
             generation.build_history_payload(to_summarize),
             num_ctx=num_ctx,
+            host=summarize_host,
         )
     except OllamaUnavailable as e:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(e))
