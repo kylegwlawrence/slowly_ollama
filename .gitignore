@@ -34,9 +34,9 @@ __pycache__/
 # but track the shared templates folder so the curriculum scaffolding is
 # version-controlled.
 /agent_workspace/*
-!/agent_workspace/_templates/
-!/agent_workspace/_templates/**
+!/agent_workspace/_education_course_templates/
+!/agent_workspace/_education_course_templates/**
 # AUDIT.md is specific to the physics-lessons corpus — keep it on disk but untracked.
-/agent_workspace/_templates/AUDIT.md
+/agent_workspace/_education_course_templates/AUDIT.md
 ext_plan.md
 /docs/
