@@ -1,21 +1,25 @@
 #!/usr/bin/env python3
 """
-Copy agent workspace to Raspberry Pi via rsync.
+Copy agent workspace to Raspberry Pi via rsync with timestamped backups.
+
+Each run creates a new timestamped folder within dest/YYYYMMDD_HHMMSS/
+to preserve old versions.
 
 Usage:
-    python copy_agent_workspace_to_pi.py [source] [pihost] [dest]
+    python app/copy_agent_workspace_to_pi.py [source] [pihost] [dest]
 
 Defaults are configured in .env (COPY_SOURCE, COPY_PIHOST, COPY_DEST)
 
 Example:
-    python copy_agent_workspace_to_pi.py  # uses defaults from .env
-    python copy_agent_workspace_to_pi.py agent_workspace/physics-lessons raspberrypi6 /home/user/agent_workspaces/physics-lessons
+    python app/copy_agent_workspace_to_pi.py  # uses defaults from .env
+    # Creates: /home/user/agent_workspaces/20260527_143022/
 """
 
 import argparse
 import os
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -132,11 +136,15 @@ Examples:
         print(f"ERROR: Source directory does not exist: {args.source}")
         sys.exit(1)
 
+    # Create timestamped destination path
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamped_dest = f"{args.dest}/{timestamp}"
+
     print("=" * 50)
     print("Copying workspace to Raspberry Pi")
     print("=" * 50)
     print(f"Source: {args.source}")
-    print(f"Destination: {args.pihost}:{args.dest}")
+    print(f"Destination: {args.pihost}:{timestamped_dest}")
     print("=" * 50)
 
     # Test SSH connection
@@ -144,18 +152,18 @@ Examples:
         sys.exit(1)
 
     # Create destination directory
-    create_dest_directory(args.pihost, args.dest)
+    create_dest_directory(args.pihost, timestamped_dest)
 
     # Rsync files
-    rsync_files(args.source, args.pihost, args.dest)
+    rsync_files(args.source, args.pihost, timestamped_dest)
 
     print("=" * 50)
     print("✓ Copy complete!")
     print("=" * 50)
-    print(f"Files are now at: {args.pihost}:{args.dest}")
+    print(f"Files are now at: {args.pihost}:{timestamped_dest}")
     print()
     print("To verify, run:")
-    print(f"  ssh {args.pihost} 'ls -la {args.dest}'")
+    print(f"  ssh {args.pihost} 'ls -la {timestamped_dest}'")
 
 
 if __name__ == "__main__":
