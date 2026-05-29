@@ -1,9 +1,10 @@
 # Unit 1: Foundations of Mechanics
 
-> **Worked example of [`UNIT_TEMPLATE.md`](UNIT_TEMPLATE.md).** Subject: undergraduate physics. Use it as a target shape when filling a unit outline. Counts match the template (6 outcomes, 8 concepts, 12 glossary terms, 4 connections, 3 going-deeper items). See [`STYLE_GUIDE.md`](STYLE_GUIDE.md) for conventions.
+> **Worked example of [`UNIT_TEMPLATE.md`](UNIT_TEMPLATE.md).** Subject: undergraduate physics. Use it as a target shape when filling a unit outline. Counts match the template (6 outcomes, 8 concepts, 12 glossary terms, 5 resources, 4 connections, 3 going-deeper items). See [`STYLE_GUIDE.md`](STYLE_GUIDE.md) for conventions.
 
 ## Metadata
 
+- **Parent course**: [Physics: Mechanics to the Quantum Frontier](COURSE_EXAMPLE.md)
 - **Duration**: 3 weeks
 - **Estimated effort**: ~6–9 hours/week (3 sessions × 2–3 hours)
 - **Prerequisites**: Basic algebra (solving for an unknown, manipulating equations); reading and sketching linear and parabolic graphs.
@@ -43,9 +44,9 @@ High-level ideas the unit covers. No daily detail (that belongs in week files).
 
 | Week | File | Focus | Key Skills |
 |------|------|-------|------------|
-| 1 | [`week1_kinematics.md`](../week1_kinematics.md) | One- and two-dimensional motion under constant acceleration | Kinematic equations; free-fall; projectile motion; reading position-time and velocity-time graphs |
-| 2 | [`week2_forces.md`](../week2_forces.md) | Newton's laws and force analysis | Free-body diagrams; F = ma; friction; action-reaction pairs |
-| 3 | [`week3_energy.md`](../week3_energy.md) | Work, energy, and conservation | Computing W, KE, PE; conservation as a shortcut; distinguishing conservative vs. non-conservative forces |
+| W1 | [`week1_kinematics.md`](../week1_kinematics.md) | One- and two-dimensional motion under constant acceleration | Kinematic equations; free-fall; projectile motion; reading position-time and velocity-time graphs |
+| W2 | [`week2_forces.md`](../week2_forces.md) | Newton's laws and force analysis | Free-body diagrams; F = ma; friction; action-reaction pairs |
+| W3 | [`week3_energy.md`](../week3_energy.md) | Work, energy, and conservation | Computing W, KE, PE; conservation as a shortcut; distinguishing conservative vs. non-conservative forces |
 
 ## Glossary
 
