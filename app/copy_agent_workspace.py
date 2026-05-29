@@ -1,31 +1,47 @@
 #!/usr/bin/env python3
 """
-Copy agent workspace between local machine and a remote host via rsync.
+Restore the agent workspaces and/or the chats database from a remote mirror.
 
-Direction is inferred from which arg contains a colon (host:/path format):
-  - Remote dest  → creates a timestamped backup folder on the remote host
-  - Remote source → finds the latest timestamped folder and syncs it locally
+**Pull-only by design.** Pushing is the running app's job: ``app/backup.py``
+mirrors both the database and the workspaces to the remote on every chat turn,
+and it ships a *transactionally-consistent* copy of the DB via the SQLite
+backup API. Pushing the live ``chats.db`` by hand could ship a torn WAL state,
+and a manual workspace push would recreate the stray timestamped folders this
+script used to leave behind — so this tool never writes to the remote. It only
+reads the flat always-latest mirror back down.
+
+Modes:
+
+  * **Workspaces (default).** Pull the workspace tree REMOTE_PATH → FILE_TOOL_ROOT.
+  * **Database (`--db`).** Pull ``chats.db`` REMOTE_DB_PATH → DB_PATH (and clear
+    any stale local ``-wal``/``-shm`` sidecars that belong to the old DB).
+  * **Everything (`--all`).** Pull both — the seed-a-new-machine case.
+
+Add ``--snapshot`` to restore from the latest dated snapshot under
+``<remote_dir>_snapshots/<timestamp>/`` instead of the live mirror.
 
 Usage:
-    python app/copy_agent_workspace.py --source <src> --dest <dest>
+    python app/copy_agent_workspace.py                  # restore workspaces
+    python app/copy_agent_workspace.py --db [--snapshot]
+    python app/copy_agent_workspace.py --all [--snapshot]
 
-    Remote format : host:/path/to/dir
-    Local format  : path/to/dir
+    Remote format : host:/path/to/dir   Local format : path/to/dir
 
-Defaults are configured in .env (COPY_SOURCE, COPY_PIHOST, COPY_DEST).
-Default behavior (no flags) copies local agent_workspace → remote host.
+Defaults come from .env: REMOTE_PATH / FILE_TOOL_ROOT (workspaces) and
+REMOTE_DB_PATH / DB_PATH (database). Override the workspace/DB endpoints with
+``--source`` (remote) and ``--dest`` (local); ``--all`` always uses .env.
 
 Examples:
-    python app/copy_agent_workspace.py
-    python app/copy_agent_workspace.py --dest host:/path/to/agent_workspaces
-    python app/copy_agent_workspace.py --source pop-os:/home/documents/projects/agent_workspaces --dest agent_workspace
+    python app/copy_agent_workspace.py                  # latest workspace mirror
+    python app/copy_agent_workspace.py --snapshot       # latest dated workspace snapshot
+    python app/copy_agent_workspace.py --db             # latest DB mirror
+    python app/copy_agent_workspace.py --all            # restore everything
 """
 
 import argparse
 import os
 import subprocess
 import sys
-from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -80,8 +96,12 @@ def test_ssh_connection(host: str) -> bool:
 
 
 def find_latest_remote_folder(host: str, remote_base: str) -> str:
-    """Return the full path of the most recent YYYYMMDD_HHMMSS folder on host."""
-    print("Finding latest backup on remote...")
+    """Return the full path of the most recent YYYYMMDD_HHMMSS folder on host.
+
+    Used only by ``--snapshot``: ``app/backup.py`` drops dated snapshots into
+    ``<dir>_snapshots/<timestamp>/``, and this finds the newest one.
+    """
+    print("Finding latest snapshot on remote...")
     cmd = ["ssh", host, f"ls -t {remote_base} | grep -E '^[0-9]{{8}}_[0-9]{{6}}$' | head -1"]
     result = run_command(cmd, "List remote folders")
 
@@ -93,85 +113,104 @@ def find_latest_remote_folder(host: str, remote_base: str) -> str:
     return f"{remote_base}/{latest}"
 
 
-def copy_to_remote(local_source: str, host: str, remote_base: str, workspace: str | None = None) -> None:
-    """Rsync local_source into a new timestamped folder on host.
+def pull_database(host: str, remote_dir: str, local_dest: str, snapshot: bool = False) -> None:
+    """Rsync the mirrored ``chats.db`` from the remote into ``local_dest``.
+
+    The remote file is the consistent copy the app pushed via the SQLite backup
+    API, so it is a safe standalone database with no ``-wal``/``-shm`` sidecars.
 
     Args:
-        local_source: Local base directory.
         host: Remote hostname.
-        remote_base: Base path on remote where timestamped folders are created.
-        workspace: Optional subfolder to copy instead of the full workspace.
+        remote_dir: Remote directory holding ``chats.db`` (i.e. REMOTE_DB_PATH).
+        local_dest: Local path to write ``chats.db`` to (i.e. DB_PATH).
+        snapshot: When True, pull from the latest dated snapshot under
+            ``<remote_dir>_snapshots/<timestamp>/`` instead of the live mirror.
     """
-    src_path = Path(local_source) / workspace if workspace else Path(local_source)
-    if not src_path.exists():
-        print(f"ERROR: Source directory does not exist: {src_path}")
-        sys.exit(1)
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    remote_dest = f"{remote_base}/{timestamp}"
-    if workspace:
-        remote_dest = f"{remote_dest}/{workspace}"
+    dest_path = Path(local_dest).expanduser()
+    base = remote_dir.rstrip("/")
 
     print("=" * 50)
-    print("Copying workspace to remote host")
-    print("=" * 50)
-    print(f"Source : {src_path}")
-    print(f"Dest   : {host}:{remote_dest}")
+    print("Restoring database from remote mirror")
     print("=" * 50)
 
     if not test_ssh_connection(host):
         sys.exit(1)
 
-    print("Creating destination directory...")
-    run_command(["ssh", host, f"mkdir -p {remote_dest}"], "Directory creation")
+    if snapshot:
+        latest = find_latest_remote_folder(host, f"{base}_snapshots")
+        remote_db = f"{latest}/chats.db"
+    else:
+        remote_db = f"{base}/chats.db"
 
-    print("Copying files...")
-    src = str(src_path) if str(src_path).endswith("/") else f"{src_path}/"
+    print(f"Remote : {host}:{remote_db}")
+    print(f"Local  : {dest_path}")
+    print("WARNING: stop the app (uvicorn) before restoring — overwriting a")
+    print("         live database can corrupt it.")
+    print("=" * 50)
+
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    print("Copying database...")
     result = subprocess.run(
-        ["rsync", "-avz", "--progress", *RSYNC_EXCLUDES, src, f"{host}:{remote_dest}/"],
+        ["rsync", "-avz", "--progress", *RSYNC_EXCLUDES, f"{host}:{remote_db}", str(dest_path)],
         text=True,
     )
     if result.returncode != 0:
         print(f"ERROR: rsync failed with exit code {result.returncode}")
         sys.exit(1)
 
+    # The pulled file is a standalone consistent copy. Any leftover sidecars
+    # belong to the OLD local database; pairing them with the fresh file would
+    # corrupt it, so clear them.
+    for suffix in ("-wal", "-shm"):
+        sidecar = dest_path.with_name(dest_path.name + suffix)
+        if sidecar.exists():
+            sidecar.unlink()
+            print(f"Removed stale sidecar: {sidecar}")
+
     print("=" * 50)
-    print("✓ Copy complete!")
+    print("✓ Restore complete!")
     print("=" * 50)
-    print(f"Files are now at: {host}:{remote_dest}")
-    print(f"\nTo verify: ssh {host} 'ls -la {remote_dest}'")
+    print(f"Database is now at: {dest_path}")
+    print("Restart the app: uvicorn main:app --reload")
 
 
-def copy_from_remote(host: str, remote_base: str, local_dest: str, workspace: str | None = None) -> None:
-    """Rsync the latest timestamped folder from host into local_dest.
+def pull_workspaces(host: str, remote_dir: str, local_dest: str, snapshot: bool = False) -> None:
+    """Rsync the workspace tree from the remote mirror into ``local_dest``.
+
+    Pulls the flat always-latest mirror that ``app/backup.py`` maintains. The
+    sync is additive (no ``--delete``), so local-only files survive.
 
     Args:
         host: Remote hostname.
-        remote_base: Base path on remote containing timestamped folders.
-        local_dest: Local base directory to sync into.
-        workspace: Optional subfolder to pull instead of the full workspace.
+        remote_dir: Remote workspace dir (i.e. REMOTE_PATH).
+        local_dest: Local workspace root (i.e. FILE_TOOL_ROOT).
+        snapshot: When True, pull from the latest dated snapshot under
+            ``<remote_dir>_snapshots/<timestamp>/`` instead of the live mirror.
     """
-    dest_path = Path(local_dest) / workspace if workspace else Path(local_dest)
+    dest_path = Path(local_dest).expanduser()
+    base = remote_dir.rstrip("/")
+
+    print("=" * 50)
+    print("Restoring workspaces from remote mirror")
+    print("=" * 50)
+
+    if not test_ssh_connection(host):
+        sys.exit(1)
+
+    if snapshot:
+        latest = find_latest_remote_folder(host, f"{base}_snapshots")
+        remote_src = f"{latest}/"
+    else:
+        remote_src = f"{base}/"
+
+    print(f"Remote : {host}:{remote_src}")
+    print(f"Local  : {dest_path}")
+    print("=" * 50)
+
     dest_path.mkdir(parents=True, exist_ok=True)
-
-    print("=" * 50)
-    print("Copying workspace from remote host")
-    print("=" * 50)
-    print(f"Remote base : {host}:{remote_base}")
-    print(f"Local dest  : {dest_path}")
-    print("=" * 50)
-
-    if not test_ssh_connection(host):
-        sys.exit(1)
-
-    latest = find_latest_remote_folder(host, remote_base)
-    remote_src = f"{latest}/{workspace}" if workspace else latest
-    print(f"Latest backup: {host}:{remote_src}")
-
-    print("Copying files...")
-    remote_src_slash = remote_src if remote_src.endswith("/") else f"{remote_src}/"
+    print("Copying workspaces...")
     result = subprocess.run(
-        ["rsync", "-avz", "--progress", *RSYNC_EXCLUDES, f"{host}:{remote_src_slash}", f"{dest_path}/"],
+        ["rsync", "-avz", "--progress", *RSYNC_EXCLUDES, f"{host}:{remote_src}", f"{dest_path}/"],
         text=True,
     )
     if result.returncode != 0:
@@ -179,74 +218,142 @@ def copy_from_remote(host: str, remote_base: str, local_dest: str, workspace: st
         sys.exit(1)
 
     print("=" * 50)
-    print("✓ Copy complete!")
+    print("✓ Workspace restore complete!")
     print("=" * 50)
-    print(f"Files are now at: {dest_path}")
-    print(f"\nTo verify: ls -la {dest_path}")
+    print(f"Workspaces are now at: {dest_path}")
+
+
+def _resolve_pull(source: str | None, dest: str | None, env_source: str, default_dest: str,
+                  label: str) -> tuple[str, str, str]:
+    """Resolve + validate a pull's remote source and local dest.
+
+    Args:
+        source: Explicit ``--source`` (remote host:/path), or None to use env.
+        dest: Explicit ``--dest`` (local path), or None to use the default.
+        env_source: Name of the env var holding the remote default.
+        default_dest: Resolved local destination default.
+        label: Mode name for error messages (e.g. ``"--db"``).
+
+    Returns:
+        ``(host, remote_dir, local_dest)`` ready to hand to a ``pull_*`` helper.
+    """
+    source = source or os.getenv(env_source)
+    dest = dest or default_dest
+
+    if not source:
+        print(f"ERROR: {label} needs a remote source (set {env_source} or pass --source host:/path)")
+        sys.exit(1)
+    remote = parse_remote(source)
+    if remote is None:
+        print(f"ERROR: {label} --source must be a remote spec (format: host:/path)")
+        sys.exit(1)
+    if parse_remote(dest) is not None:
+        print(f"ERROR: {label} --dest must be a LOCAL path (pull-only)")
+        sys.exit(1)
+
+    host, remote_dir = remote
+    return host, remote_dir, dest
+
+
+def _run_db_pull(source: str | None, dest: str | None, snapshot: bool) -> None:
+    """Validate args for ``--db`` mode and pull the database."""
+    host, remote_dir, dest = _resolve_pull(
+        source, dest, "REMOTE_DB_PATH", os.getenv("DB_PATH", "./data/chats.db"), "--db",
+    )
+    pull_database(host, remote_dir, dest, snapshot=snapshot)
+
+
+def _run_ws_pull(source: str | None, dest: str | None, snapshot: bool) -> None:
+    """Validate args for the default workspace mode and pull the workspaces."""
+    default_dest = os.getenv("FILE_TOOL_ROOT") or os.getenv("LOCAL_PATH", "agent_workspace")
+    host, remote_dir, dest = _resolve_pull(
+        source, dest, "REMOTE_PATH", default_dest, "workspace pull",
+    )
+    pull_workspaces(host, remote_dir, dest, snapshot=snapshot)
+
+
+def _run_all_pull(snapshot: bool) -> None:
+    """Pull BOTH the database and the workspaces from their remote mirrors.
+
+    Uses the .env config directly (REMOTE_DB_PATH / DB_PATH and REMOTE_PATH /
+    FILE_TOOL_ROOT) rather than ``--source``/``--dest``, since there are two of
+    each.
+
+    Args:
+        snapshot: Restore both halves from their latest dated snapshot instead
+            of the live mirror.
+    """
+    db_host, db_dir, db_dest = _resolve_pull(
+        None, None, "REMOTE_DB_PATH", os.getenv("DB_PATH", "./data/chats.db"), "--all",
+    )
+    ws_default = os.getenv("FILE_TOOL_ROOT") or os.getenv("LOCAL_PATH", "agent_workspace")
+    ws_host, ws_dir, ws_dest = _resolve_pull(
+        None, None, "REMOTE_PATH", ws_default, "--all",
+    )
+    pull_database(db_host, db_dir, db_dest, snapshot=snapshot)
+    pull_workspaces(ws_host, ws_dir, ws_dest, snapshot=snapshot)
 
 
 def main():
-    default_local = os.getenv("LOCAL_PATH", "agent_workspace")
-    default_dest = os.getenv("REMOTE_PATH", "host:/path/to/agent_workspaces")
-
     parser = argparse.ArgumentParser(
-        description="Copy agent workspace between local machine and a remote host",
+        description="Restore agent workspaces and/or the chats DB from a remote mirror (pull-only)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=f"""
+        epilog="""
 Remote format: host:/path/to/dir   Local format: path/to/dir
 
 Examples:
   %(prog)s
-      # local → remote using .env defaults
+      # restore workspaces: REMOTE_PATH → FILE_TOOL_ROOT
 
-  %(prog)s --dest pop-os:/home/documents/projects/agent_workspaces
-      # local agent_workspace → pop-os
+  %(prog)s --snapshot
+      # restore workspaces from the latest dated snapshot
 
-  %(prog)s --source pop-os:/home/documents/projects/agent_workspaces --dest agent_workspace
-      # latest backup on pop-os → local agent_workspace
+  %(prog)s --db
+      # restore database: REMOTE_DB_PATH → DB_PATH
 
-  %(prog)s --dest pop-os:/home/documents/projects/agent_workspaces --workspace physics-lessons
-      # local agent_workspace/physics-lessons → pop-os (timestamped)
-
-  %(prog)s --source pop-os:/home/documents/projects/agent_workspaces --dest agent_workspace --workspace physics-lessons
-      # physics-lessons from latest pop-os backup → local agent_workspace/physics-lessons
+  %(prog)s --all
+      # restore BOTH: DB → DB_PATH and workspaces → FILE_TOOL_ROOT
         """
     )
 
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--db",
+        action="store_true",
+        help="Pull the SQLite database from the remote mirror to local DB_PATH.",
+    )
+    mode.add_argument(
+        "--all",
+        action="store_true",
+        help="Pull BOTH the database and workspaces (uses REMOTE_DB_PATH/DB_PATH and "
+             "REMOTE_PATH/FILE_TOOL_ROOT from .env).",
+    )
     parser.add_argument(
         "--source", "-s",
-        default=default_local,
-        help=f"Source (local path or host:/path). Default: LOCAL_PATH or {default_local}",
+        default=None,
+        help="Remote source override (host:/path). Default: REMOTE_PATH (workspaces) "
+             "or REMOTE_DB_PATH (--db). Ignored by --all.",
     )
     parser.add_argument(
         "--dest", "-d",
-        default=default_dest,
-        help=f"Destination (local path or host:/path). Default: REMOTE_PATH or {default_dest}",
+        default=None,
+        help="Local destination override. Default: FILE_TOOL_ROOT (workspaces) "
+             "or DB_PATH (--db). Ignored by --all.",
     )
     parser.add_argument(
-        "--workspace", "-w",
-        default=None,
-        help="Subfolder to copy instead of the full workspace (e.g. physics-lessons)",
+        "--snapshot",
+        action="store_true",
+        help="Restore from the latest dated snapshot instead of the live mirror.",
     )
 
     args = parser.parse_args()
 
-    source_remote = parse_remote(args.source)
-    dest_remote = parse_remote(args.dest)
-
-    if source_remote and dest_remote:
-        print("ERROR: both --source and --dest cannot be remote")
-        sys.exit(1)
-    if not source_remote and not dest_remote:
-        print("ERROR: one of --source or --dest must be remote (format: host:/path)")
-        sys.exit(1)
-
-    if dest_remote:
-        host, remote_base = dest_remote
-        copy_to_remote(args.source, host, remote_base, workspace=args.workspace)
+    if args.all:
+        _run_all_pull(args.snapshot)
+    elif args.db:
+        _run_db_pull(args.source, args.dest, args.snapshot)
     else:
-        host, remote_base = source_remote
-        copy_from_remote(host, remote_base, args.dest, workspace=args.workspace)
+        _run_ws_pull(args.source, args.dest, args.snapshot)
 
 
 if __name__ == "__main__":

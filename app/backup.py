@@ -10,8 +10,7 @@ Design (decisions locked with the user):
 
   * **Mirror semantics.** Each push overwrites a single canonical copy on
     the remote (``chats.db`` in one dir, the workspace tree in another),
-    so the remote is always "the latest". Unlike the standalone
-    ``copy_agent_workspace.py`` script this does NOT create a new
+    so the remote is always "the latest". It does NOT create a new
     timestamped folder per run — that would pile up thousands of folders
     when triggered per-message. A cheap server-side snapshot is taken at
     most once a day for safety (see ``_maybe_snapshot``).
@@ -28,8 +27,9 @@ Design (decisions locked with the user):
     we first produce a consistent copy via SQLite's online backup API into
     a temp file and push *that* — never the live sidecar files.
 
-Restore/pull is intentionally out of scope here (push only); use
-``copy_agent_workspace.py --source <host:/path>`` to seed a fresh machine.
+Restore/pull is intentionally out of scope here (push only); use the pull-only
+``app/copy_agent_workspace.py`` (e.g. ``--all``) to seed a fresh machine — see
+``RESTORE.md``.
 """
 
 import asyncio
