@@ -267,9 +267,9 @@ def test_compact_payload_excludes_archived_from_summarizer_input(
     msgs = captured[0]["messages"]
     assert msgs[-1]["role"] == "user"
     corpus = msgs[:-1]
-    # 10 prior rows; KEEP_RECENT=4 keeps the trailing 4 in the chat (NOT
-    # in the corpus) so the corpus contains the 6 oldest rows.
-    assert len(corpus) == 6
+    # 10 prior rows; KEEP_RECENT=2 keeps the trailing 2 in the chat (NOT
+    # in the corpus) so the corpus contains the 8 oldest rows.
+    assert len(corpus) == 8
 
 
 # ---------------------------------------------------------------------------
