@@ -81,3 +81,14 @@ def _agent_host_label(spec):
 
 
 templates.env.filters["agent_host_label"] = _agent_host_label
+
+
+# Phase 21: expose the backup feature-gate + status to templates as globals so
+# the backup-status chip can self-gate and self-seed without every chat-panel
+# render site threading two more context vars. `app.backup` imports only
+# config / connection / queries (never app.templates), so this is cycle-safe.
+from app import backup as _backup  # noqa: E402 — after the instance is built
+from app import config as _config  # noqa: E402
+
+templates.env.globals["backups_enabled"] = _config.backups_enabled
+templates.env.globals["backup_status"] = _backup.backup_status

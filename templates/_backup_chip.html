@@ -1,0 +1,49 @@
+{# Phase 21: app-wide remote-backup status chip (lives in the chat-panel
+   header). Hidden entirely when backups aren't configured. While a push is in
+   flight it re-requests itself every ~2s via `hx-trigger="load delay:2s"` +
+   an outerHTML swap; a settled response renders WITHOUT the trigger, so the
+   poll self-stops. States mirror the RAG health chips' tool-chip--* classes.
+
+   Context:
+     oob: bool — when True, add hx-swap-oob="true" so a send response can
+                  replace the in-header chip from an OOB payload.
+   Globals (app/templates.py):
+     backups_enabled() -> bool
+     backup_status() -> (state, changed_at)
+#}
+{% if backups_enabled() %}
+{% set state = backup_status()[0] %}
+{% set _busy = state in ("pending", "pushing") %}
+{% set _class = (
+     "tool-chip--unavailable" if state == "failed"
+     else "tool-chip--on" if state == "ok"
+     else "tool-chip--off"
+   ) %}
+<div id="backup-chip"
+     class="tool-chip backup-chip {{ _class }}"
+     {%- if oob|default(false) %} hx-swap-oob="true"{% endif %}
+     {%- if _busy %}
+     hx-get="/backup/status"
+     hx-trigger="load delay:2s"
+     hx-swap="outerHTML"
+     {%- endif %}
+     title="{{ {
+       'idle': 'Backup idle — no push yet',
+       'pending': 'Backing up to mirror…',
+       'pushing': 'Backing up to mirror…',
+       'ok': 'Backed up to mirror',
+       'offline': 'Mirror unreachable — nothing synced',
+       'failed': 'Backup failed',
+     }[state] }}">
+  <span class="material-symbols-outlined backup-chip__icon{% if _busy %} backup-chip__icon--spin{% endif %}"
+        aria-hidden="true">{{ {
+          'idle': 'cloud',
+          'pending': 'progress_activity',
+          'pushing': 'progress_activity',
+          'ok': 'cloud_done',
+          'offline': 'cloud_off',
+          'failed': 'cloud_off',
+        }[state] }}</span>
+  <span class="tool-chip__label">Backup</span>
+</div>
+{% endif %}

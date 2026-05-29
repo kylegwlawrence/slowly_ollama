@@ -19,6 +19,7 @@ Routes:
     POST   /chats/{id}/rag-servers/{name}    — toggle per-chat RAG server
     PATCH  /chats/{id}/temperature           — set per-chat temperature
     PATCH  /chats/{id}/tool-iteration-cap    — set per-chat tool cap
+    GET    /backup/status                    — remote-backup status chip (phase 21)
 """
 
 from typing import Annotated
@@ -367,7 +368,14 @@ async def send_message_endpoint(
         model_loaded=True,
         oob=True,
     )
-    return HTMLResponse(content=user_html + placeholder_html + indicator_oob)
+    # Phase 21: OOB-swap the backup chip into its now-pending state so it
+    # starts polling /backup/status. request_backup("send") above already set
+    # the status to "pending", so this renders with the self-polling trigger.
+    # No-ops to empty when backups aren't configured (chip stays absent).
+    backup_chip_oob = templates.get_template("_backup_chip.html").render(oob=True)
+    return HTMLResponse(
+        content=user_html + placeholder_html + indicator_oob + backup_chip_oob
+    )
 
 
 @router.get("/chats/{conversation_id}/stream")
@@ -969,3 +977,15 @@ async def set_chat_tool_iteration_cap_endpoint(
     except LookupError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/backup/status", response_class=HTMLResponse)
+def backup_status_endpoint() -> Response:
+    """Render the remote-backup status chip from current process-local state.
+
+    Polled by the chip itself (~every 2s) only while a push is in flight; the
+    fragment stops re-arming its trigger once the backup settles, so the poll
+    self-stops. Cheap: no I/O — the template reads the in-memory status via the
+    ``backups_enabled`` / ``backup_status`` Jinja globals.
+    """
+    return HTMLResponse(templates.get_template("_backup_chip.html").render())
