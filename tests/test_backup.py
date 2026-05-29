@@ -28,10 +28,14 @@ def _reset_backup_state(monkeypatch: pytest.MonkeyPatch):
     """
     backup._pending = False
     backup._task = None
+    backup._status = "idle"
+    backup._status_at = None
     monkeypatch.setattr(backup, "DEBOUNCE_SECONDS", 0)
     yield
     backup._pending = False
     backup._task = None
+    backup._status = "idle"
+    backup._status_at = None
 
 
 def _enable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -509,3 +513,145 @@ def test_write_trigger_predicate_matches_real_write_file(
 
     rejected = write_file("../escape.txt", "nope")
     assert not rejected.startswith("Wrote ")
+
+
+# ---------------------------------------------------------------------------
+# Phase 21: observable status for the UI chip
+# ---------------------------------------------------------------------------
+
+
+def test_backup_status_starts_idle() -> None:
+    """A fresh process reports idle with no timestamp."""
+    state, at = backup.backup_status()
+    assert state == "idle"
+    assert at is None
+
+
+@pytest.mark.asyncio
+async def test_request_backup_sets_pending_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """request_backup flips status to pending synchronously (drives the spinner).
+
+    Asserted before the debounce loop is awaited: the dirty flag and pending
+    status are set on the calling stack, ahead of the push that overwrites them.
+    """
+    _enable(monkeypatch)
+    monkeypatch.setattr(backup, "_run_backup_once", AsyncMock())
+
+    backup.request_backup("send")
+
+    state, at = backup.backup_status()
+    assert state == "pending"
+    assert at is not None
+
+    # Drain the spawned loop so it doesn't leak into the next test.
+    if backup._task is not None:
+        await backup._task
+
+
+def test_request_backup_leaves_status_idle_when_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The disabled guard returns before touching status."""
+    monkeypatch.delenv("REMOTE_DB_PATH", raising=False)
+    monkeypatch.setenv("REMOTE_PATH", "pop-os:/ws")
+
+    backup.request_backup("send")
+
+    assert backup.backup_status()[0] == "idle"
+
+
+@pytest.mark.asyncio
+async def test_run_backup_once_status_ok_when_both_push(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both halves reachable and pushing → status ok (green)."""
+    _enable(monkeypatch)
+    monkeypatch.setattr(backup, "_host_reachable", AsyncMock(return_value=True))
+    monkeypatch.setattr(backup, "_push_database", AsyncMock(return_value=True))
+    monkeypatch.setattr(backup, "_push_workspaces", AsyncMock(return_value=True))
+    monkeypatch.setattr(backup, "_maybe_snapshot", AsyncMock())
+
+    await backup._run_backup_once()
+
+    assert backup.backup_status()[0] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_run_backup_once_status_offline_when_unreachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No host reachable → status offline (grey), not failed."""
+    _enable(monkeypatch)
+    monkeypatch.setattr(backup, "_host_reachable", AsyncMock(return_value=False))
+    monkeypatch.setattr(backup, "_push_database", AsyncMock(return_value=True))
+    monkeypatch.setattr(backup, "_push_workspaces", AsyncMock(return_value=True))
+    monkeypatch.setattr(backup, "_maybe_snapshot", AsyncMock())
+
+    await backup._run_backup_once()
+
+    assert backup.backup_status()[0] == "offline"
+
+
+@pytest.mark.asyncio
+async def test_run_backup_once_status_failed_when_reachable_push_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reachable but a half's push returns False → status failed (red)."""
+    _enable(monkeypatch)
+    monkeypatch.setattr(backup, "_host_reachable", AsyncMock(return_value=True))
+    monkeypatch.setattr(backup, "_push_database", AsyncMock(return_value=True))
+    monkeypatch.setattr(backup, "_push_workspaces", AsyncMock(return_value=False))
+    monkeypatch.setattr(backup, "_maybe_snapshot", AsyncMock())
+
+    await backup._run_backup_once()
+
+    assert backup.backup_status()[0] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_run_backup_once_status_offline_when_remote_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Config cleared between schedule and run → settle to offline, not stranded."""
+    monkeypatch.delenv("REMOTE_DB_PATH", raising=False)
+    monkeypatch.setenv("REMOTE_PATH", "pop-os:/ws")
+    backup._status = "pushing"
+
+    await backup._run_backup_once()
+
+    assert backup.backup_status()[0] == "offline"
+
+
+@pytest.mark.asyncio
+async def test_run_backup_once_status_failed_on_bad_spec(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-host:/path spec → status failed (a real misconfiguration)."""
+    monkeypatch.setenv("REMOTE_PATH", "no-colon-here")
+    monkeypatch.setenv("REMOTE_DB_PATH", "pop-os:/db")
+
+    await backup._run_backup_once()
+
+    assert backup.backup_status()[0] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_debounce_loop_sets_pushing_before_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The loop flips status to pushing right before the push runs."""
+    _enable(monkeypatch)
+    seen: list[str] = []
+
+    async def _spy() -> None:
+        seen.append(backup.backup_status()[0])
+
+    monkeypatch.setattr(backup, "_run_backup_once", _spy)
+
+    backup.request_backup("send")
+    assert backup._task is not None
+    await backup._task
+
+    assert seen == ["pushing"]

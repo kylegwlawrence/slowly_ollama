@@ -39,6 +39,7 @@ import sqlite3
 from contextlib import closing
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Literal
 
 from app import config
 from app.config import db_path, file_tool_root
@@ -84,6 +85,47 @@ _pending = False
 _task: asyncio.Task | None = None
 
 
+# ---------------------------------------------------------------------------
+# Observable status (Phase 21: the UI chip)
+# ---------------------------------------------------------------------------
+
+# Process-local backup status, surfaced to the chat-header chip. Same pattern
+# as `generation.live_generations` / `rag_health._cache`: one piece of
+# cross-request in-memory state per concern, deliberately NOT on `app.state`.
+# Reflects the single global backup task, so every chat sees the same value.
+#
+#   idle     no push has run yet this process (neutral resting state)
+#   pending  a push is scheduled (debounce window) — drives the spinner
+#   pushing  the rsync is in flight
+#   ok       last push succeeded (green)
+#   offline  no remote host was reachable — mirror asleep, NOT an error (grey)
+#   failed   a reachable host's push errored (red)
+BackupState = Literal["idle", "pending", "pushing", "ok", "offline", "failed"]
+
+_status: BackupState = "idle"
+_status_at: datetime | None = None
+
+
+def backup_status() -> tuple[BackupState, datetime | None]:
+    """Return the current ``(state, changed-at)`` for the UI chip.
+
+    Process-local and synchronous (no I/O); reflects the single global backup
+    task. ``idle`` means no push has run yet this process. Never raises.
+
+    Returns:
+        Tuple of the current :data:`BackupState` and the time it was last set
+        (``None`` while still ``idle``).
+    """
+    return _status, _status_at
+
+
+def _set_status(state: BackupState) -> None:
+    """Record a status transition, timestamped with the wall clock."""
+    global _status, _status_at
+    _status = state
+    _status_at = datetime.now()
+
+
 def request_backup(reason: str) -> None:
     """Schedule a coalesced remote push. Fire-and-forget; safe to call often.
 
@@ -103,6 +145,9 @@ def request_backup(reason: str) -> None:
     if not config.backups_enabled():
         return
     logger.debug("backup requested (%s)", reason)
+    # Mark pending synchronously so the chip's first poll (≤2s out) is certain
+    # to catch a spinner, even if the actual rsync later completes sub-second.
+    _set_status("pending")
     _pending = True
     if _task is None or _task.done():
         _task = asyncio.create_task(_debounce_loop())
@@ -120,6 +165,7 @@ async def _debounce_loop() -> None:
     while _pending:
         _pending = False
         await asyncio.sleep(DEBOUNCE_SECONDS)
+        _set_status("pushing")
         try:
             await _run_backup_once()
         except Exception:  # noqa: BLE001 — backups never break the app
@@ -141,6 +187,9 @@ async def _run_backup_once() -> None:
     db_remote = config.remote_db_path()
     ws_remote = config.remote_workspace_path()
     if not db_remote or not ws_remote:
+        # Config vanished since scheduling — settle the chip rather than
+        # stranding it on "pushing".
+        _set_status("offline")
         return
 
     db_target = _parse_remote(db_remote)
@@ -149,6 +198,7 @@ async def _run_backup_once() -> None:
         logger.warning(
             "backup: REMOTE_DB_PATH / REMOTE_PATH must be host:/path specs"
         )
+        _set_status("failed")
         return
 
     db_host, db_dir = db_target
@@ -164,11 +214,25 @@ async def _run_backup_once() -> None:
                 logger.debug("backup: %s unreachable; skipping", host)
         return reachable[host]
 
+    # Track each reachable half's outcome: None = host not reached (skipped).
     pushed = False
+    db_ok: bool | None = None
+    ws_ok: bool | None = None
     if await _ok(db_host):
-        pushed = await _push_database(db_host, db_dir) or pushed
+        db_ok = await _push_database(db_host, db_dir)
+        pushed = db_ok or pushed
     if await _ok(ws_host):
-        pushed = await _push_workspaces(ws_host, ws_dir) or pushed
+        ws_ok = await _push_workspaces(ws_host, ws_dir)
+        pushed = ws_ok or pushed
+
+    # Classify for the chip. No host reachable → offline (mirror asleep, not an
+    # error). Any reachable half that errored → failed. Otherwise → ok.
+    if not (reachable.get(db_host) or reachable.get(ws_host)):
+        _set_status("offline")
+    elif db_ok is False or ws_ok is False:
+        _set_status("failed")
+    else:
+        _set_status("ok")
 
     if pushed:
         await _maybe_snapshot(db_host, db_dir, ws_host, ws_dir, reachable)

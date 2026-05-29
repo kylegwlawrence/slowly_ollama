@@ -278,6 +278,29 @@ body {
   width: 5.5rem;
 }
 
+/* Phase 21: app-wide remote-backup status chip. Read-only (like temp-chip),
+   so suppress the interactive hover; colour comes from the shared
+   tool-chip--on / --off / --unavailable classes. */
+.tool-chip.backup-chip {
+  cursor: default;
+  gap: var(--space-xs);
+}
+
+.backup-chip__icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* Spinner while pending/pushing. Reuses the compacting indicator's 1s
+   linear rotation for a consistent feel. */
+.backup-chip__icon--spin {
+  animation: backup-chip-spin 1s linear infinite;
+}
+
+@keyframes backup-chip-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* ===== Chats list ======================================================== */
 
 .chats-list {

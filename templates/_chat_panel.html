@@ -49,6 +49,10 @@
       </div>
     </form>
     {% endif %}
+    {# Phase 21: app-wide remote-backup status. Self-gates on backups_enabled()
+       and polls only while a push is in flight. Independent of tool support,
+       so it sits outside the supports_tools guards. #}
+    {% include "_backup_chip.html" %}
     {# Per-chat tool chips, rendered only when the model supports tools.
        Wrapped in _chat_tool_chips.html so the agent-picker endpoint can
        OOB-swap the whole #chat-tool-chips bar: the chips when Normal, the
