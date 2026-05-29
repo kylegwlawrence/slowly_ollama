@@ -75,8 +75,12 @@ def _format_chunks(items: list[dict], used_dense: bool) -> str:
     text is truncated to ``_PER_CHUNK_TEXT_CAP`` characters with an
     ellipsis; the final concatenated string is hard-capped to
     ``_TOTAL_OUTPUT_CAP``. When ``used_dense`` is False, prepend a note
-    so the model knows retrieval recall is degraded (the RAG server is
-    falling back to sparse-only because its embedding service is down).
+    so the model knows recall may be degraded (the RAG server fell back
+    to keyword-only retrieval because its embedding service is down).
+    The note is worded to keep the model *using* the passages below it —
+    earlier phrasing ("embedding service unreachable") read like a hard
+    failure and made the model refuse to quote perfectly valid sparse
+    hits, claiming "service limitations" (see Phase 19 follow-up).
 
     Args:
         items: Raw ``items`` list from the RAG server's JSON response.
@@ -91,10 +95,15 @@ def _format_chunks(items: list[dict], used_dense: bool) -> str:
     """
     parts: list[str] = []
     if not used_dense:
-        # Surface degraded-retrieval state to the model so it can hedge
-        # its answer rather than confidently quoting a thin set of hits.
+        # Surface degraded-retrieval state so the model can hedge its
+        # answer — but word it so the model still USES the passages below.
+        # The blunt "embedding service unreachable" wording made models
+        # treat valid sparse hits as a failure and refuse to quote them.
         parts.append(
-            "(sparse-only retrieval; embedding service unreachable)\n"
+            "(Note: semantic ranking is temporarily unavailable, so these"
+            " are keyword-search results. The passages below are real and"
+            " complete — use and quote them normally; only recall may be"
+            " lower than usual.)\n"
         )
     for idx, item in enumerate(items, 1):
         title = item.get("title") or "(untitled)"

@@ -364,14 +364,20 @@ def test_format_chunks_renders_citation_block() -> None:
 
 
 def test_format_chunks_sparse_only_note() -> None:
-    """When used_dense=False, the output is prefixed with a warning."""
+    """When used_dense=False, prepend a note that still keeps the model using
+    the passages (not refusing them as a hard failure)."""
     from app.tools.rag import _format_chunks
 
     out = _format_chunks(
         [{"title": "T", "section": None, "text": "x"}],
         used_dense=False,
     )
-    assert "sparse-only retrieval" in out
+    # The note flags degraded recall without "unreachable/failure" language
+    # that earlier made models refuse to quote valid sparse hits.
+    assert "keyword-search results" in out
+    assert "use and quote them normally" in out
+    # The real passage still rides along below the note.
+    assert "[1] T" in out
 
 
 def test_format_chunks_truncates_long_text() -> None:
