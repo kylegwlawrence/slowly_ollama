@@ -49,23 +49,21 @@
       </div>
     </form>
     {% endif %}
-    {# Phase 21: app-wide remote-backup status. Self-gates on backups_enabled()
-       and polls only while a push is in flight. Independent of tool support,
-       so it sits outside the supports_tools guards. #}
-    {% include "_backup_chip.html" %}
-    {# Phase 22: pull-from-mirror button (restore the DB + workspaces). Its OWN
-       element, NOT inside a chip form — it carries its own hx-post, which a
-       wrapping form's hx-patch/hx-post would clobber via HTMX inheritance. #}
-    {% include "_pull_chip.html" %}
-    {# Phase 22: manual push button — pushes state changed outside a chat turn
-       (e.g. a hand-added workspace file). Re-arms the backup chip's poll. #}
-    {% include "_push_chip.html" %}
     {# Per-chat tool chips, rendered only when the model supports tools.
        Wrapped in _chat_tool_chips.html so the agent-picker endpoint can
        OOB-swap the whole #chat-tool-chips bar: the chips when Normal, the
        active agent's read-only tool list while an agent is invoked. #}
     {% if supports_tools %}
     {% include "_chat_tool_chips.html" %}
+    {% endif %}
+    {# Phase 21/22: backup status chip + pull/push buttons. Grouped with
+       margin-left: auto so they anchor to the right edge of the header row. #}
+    {% if backups_enabled() %}
+    <div class="chat-panel__backup-controls">
+      {% include "_backup_chip.html" %}
+      {% include "_pull_chip.html" %}
+      {% include "_push_chip.html" %}
+    </div>
     {% endif %}
   </header>
 

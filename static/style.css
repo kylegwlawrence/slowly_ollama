@@ -511,6 +511,13 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
+.chat-panel__backup-controls {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
 .chat-panel__name {
   margin: 0;
   font-size: 20px;
@@ -576,7 +583,7 @@ body {
 /* ===== Message bubbles =================================================== */
 
 .message {
-  max-width: 75%;
+  max-width: 60%;
   padding: var(--space-sm) var(--space-md);
   border-radius: var(--radius-lg);
   word-wrap: break-word;
