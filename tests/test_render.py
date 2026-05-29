@@ -1,5 +1,6 @@
 """Phase 12e: tests for app/render.py — block grouping + view helpers."""
 
+import dataclasses
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -13,6 +14,7 @@ from app.render import (
     ToolBatchBlock,
     ToolRowView,
     card_id_for,
+    count_archived_blocks,
     dedup_sources,
     format_elapsed_mm_ss,
     group_messages_for_render,
@@ -41,6 +43,56 @@ def _msg(
         created_at=created_at
         or datetime(2026, 5, 19, 12, 0, id, tzinfo=timezone.utc),
     )
+
+
+def _archived(m: Message) -> Message:
+    """Return a copy of `m` marked archived (for compaction-disclosure tests)."""
+    return dataclasses.replace(
+        m, archived_at=datetime(2026, 5, 20, tzinfo=timezone.utc)
+    )
+
+
+# ---------------------------------------------------------------------------
+# count_archived_blocks — the summary bubble's "N archived messages" label
+# ---------------------------------------------------------------------------
+
+
+def test_count_archived_blocks_folds_tool_turn_into_one_card() -> None:
+    """A tool turn is two rows (call + result) but one displayed card.
+
+    Counting raw rows would double-count it; the label must match the
+    single card the disclosure renders.
+    """
+    messages = [
+        _archived(_msg(id=1, role="user", content="u1")),
+        _archived(_msg(id=2, role="tool_call", content='{"name":"x"}')),
+        _archived(_msg(id=3, role="tool_result", content="r")),
+        _archived(_msg(id=4, role="assistant", content="a1")),
+        # The kept tail (not archived) is ignored by the count.
+        _msg(id=5, role="user", content="u2"),
+        _msg(id=6, role="assistant", content="a2"),
+    ]
+    # user + one folded tool card + assistant = 3 displayed blocks.
+    assert count_archived_blocks(messages) == 3
+
+
+def test_count_archived_blocks_excludes_summary_rows() -> None:
+    """Archived synthetic `summary` rows are hidden, so they don't count."""
+    messages = [
+        _archived(_msg(id=1, role="user", content="u1")),
+        _archived(_msg(id=2, role="assistant", content="a1")),
+        _archived(_msg(id=3, role="summary", content="old summary")),
+    ]
+    assert count_archived_blocks(messages) == 2
+
+
+def test_count_archived_blocks_zero_when_nothing_archived() -> None:
+    """A never-compacted chat reports 0 (the disclosure is hidden then)."""
+    messages = [
+        _msg(id=1, role="user", content="u1"),
+        _msg(id=2, role="assistant", content="a1"),
+    ]
+    assert count_archived_blocks(messages) == 0
 
 
 # ---------------------------------------------------------------------------
