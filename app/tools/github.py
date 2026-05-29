@@ -72,7 +72,7 @@ def _to_raw_url(url: str) -> str | None:
 
 @tool
 async def fetch_github_file(url: str) -> str:
-    """Fetch a single file's contents from a GitHub URL.
+    """Fetch a single file's contents from a GitHub URL. Use this when the user shares a github.com link, or asks about specific code in a public repository — paste the blob or raw URL.
 
     Args:
         url: A GitHub file URL. Either a blob URL like

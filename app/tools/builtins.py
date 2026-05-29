@@ -33,7 +33,7 @@ _SEARCH_CAP = 100
 
 @tool
 def current_time(timezone: str = "UTC") -> str:
-    """Get the current wall-clock time as ISO 8601. Only call this when the user explicitly asks for the date/time or a calculation genuinely depends on "now"; never as a default, warm-up, or speculative call.
+    """Return the current date and time. Only call when the user explicitly asks for the date/time, or a calculation truly depends on "now" — never as a default, warm-up, or speculative call.
 
     Args:
         timezone: IANA timezone name like "America/Vancouver" or "UTC".
@@ -127,7 +127,7 @@ def _resolve_within_root(path: str) -> Path:
 
 @tool
 def read_file(path: str) -> str:
-    """Read a UTF-8 text file from the workspace and return its contents. Only files inside the configured workspace directory are accessible.
+    """Read a text file from the workspace and return its contents. Use this when the user references a file you need to see. Paths are relative to the workspace root; files outside the workspace cannot be read.
 
     Args:
         path: Path to the file, relative to the workspace root (e.g.
@@ -156,7 +156,7 @@ def read_file(path: str) -> str:
 
 @tool
 def write_file(path: str, content: str) -> str:
-    """Create or overwrite a UTF-8 text file in the workspace with the given content. Only the configured workspace directory is writable; an existing file at the path is replaced.
+    """Save text to a file in the workspace. WARNING: if the path already exists the entire file is replaced — only call when the user asks you to save, write, or update a file, and pass the FULL final contents. Only the workspace directory is writable.
 
     Args:
         path: Path to the file, relative to the workspace root. Missing
@@ -178,7 +178,7 @@ def write_file(path: str, content: str) -> str:
 
 @tool
 def list_directory(path: str = ".") -> str:
-    """List the files and subdirectories inside a workspace directory. Directories appear before files, both sorted alphabetically. Only paths inside the configured workspace are accessible. Use "." (the default) to list the workspace root.
+    """List files and subdirectories in a workspace directory. Use this to see what files exist before reading them. Pass "." (the default) to list the workspace root. Only the workspace directory is accessible.
 
     Args:
         path: Path to the directory, relative to the workspace root (e.g.
@@ -226,10 +226,10 @@ def list_directory(path: str = ".") -> str:
 
 @tool
 def search_files(pattern: str, path: str = ".") -> str:
-    """Find files matching a glob pattern anywhere inside a workspace directory.
+    """Find files in the workspace by name pattern (e.g. "*.md" or "report_*.txt"), searched recursively. Returns file paths only — call read_file afterwards to see contents.
 
     Args:
-        pattern: Filename glob to match, e.g. "*.md" or "report_*.txt".
+        pattern: Filename pattern to match, e.g. "*.md" or "report_*.txt".
             Applied recursively under the starting path. Only files are
             returned — directories are excluded.
         path: Starting directory, relative to the workspace root. Defaults to

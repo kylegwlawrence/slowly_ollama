@@ -127,13 +127,13 @@ def _format_chunks(items: list[dict], used_dense: bool) -> str:
 
 @tool
 async def query_rag(source: str, query: str) -> ToolResult:
-    """Retrieve passages from a configured RAG source.
+    """Search the user's configured knowledge bases for passages relevant to a question, returning short excerpts you can quote to ground your answer. Only call when the user's question is likely covered by one of the sources listed under the source argument — never speculatively.
 
     Args:
-        source: Name of the configured RAG server to query. Valid
-            values are discovered at runtime from the user's settings
-            (see /settings).
-        query: Natural-language query string.
+        source: Name of the knowledge base to search. Valid values
+            are listed at runtime from the user's settings; pick the
+            one whose description best matches the question.
+        query: Natural-language search query.
     """
     # The Args:source description above is the static fallback; the live
     # source list (with descriptions) is injected by
