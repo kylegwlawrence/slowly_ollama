@@ -5,8 +5,8 @@
 
 :root {
   --bg: #ffffff;
-  --surface: #fafafa;
-  --surface-hover: #f1f2f1;
+  --surface: #f6f6f6;
+  --surface-hover: #e5e5e5;
   /* Softer than the Google #e8eaed border — fewer hard edges between
      panels, more of a "single page" feel. */
   --border: #ececec;
