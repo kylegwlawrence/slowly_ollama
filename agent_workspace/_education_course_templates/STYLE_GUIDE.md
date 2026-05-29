@@ -16,6 +16,7 @@ One learner — self-study. Not a classroom. Templates and outlines drop all cla
 
 ## File naming
 
+- Course overview: `COURSE.md` — one per workspace folder (all caps; there is only one per course)
 - Unit overviews: `unitN_{{topic}}.md` (e.g., `unit3_topic.md`)
 - Week files: `weekN_{{topic}}.md` (e.g., `week13_topic.md`)
 - Capstone weeks: `weekN_{{phase}}.md` (e.g., `weekN_proposal.md`, `weekN_execution.md`, `weekN_submission.md`)
@@ -66,6 +67,35 @@ Prefer these patterns:
 - **Connection**: "How does this week's concept relate to [specific prior week]?"
 - **Failure mode**: "What would happen if the assumption that X holds were violated?"
 - **Justification**: "Pick one of the three interpretations and defend it in 2 paragraphs."
+
+## Unit count
+
+Choose the number of units based on the subject's scope and natural structure. A unit is a coherent learning arc with its own outcomes, glossary, and summative challenge — not a topic list.
+
+- **3–4 units**: short, focused course with a single central thread
+- **5–7 units**: standard course with distinct phases, frameworks, or periods — most courses fall here
+- **8–10 units**: comprehensive survey of a wide field
+- **More than 10 units**: this is a curriculum, not a course — split into multiple courses
+
+If two proposed units feel like one logical block, merge them. If a unit can't be summarized as a single capability the learner gains, it needs to be split or scoped more tightly.
+
+## Core Themes
+
+A theme is a recurring tension, question, or challenge that reappears across multiple units in different forms — not a topic name. Topics belong in the Unit Sequence; themes belong in Core Themes.
+
+- **Wrong**: "Thermodynamics" — a topic.
+- **Right**: "Order vs. disorder: every system in this course tends toward states that maximize the number of ways things can be arranged" — a recurring tension that reappears in units on gases, chemistry, and information theory.
+
+Each theme should be stated as a claim or question, not a label. Use the formula: *[Tension or recurring challenge]: [one sentence explaining how it shows up across units]*.
+
+## Course-unit content split
+
+- **Course file (`COURSE.md`)**: thin planning overview only — narrative, learning outcomes, core themes, Unit Sequence table, course arc rationale, course-level resources. **No unit detail.**
+- **Unit file**: source of truth for unit content — outcomes, glossary, weekly TOC, summative challenge.
+
+Course-level learning outcomes must require content from multiple units to achieve. If an outcome could be fully met within a single unit, push it down into that unit file and raise the course outcome higher.
+
+Do not duplicate content between course and unit files. If you find yourself describing a unit's content in `COURSE.md`, push the detail into the unit file and leave only a one-line summary in the Unit Sequence table.
 
 ## Unit-week content split
 
