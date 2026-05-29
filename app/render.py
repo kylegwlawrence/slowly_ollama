@@ -423,6 +423,36 @@ def group_messages_for_render(messages: list[Message]) -> list[Block]:
     return blocks
 
 
+def count_archived_blocks(messages: list[Message]) -> int:
+    """Count the display blocks the archived-history disclosure will render.
+
+    The summary bubble's ``N archived message(s)`` label must agree with
+    what the disclosure body shows when expanded. That body renders the
+    archived rows — excluding the synthetic ``summary`` rows it hides —
+    through :func:`group_messages_for_render`, which folds each contiguous
+    ``tool_call`` / ``tool_result`` run into a single card.
+
+    Counting raw archived rows instead (the original Phase 18 behaviour)
+    over-reports: a tool turn is two rows but one card, so a tool-heavy
+    chat's label runs to roughly double the items actually displayed, and
+    archived ``summary`` rows get counted despite never being shown. This
+    helper applies the same filter + grouping the disclosure uses, so the
+    label matches the body exactly.
+
+    Args:
+        messages: All rows for the conversation, oldest first — the same
+            list the chat panel already loaded for rendering.
+
+    Returns:
+        The number of blocks the disclosure will display for this chat.
+    """
+    archived = [
+        m for m in messages
+        if m.archived_at is not None and m.role != "summary"
+    ]
+    return len(group_messages_for_render(archived))
+
+
 def _build_classic_tool_batch(
     rows: list[Message],
 ) -> ToolBatchBlock | None:

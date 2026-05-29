@@ -440,7 +440,7 @@ async def project_chat_panel_endpoint(
         )
     messages = queries.list_messages(db, conversation_id)
     blocks = render.group_messages_for_render(messages)
-    archived_count = queries.count_archived_messages(db, conversation_id)
+    archived_count = render.count_archived_blocks(messages)
 
     # Phase 12g: identical pending-stream logic to the legacy
     # get_chat_panel_endpoint — preserved verbatim so a reload during an

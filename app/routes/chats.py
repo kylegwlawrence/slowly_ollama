@@ -781,7 +781,7 @@ async def compact_chat_endpoint(
     # — one user action per page load, simpler wins.
     messages = queries.list_messages(db, conversation_id)
     blocks = render.group_messages_for_render(messages)
-    archived_count = queries.count_archived_messages(db, conversation_id)
+    archived_count = render.count_archived_blocks(messages)
     return templates.TemplateResponse(
         request=request,
         name="_messages_inner.html",

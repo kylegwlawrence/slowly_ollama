@@ -19,7 +19,6 @@ from app.queries import (
     ChatToolState,
     append_message,
     archive_messages_before,
-    count_archived_messages,
     count_assistant_messages,
     create_conversation,
     delete_conversation,
@@ -505,23 +504,6 @@ def test_archive_messages_before_no_op_does_not_bump_updated_at(
     # Empty conversation, nothing to archive: rowcount 0, updated_at intact.
     assert n == 0
     assert after == before
-
-
-def test_count_archived_messages_counts_only_archived(
-    conn: sqlite3.Connection,
-) -> None:
-    c = create_conversation(conn, name="t", model="m")
-    append_message(conn, c.id, "user", "u1")
-    append_message(conn, c.id, "assistant", "a1")
-    summary = append_message(conn, c.id, "summary", "s")
-    archive_messages_before(conn, c.id, summary.id)
-    assert count_archived_messages(conn, c.id) == 2
-
-
-def test_count_archived_messages_zero_for_unknown_id(
-    conn: sqlite3.Connection,
-) -> None:
-    assert count_archived_messages(conn, 999) == 0
 
 
 # ---------------------------------------------------------------------------

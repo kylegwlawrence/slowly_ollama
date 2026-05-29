@@ -178,31 +178,6 @@ def archive_messages_before(
         return cursor.rowcount
 
 
-def count_archived_messages(
-    conn: sqlite3.Connection, conversation_id: int
-) -> int:
-    """Return the count of archived rows in a conversation.
-
-    Phase 18: feeds the ``N archived messages`` disclosure on the summary
-    bubble. Returns 0 for conversations that have never been compacted
-    (which is the common case — the disclosure is hidden client-side
-    when the count is 0).
-
-    Args:
-        conn: Open SQLite connection.
-        conversation_id: Conversation to count archived rows for.
-
-    Returns:
-        The integer count.
-    """
-    row = conn.execute(
-        "SELECT COUNT(*) FROM messages"
-        " WHERE conversation_id = ? AND archived_at IS NOT NULL;",
-        (conversation_id,),
-    ).fetchone()
-    return row[0]
-
-
 def replace_last_assistant_message(
     conn: sqlite3.Connection,
     conversation_id: int,
