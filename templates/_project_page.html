@@ -8,7 +8,13 @@
    - Files / Settings → their own bodies. #}
 <section class="project-page" data-project-id="{{ project.id }}">
   <header class="project-page__header">
+    {# The project name is suppressed when a chat is open on the Chats tab —
+       the active project is already highlighted in the sidebar, so repeating
+       its title here is redundant. It still shows on the empty Chats state
+       and the Files / Settings tabs (where the rename OOB swap targets it). #}
+    {% if not (active_tab == "chats" and conversation) %}
     <h2 id="project-page-name" class="project-page__name">{{ project.name }}</h2>
+    {% endif %}
     {% include "_project_tabs.html" %}
   </header>
   <div id="project-page-body" class="project-page__body">
