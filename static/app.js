@@ -73,6 +73,17 @@ document.addEventListener('click', (e) => {
   if (sidebarLink) {
     clearSidebarAriaCurrent();
     sidebarLink.closest('.chat-item').setAttribute('aria-current', 'page');
+    // When clicking a chat from the project body (not the sidebar), keep the
+    // active project row highlighted — clearSidebarAriaCurrent() just removed it.
+    if (!sidebarLink.closest('#projects-list')) {
+      const projectPage = document.querySelector('.project-page[data-project-id]');
+      if (projectPage) {
+        const projectRow = document.querySelector(
+          `#projects-list [data-project-id="${projectPage.dataset.projectId}"]`
+        );
+        if (projectRow) projectRow.setAttribute('aria-current', 'page');
+      }
+    }
     return;
   }
   if (e.target.closest('.sidebar__new-chat, .sidebar__settings')) {
