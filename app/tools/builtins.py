@@ -90,9 +90,11 @@ def _resolve_within_root(path: str) -> Path:
 
     Args:
         path: Path as the model supplied it, interpreted relative to the
-            active workspace root. An absolute path escapes the root
-            (joining an absolute path onto the root discards the root),
-            so it is rejected by the containment check below.
+            active workspace root. Leading slashes are automatically
+            stripped (models often add them despite "relative path" in the
+            description). An absolute path after normalization, or ``..``
+            traversal that escapes the root, is rejected by the
+            containment check below.
 
     Returns:
         The fully-resolved absolute ``Path`` contained by the active root.
@@ -100,8 +102,8 @@ def _resolve_within_root(path: str) -> Path:
     Raises:
         _PathOutsideRoot: When no root is configured, or the resolved
             path is not contained by the root — covering ``..``
-            traversal, absolute paths, and symlink escapes (``resolve()``
-            follows symlinks before the check).
+            traversal and symlink escapes (``resolve()`` follows symlinks
+            before the check).
     """
     root = _active_workspace_root()
     if root is None:
@@ -111,7 +113,11 @@ def _resolve_within_root(path: str) -> Path:
         raise _PathOutsideRoot(
             "File tools are not configured (FILE_TOOL_ROOT is unset)."
         )
-    candidate = (root / path).resolve()
+    # Strip leading slashes — models frequently add them even when the
+    # description says "relative path", causing pathlib to discard the
+    # root during joining. Normalize to a relative path before resolution.
+    normalized = path.lstrip("/")
+    candidate = (root / normalized).resolve()
     if not candidate.is_relative_to(root):
         raise _PathOutsideRoot(
             f"Path '{path}' is outside the allowed workspace."
