@@ -21,6 +21,7 @@ Routes:
     PATCH  /chats/{id}/tool-iteration-cap    — set per-chat tool cap
     GET    /backup/status                    — remote-backup status chip (phase 21)
     POST   /backup/pull                      — restore DB + workspaces from mirror (phase 22)
+    POST   /backup/push                      — trigger an immediate mirror push (phase 22)
 """
 
 from typing import Annotated
@@ -1045,4 +1046,30 @@ async def backup_pull_endpoint(request: Request) -> Response:
         templates.get_template("_pull_chip.html").render(
             error=detail or "Pull failed"
         )
+    )
+
+
+@router.post("/backup/push", response_class=HTMLResponse)
+async def backup_push_endpoint() -> Response:
+    """Trigger an immediate push of the local DB + workspaces to the mirror.
+
+    For state changed OUTSIDE a chat turn — e.g. a file dropped into the
+    workspace by hand — that the automatic triggers (send / generation-complete
+    / ``write_file``) wouldn't otherwise catch. Fire-and-forget:
+    :func:`app.backup.request_backup` coalesces and runs the push in the
+    background, so this returns at once.
+
+    Async (not sync) because ``request_backup`` schedules an
+    ``asyncio.create_task`` and so must run on the event loop, not the
+    threadpool. Returns the Phase 21 backup chip OOB in its now-pending state,
+    which re-arms the ``/backup/status`` poll → the user sees the spinner settle
+    to ok/offline/failed. 404 when backups aren't configured (button hidden).
+    """
+    if not config.backups_enabled():
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, "backups not configured"
+        )
+    backup.request_backup("manual")
+    return HTMLResponse(
+        templates.get_template("_backup_chip.html").render(oob=True)
     )
