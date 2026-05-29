@@ -122,3 +122,31 @@ def test_resolve_outside_contextvar_root_rejects_traversal(workspace) -> None:
     finally:
         current_workspace_root.reset(token)
     assert "outside" in msg.lower()
+
+
+def test_read_file_strips_leading_slash(workspace) -> None:
+    """Leading slashes are automatically stripped so models can use /path.
+
+    Models often add a leading "/" even when the description says "relative
+    path" (e.g., "/bc_undergrad_physics/file.md"). The tool normalizes this
+    by stripping leading slashes before resolution, so the model can access
+    subdirectories without hitting "outside workspace" errors.
+    """
+    _root, project_dir = workspace
+    # Create a nested structure like "bc_undergrad_physics/bc_year4_physics.md"
+    subdir = project_dir / "bc_undergrad_physics"
+    subdir.mkdir()
+    (subdir / "bc_year4_physics.md").write_text("Physics content")
+
+    token = current_workspace_root.set(project_dir)
+    try:
+        # Model passes "/bc_undergrad_physics/bc_year4_physics.md" (with leading /)
+        result = read_file("/bc_undergrad_physics/bc_year4_physics.md")
+        # Should succeed — the leading slash is stripped
+        assert result == "Physics content"
+
+        # Also verify write_file works with leading slash
+        write_file("/new_file.txt", "new content")
+        assert (project_dir / "new_file.txt").read_text() == "new content"
+    finally:
+        current_workspace_root.reset(token)

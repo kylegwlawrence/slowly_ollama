@@ -821,9 +821,18 @@ def test_read_file_rejects_parent_traversal(
 def test_read_file_rejects_absolute_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An absolute path escapes the root and is rejected."""
+    """An absolute path gets normalized (leading slash stripped) and rejected if not found.
+
+    Leading slashes are stripped to support models that incorrectly use them
+    for workspace-relative paths. After normalization, "/etc/hosts" becomes
+    "etc/hosts" (relative to workspace), which doesn't exist in the test
+    workspace, so it's rejected with "No file" rather than "outside workspace".
+    The security boundary is still enforced — the file isn't accessible.
+    """
     monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
-    assert "outside the allowed workspace" in _file_builtins.read_file("/etc/hosts")
+    result = _file_builtins.read_file("/etc/hosts")
+    # After stripping the leading "/", "etc/hosts" doesn't exist in tmp_path
+    assert "no file" in result.lower()
 
 
 def test_read_file_truncates_at_cap(
@@ -1021,10 +1030,15 @@ def test_list_directory_rejects_traversal(
 def test_list_directory_rejects_absolute_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An absolute path escapes the root and is rejected."""
+    """An absolute path gets normalized and rejected if not found.
+
+    Leading slashes are stripped, so "/tmp" becomes "tmp" (relative to
+    workspace). Since "tmp" doesn't exist in the test workspace, it's
+    rejected with "No directory" rather than "outside workspace".
+    """
     monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
     out = _file_builtins.list_directory("/tmp")
-    assert "outside the allowed workspace" in out
+    assert "no directory" in out.lower()
 
 
 def test_list_directory_no_root_configured(
@@ -1196,10 +1210,15 @@ def test_search_files_rejects_traversal(
 def test_search_files_rejects_absolute_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An absolute starting path is rejected."""
+    """An absolute starting path gets normalized and rejected if not found.
+
+    Leading slashes are stripped, so "/tmp" becomes "tmp" (relative to
+    workspace). Since "tmp" doesn't exist in the test workspace, it's
+    rejected with "No directory".
+    """
     monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
     out = _file_builtins.search_files("*.md", path="/tmp")
-    assert "outside the allowed workspace" in out
+    assert "no directory" in out.lower()
 
 
 def test_search_files_no_root_configured(
