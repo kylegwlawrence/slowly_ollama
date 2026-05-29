@@ -324,3 +324,66 @@ def test_pull_failure_renders_error_chip_without_redirect(
     assert "HX-Redirect" not in response.headers
     assert "tool-chip--unavailable" in response.text
     assert "Mirror unreachable" in response.text
+
+
+# ---------------------------------------------------------------------------
+# Phase 22: the manual "Push now" button + POST /backup/push
+# ---------------------------------------------------------------------------
+
+
+def test_push_button_in_header_when_enabled(
+    make_client: ClientFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The chat-panel header carries the push button with its contract attrs."""
+    _enable(monkeypatch)
+    with make_client(_ollama_unreachable) as client:
+        created = client.post(
+            f"/projects/{_default_project_id()}/chats",
+            data={"model": "llama3", "content": "hi"},
+        )
+    text = created.text
+    assert 'id="push-chip"' in text
+    assert 'hx-post="/backup/push"' in text
+    assert ">arrow_upward</span>" in text
+
+
+def test_push_button_hidden_when_disabled(
+    make_client: ClientFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No push button — and POST /backup/push 404s — when backups are off."""
+    _disable(monkeypatch)
+    with make_client(_ollama_unreachable) as client:
+        created = client.post(
+            f"/projects/{_default_project_id()}/chats",
+            data={"model": "llama3", "content": "hi"},
+        )
+        assert "push-chip" not in created.text
+        assert client.post("/backup/push").status_code == 404
+
+
+def test_push_triggers_backup_and_arms_status_poll(
+    make_client: ClientFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """POST /backup/push calls request_backup("manual") + returns the OOB chip.
+
+    request_backup is stubbed to set pending status synchronously (no real
+    ssh/rsync), mirroring the send-wiring test above — we assert the trigger
+    fired and the response re-arms the Phase 21 status poll.
+    """
+    _enable(monkeypatch)
+    reasons: list[str] = []
+    monkeypatch.setattr(
+        backup,
+        "request_backup",
+        lambda reason: (reasons.append(reason), backup._set_status("pending"))[-1],
+    )
+
+    with make_client(_ollama_unreachable) as client:
+        response = client.post("/backup/push")
+
+    assert reasons == ["manual"]
+    text = response.text
+    assert 'id="backup-chip"' in text
+    assert 'hx-swap-oob="true"' in text
+    # Pending → the chip carries the self-polling trigger.
+    assert 'hx-get="/backup/status"' in text

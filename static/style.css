@@ -308,7 +308,8 @@ body {
    flight, so we hide the download glyph and spin the progress glyph. Reuses
    the Phase 21 backup-chip-spin keyframes. */
 .pull-chip__icon,
-.pull-chip__spinner {
+.pull-chip__spinner,
+.push-chip__icon {
   font-size: 14px;
   line-height: 1;
 }

@@ -1,0 +1,25 @@
+{# Phase 22: manual "Push now" button (chat-panel header, beside the Pull
+   button). Shown only when backups are configured. Triggers an immediate
+   mirror push for state changed OUTSIDE a chat turn — e.g. a file dropped into
+   the workspace by hand — that the automatic triggers (send /
+   generation-complete / write_file) wouldn't otherwise catch.
+
+   Fire-and-forget: POST /backup/push calls request_backup("manual") and
+   returns the Phase 21 backup chip OOB in its pending state, so THAT chip
+   shows the spinner -> ok/offline/failed. This button itself doesn't swap
+   (hx-swap="none"). No confirm — a push is non-destructive (it only overwrites
+   the remote with local state, exactly like every send already does).
+
+   Global (app/templates.py): backups_enabled() -> bool
+#}
+{% if backups_enabled() %}
+<button id="push-chip"
+        type="button"
+        class="tool-chip push-chip tool-chip--on"
+        hx-post="/backup/push"
+        hx-swap="none"
+        title="Push local chats + workspaces to the mirror now (e.g. after adding a file by hand)">
+  <span class="material-symbols-outlined push-chip__icon" aria-hidden="true">arrow_upward</span>
+  <span class="tool-chip__label">Push</span>
+</button>
+{% endif %}

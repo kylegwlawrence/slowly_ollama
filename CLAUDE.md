@@ -63,13 +63,16 @@ Highlights since:
 - **Phase 21 (backup status chip).** Chat-header chip surfacing the Phase 20
   push: spinner while pushing, then green/grey/red (`ok`/`offline`/`failed`).
   Send-triggered, self-stopping `/backup/status` poll; hidden when backups off.
-- **Phase 22 (pull from mirror).** "Pull" button beside the backup chip runs
-  `copy_agent_workspace.py --all` to restore the DB + workspaces (switch-
-  machines path). `POST /backup/pull` closes `app.state.db`, pulls, reopens,
-  then `HX-Redirect`s to `/projects`. Confirm-gated; refused (409) mid-
-  generation; hidden when backups off. `app/backup.py:pull_all`.
+- **Phase 22 (pull/push from mirror).** Two header buttons beside the backup
+  chip. **Pull** runs `copy_agent_workspace.py --all` to restore the DB +
+  workspaces (switch-machines path); `POST /backup/pull` closes `app.state.db`,
+  pulls, reopens, then `HX-Redirect`s to `/projects`. Confirm-gated; refused
+  (409) mid-generation. **Push** (`POST /backup/push`) fires
+  `request_backup("manual")` for state changed outside a chat turn (e.g. a
+  hand-added workspace file) and OOB-re-arms the backup chip's status poll; no
+  confirm (non-destructive). Both hidden when backups off. `app/backup.py`.
 
-**792 tests passing**, 0 failing; coverage 100% on `app/backup.py` (note:
+**795 tests passing**, 0 failing; coverage 100% on `app/backup.py` (note:
 `app/copy_agent_workspace.py`, a standalone pull script, is uncovered by design).
 
 ## Working rules (override Claude defaults where they conflict)
