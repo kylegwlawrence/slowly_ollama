@@ -20,6 +20,7 @@ Routes:
     PATCH  /chats/{id}/temperature           — set per-chat temperature
     PATCH  /chats/{id}/tool-iteration-cap    — set per-chat tool cap
     GET    /backup/status                    — remote-backup status chip (phase 21)
+    POST   /backup/pull                      — restore DB + workspaces from mirror (phase 22)
 """
 
 from typing import Annotated
@@ -27,9 +28,11 @@ from typing import Annotated
 from fastapi import APIRouter, Form, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 
-from app import backup, generation, ollama, queries, render
+from app import backup, config, generation, ollama, queries, render
 from app import rag_servers as _rag_servers
 from app.agents import get_agent
+from app.connection import open_connection
+from app.db import initialize_database
 from app.dependencies import DB, OllamaClient
 from app.ollama import OllamaProtocolError, OllamaUnavailable
 from app.routes._helpers import (
@@ -989,3 +992,57 @@ def backup_status_endpoint() -> Response:
     ``backups_enabled`` / ``backup_status`` Jinja globals.
     """
     return HTMLResponse(templates.get_template("_backup_chip.html").render())
+
+
+@router.post("/backup/pull", response_class=HTMLResponse)
+async def backup_pull_endpoint(request: Request) -> Response:
+    """Restore the chats DB + agent workspaces from the remote mirror.
+
+    The "I switched machines" path: runs ``copy_agent_workspace.py --all`` (via
+    :func:`app.backup.pull_all`) to pull both halves down from pop-os. Because
+    that overwrites the live ``chats.db``, the app closes its shared WAL
+    connection around the pull, reopens it, then ``HX-Redirect``s the browser
+    to ``/projects`` so the freshly pulled state is shown.
+
+    Refused (409) while a generation is still streaming — its producer task
+    holds the shared connection, so closing it mid-stream would break the
+    stream and risk the DB. Hidden/404 when backups aren't configured.
+    """
+    if not config.backups_enabled():
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, "backups not configured"
+        )
+
+    # A live producer task holds app.state.db; don't yank it out mid-stream.
+    # (Entries are never removed from live_generations, so check `not done`.)
+    if any(not state.done for state in generation.live_generations.values()):
+        return HTMLResponse(
+            templates.get_template("_pull_chip.html").render(
+                error="Finish generating first"
+            ),
+            status_code=status.HTTP_409_CONFLICT,
+        )
+
+    ok, detail = False, "Pull failed"
+    app = request.app
+    app.state.db.close()
+    try:
+        ok, detail = await backup.pull_all()
+        if ok:
+            # Idempotent migrations on the pulled file, in case the mirror was
+            # written by a slightly older app version.
+            initialize_database()
+    finally:
+        # ALWAYS reopen — a failed/timed-out pull must not strand the app with
+        # a closed connection (every later request would 500).
+        app.state.db = open_connection()
+
+    if ok:
+        # HX-Redirect (not an HTTP 3xx): the swap is skipped and the browser
+        # navigates, reloading the sidebar + panel against the pulled DB.
+        return HTMLResponse("", headers={"HX-Redirect": "/projects"})
+    return HTMLResponse(
+        templates.get_template("_pull_chip.html").render(
+            error=detail or "Pull failed"
+        )
+    )

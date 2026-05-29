@@ -7,7 +7,9 @@ logic, the offline guard, the rsync targeting, and the snapshot gating
 without touching the outside world.
 """
 
+import asyncio
 import sqlite3
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -655,3 +657,106 @@ async def test_debounce_loop_sets_pushing_before_run(
     await backup._task
 
     assert seen == ["pushing"]
+
+
+# ---------------------------------------------------------------------------
+# Manual restore: pull_all (Phase 22 — the "Pull from mirror" button)
+# ---------------------------------------------------------------------------
+
+
+class _FakeProc:
+    """Stand-in for the asyncio subprocess the pull shells out to.
+
+    ``communicate`` returns the canned output (and can hang to exercise the
+    timeout path); ``kill`` records that it was called.
+    """
+
+    def __init__(self, returncode: int | None = 0, output: bytes = b"",
+                 *, hang: bool = False) -> None:
+        self.returncode = returncode
+        self._output = output
+        self._hang = hang
+        self.killed = False
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        if self._hang:
+            await asyncio.sleep(5)  # longer than any test timeout
+        return self._output, b""
+
+    def kill(self) -> None:
+        self.killed = True
+
+
+def _patch_subprocess(monkeypatch: pytest.MonkeyPatch, proc: _FakeProc):
+    """Patch create_subprocess_exec to yield ``proc``; capture its argv."""
+
+    async def _fake_exec(*args, **kwargs):
+        _fake_exec.args = args
+        _fake_exec.kwargs = kwargs
+        return proc
+
+    monkeypatch.setattr(backup.asyncio, "create_subprocess_exec", _fake_exec)
+    return _fake_exec
+
+
+@pytest.mark.asyncio
+async def test_pull_all_success_runs_script_with_all_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A clean exit → (True, None); argv is `python copy_agent_workspace.py --all`."""
+    exec_spy = _patch_subprocess(monkeypatch, _FakeProc(0, b"...\nRestore complete!\n"))
+
+    ok, detail = await backup.pull_all()
+
+    assert (ok, detail) == (True, None)
+    assert exec_spy.args[0] == sys.executable
+    assert exec_spy.args[1].endswith("copy_agent_workspace.py")
+    assert exec_spy.args[2] == "--all"
+
+
+@pytest.mark.asyncio
+async def test_pull_all_unreachable_maps_to_friendly_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The script's "Cannot connect" failure → the grey "Mirror unreachable"."""
+    _patch_subprocess(
+        monkeypatch,
+        _FakeProc(1, b"Testing SSH connection...\nERROR: Cannot connect to pop-os\n"),
+    )
+
+    ok, detail = await backup.pull_all()
+
+    assert ok is False
+    assert detail == "Mirror unreachable"
+
+
+@pytest.mark.asyncio
+async def test_pull_all_reachable_failure_reports_last_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reachable host whose rsync errors → the last output line, NOT unreachable.
+
+    Guards the classifier against "Connection successful" (which the script
+    prints on a reachable host) being misread as an unreachable mirror.
+    """
+    output = b"Connection successful\nCopying database...\nrsync: link_stat failed\n"
+    _patch_subprocess(monkeypatch, _FakeProc(1, output))
+
+    ok, detail = await backup.pull_all()
+
+    assert ok is False
+    assert detail == "rsync: link_stat failed"
+
+
+@pytest.mark.asyncio
+async def test_pull_all_timeout_kills_proc_and_reports_unreachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stalled pull is killed and reported as unreachable."""
+    proc = _FakeProc(returncode=None, hang=True)
+    _patch_subprocess(monkeypatch, proc)
+
+    ok, detail = await backup.pull_all(timeout=0.01)
+
+    assert (ok, detail) == (False, "Mirror unreachable")
+    assert proc.killed is True

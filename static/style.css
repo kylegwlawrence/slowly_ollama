@@ -301,6 +301,31 @@ body {
   to { transform: rotate(360deg); }
 }
 
+/* Phase 22: pull-from-mirror button. The chip shape + colour come from
+   .tool-chip and the --on / --unavailable modifiers (.tool-chip already
+   strips Pico's native button chrome). All this adds is the icon↔spinner
+   swap: htmx puts .htmx-request on the button while POST /backup/pull is in
+   flight, so we hide the download glyph and spin the progress glyph. Reuses
+   the Phase 21 backup-chip-spin keyframes. */
+.pull-chip__icon,
+.pull-chip__spinner {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.pull-chip__spinner {
+  display: none;
+}
+
+.pull-chip.htmx-request .pull-chip__icon {
+  display: none;
+}
+
+.pull-chip.htmx-request .pull-chip__spinner {
+  display: inline-block;
+  animation: backup-chip-spin 1s linear infinite;
+}
+
 /* ===== Chats list ======================================================== */
 
 .chats-list {
