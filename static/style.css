@@ -2023,7 +2023,7 @@ body {
   border: 0;
   border-radius: var(--radius-lg);
   padding: var(--space-md) var(--space-lg);
-  background-color: var(--surface);
+  background-color: var(--bg);
   box-shadow: 0 0 10px 0.5px var(--accent) ;
 }
 
