@@ -36,6 +36,7 @@ import asyncio
 import logging
 import shlex
 import sqlite3
+import sys
 from contextlib import closing
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -402,3 +403,65 @@ async def _run(cmd: list[str]) -> int:
             err.decode(errors="replace").strip(),
         )
     return proc.returncode
+
+
+# ---------------------------------------------------------------------------
+# Manual restore (Phase 22: the "Pull" button)
+# ---------------------------------------------------------------------------
+
+# Hard ceiling on a manual pull so a hung ssh/rsync can't wedge the request
+# that triggered it. The pull script's own connectivity probe gives up after
+# ~5s, so a sleeping mirror fails fast; this only catches a genuine stall.
+PULL_TIMEOUT = 180.0
+
+
+async def pull_all(timeout: float = PULL_TIMEOUT) -> tuple[bool, str | None]:
+    """Restore the DB + workspaces from the remote mirror (the ``--all`` pull).
+
+    Shells out to ``python copy_agent_workspace.py --all`` — pull-only and
+    ``.env``-driven, the same command a user runs by hand to seed a fresh
+    machine. Running it as a child process isolates that script's
+    ``sys.exit()`` error paths from the app.
+
+    The CALLER must ensure no live SQLite connection holds the local
+    ``chats.db`` open: the script overwrites it (see the route in
+    ``app/routes/chats.py``, which closes ``app.state.db`` around this call).
+    Never raises — failures come back as ``(False, detail)``.
+
+    Args:
+        timeout: Seconds to wait before killing a stalled pull.
+
+    Returns:
+        ``(ok, detail)``. ``ok`` is True on a clean restore. On failure
+        ``detail`` is a short human message (``"Mirror unreachable"`` or the
+        last line of the script's output) for the chip's error label.
+    """
+    script = Path(__file__).resolve().parent / "copy_agent_workspace.py"
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        str(script),
+        "--all",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        cwd=str(script.parent.parent),
+    )
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        logger.warning("backup pull timed out after %ss", timeout)
+        return False, "Mirror unreachable"
+
+    if proc.returncode == 0:
+        return True, None
+
+    text = out.decode(errors="replace") if out else ""
+    logger.warning("backup pull failed (exit %s): %s", proc.returncode, text.strip())
+    if "Cannot connect" in text:
+        # The script's SSH probe failed — the mirror is asleep/off-network.
+        # Match only this explicit message: the script also prints "Connection
+        # successful" on a REACHABLE host, so a looser check would misread a
+        # reachable-but-rsync-failed pull as unreachable.
+        return False, "Mirror unreachable"
+    last = text.strip().splitlines()[-1:] or [f"exit {proc.returncode}"]
+    return False, last[0][:80]

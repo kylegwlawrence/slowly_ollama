@@ -13,10 +13,13 @@ Contract assertions (substrings of data-/hx-/class attributes), per the repo's
 ``tests/test_routes.py`` for a fresh DB + mocked Ollama.
 """
 
+from unittest.mock import AsyncMock
+
 import httpx
 import pytest
 
-from app import backup
+from app import backup, generation
+from app.generation import GenerationState
 
 from tests.test_routes import (
     ClientFactory,
@@ -226,3 +229,98 @@ def test_chat_panel_header_omits_chip_when_disabled(
             data={"model": "llama3", "content": "hi"},
         )
     assert "backup-chip" not in created.text
+
+
+# ---------------------------------------------------------------------------
+# Phase 22: the "Pull from mirror" button + POST /backup/pull
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _clear_live_generations():
+    """Keep the module-global generation registry empty around each test."""
+    generation.live_generations.clear()
+    yield
+    generation.live_generations.clear()
+
+
+def test_pull_button_in_header_when_enabled(
+    make_client: ClientFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The chat-panel header carries the pull button (with its contract attrs)."""
+    _enable(monkeypatch)
+    with make_client(_ollama_unreachable) as client:
+        created = client.post(
+            f"/projects/{_default_project_id()}/chats",
+            data={"model": "llama3", "content": "hi"},
+        )
+    text = created.text
+    assert 'id="pull-chip"' in text
+    assert 'hx-post="/backup/pull"' in text
+    assert "hx-confirm=" in text
+    assert ">download</span>" in text
+
+
+def test_pull_button_hidden_when_disabled(
+    make_client: ClientFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No pull button — and POST /backup/pull 404s — when backups are off."""
+    _disable(monkeypatch)
+    with make_client(_ollama_unreachable) as client:
+        created = client.post(
+            f"/projects/{_default_project_id()}/chats",
+            data={"model": "llama3", "content": "hi"},
+        )
+        assert "pull-chip" not in created.text
+        assert client.post("/backup/pull").status_code == 404
+
+
+def test_pull_success_redirects_and_reopens_db(
+    make_client: ClientFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A clean pull → HX-Redirect to /projects and a usable (reopened) DB."""
+    _enable(monkeypatch)
+    monkeypatch.setattr(backup, "pull_all", AsyncMock(return_value=(True, None)))
+
+    with make_client(_ollama_unreachable) as client:
+        response = client.post("/backup/pull")
+        assert response.headers.get("HX-Redirect") == "/projects"
+        # The shared connection was closed for the pull, then reopened — a
+        # query against it must succeed (else later requests would 500).
+        assert client.app.state.db.execute("SELECT 1").fetchone()[0] == 1
+
+
+def test_pull_refused_while_generating(
+    make_client: ClientFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A live producer → 409, the DB is left untouched, pull_all never runs."""
+    _enable(monkeypatch)
+    pull = AsyncMock(return_value=(True, None))
+    monkeypatch.setattr(backup, "pull_all", pull)
+    generation.live_generations[999_999] = GenerationState(conversation_id=999_999)
+
+    with make_client(_ollama_unreachable) as client:
+        response = client.post("/backup/pull")
+
+    assert response.status_code == 409
+    assert 'id="pull-chip"' in response.text
+    assert "Finish generating" in response.text
+    pull.assert_not_awaited()
+
+
+def test_pull_failure_renders_error_chip_without_redirect(
+    make_client: ClientFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unreachable mirror → red chip with the reason, and no redirect."""
+    _enable(monkeypatch)
+    monkeypatch.setattr(
+        backup, "pull_all", AsyncMock(return_value=(False, "Mirror unreachable"))
+    )
+
+    with make_client(_ollama_unreachable) as client:
+        response = client.post("/backup/pull")
+
+    assert response.status_code == 200
+    assert "HX-Redirect" not in response.headers
+    assert "tool-chip--unavailable" in response.text
+    assert "Mirror unreachable" in response.text

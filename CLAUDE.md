@@ -60,8 +60,17 @@ Highlights since:
   safe. WAL-consistent DB copy via the SQLite backup API (never the live
   `-wal`/`-shm`). Daily server-side snapshot. Push-only; restore is manual.
   Gated on `REMOTE_DB_PATH` + `REMOTE_PATH` both set.
+- **Phase 21 (backup status chip).** Chat-header chip surfacing the Phase 20
+  push: spinner while pushing, then green/grey/red (`ok`/`offline`/`failed`).
+  Send-triggered, self-stopping `/backup/status` poll; hidden when backups off.
+- **Phase 22 (pull from mirror).** "Pull" button beside the backup chip runs
+  `copy_agent_workspace.py --all` to restore the DB + workspaces (switch-
+  machines path). `POST /backup/pull` closes `app.state.db`, pulls, reopens,
+  then `HX-Redirect`s to `/projects`. Confirm-gated; refused (409) mid-
+  generation; hidden when backups off. `app/backup.py:pull_all`.
 
-**755 tests passing**, 0 failing; coverage 97% on `app/` + `main.py` (100% on `app/backup.py`).
+**792 tests passing**, 0 failing; coverage 100% on `app/backup.py` (note:
+`app/copy_agent_workspace.py`, a standalone pull script, is uncovered by design).
 
 ## Working rules (override Claude defaults where they conflict)
 

@@ -1,0 +1,28 @@
+{# Phase 22: pull-from-mirror button (lives in the chat-panel header, beside
+   the backup status chip). Shown only when backups are configured. Restores
+   the chats DB + agent workspaces from the host1 mirror via
+   copy_agent_workspace.py --all — the "I switched machines" path.
+
+   POSTs to /backup/pull; the server closes its DB connection around the pull
+   and HX-Redirects on success. A blocked/failed pull re-renders this button
+   in place (hx-swap="outerHTML") red (tool-chip--unavailable) with the reason
+   as both label and tooltip.
+
+   Context:
+     error: str | None  — short message shown after a blocked/failed pull.
+   Global (app/templates.py): backups_enabled() -> bool
+#}
+{% if backups_enabled() %}
+<button id="pull-chip"
+        type="button"
+        class="tool-chip pull-chip {{ 'tool-chip--unavailable' if error else 'tool-chip--on' }}"
+        hx-post="/backup/pull"
+        hx-confirm="Pull from the host1 mirror? This overwrites local chats + workspaces with the mirror copy."
+        hx-swap="outerHTML"
+        hx-disabled-elt="this"
+        title="{{ error or 'Pull chats + workspaces from the mirror (use after switching machines)' }}">
+  <span class="material-symbols-outlined pull-chip__icon" aria-hidden="true">download</span>
+  <span class="material-symbols-outlined pull-chip__spinner" aria-hidden="true">progress_activity</span>
+  <span class="tool-chip__label">{{ error or 'Pull' }}</span>
+</button>
+{% endif %}
