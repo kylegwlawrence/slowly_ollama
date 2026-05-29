@@ -17,7 +17,7 @@ Default behavior (no flags) copies local agent_workspace → remote host.
 
 Examples:
     python app/copy_agent_workspace.py
-    python app/copy_agent_workspace.py --dest raspberryweb-host:/home/user/agent_workspaces
+    python app/copy_agent_workspace.py --dest host:/path/to/agent_workspaces
     python app/copy_agent_workspace.py --source host1:/home/documents/projects/agent_workspaces --dest agent_workspace
 """
 
@@ -187,7 +187,7 @@ def copy_from_remote(host: str, remote_base: str, local_dest: str, workspace: st
 
 def main():
     default_local = os.getenv("LOCAL_PATH", "agent_workspace")
-    default_dest = os.getenv("REMOTE_PATH", "raspberryweb-host:/home/user/agent_workspaces")
+    default_dest = os.getenv("REMOTE_PATH", "host:/path/to/agent_workspaces")
 
     parser = argparse.ArgumentParser(
         description="Copy agent workspace between local machine and a remote host",
