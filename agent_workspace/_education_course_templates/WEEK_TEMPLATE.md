@@ -80,7 +80,7 @@ Concrete deliverable expected: [one sentence describing the artifact, e.g., a ha
 
 ## Metadata
 
-- **Parent unit**: [Unit M: {{Unit Title}}](../unitM_topic/unitM_topic.md)
+- **Parent unit**: [Unit M: {{Unit Title}}](unitM_topic/unitM_topic.md)
 - **Duration**: ~3 sessions × 2–3 hours
 - **Prerequisites**:
   - {{Specific prior week or upstream concept}}

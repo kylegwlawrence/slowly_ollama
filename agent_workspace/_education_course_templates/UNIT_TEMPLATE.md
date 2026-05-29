@@ -32,6 +32,7 @@ Never write "Understand X" — it is not checkable. Pick the verb that fits your
 - 6 Learning Outcomes
 - 8 Key Concepts
 - 12 Glossary terms
+- 4–6 Tools & Resources
 - 4 Real-World Connections
 - 3 Going Deeper items
 
@@ -39,6 +40,7 @@ Never write "Understand X" — it is not checkable. Pick the verb that fits your
 
 ## Metadata
 
+- **Parent course**: [{{Course Title}}](../COURSE.md)
 - **Duration**: N weeks
 - **Estimated effort**: ~N hours/week
 - **Prerequisites**: {{prior units (e.g., Unit M); skills required (e.g., calculus, close reading, a specific programming language); concepts assumed}}
@@ -70,14 +72,16 @@ High-level ideas the unit covers. No daily detail (that belongs in week files).
 
 | Week | File | Focus | Key Skills |
 |------|------|-------|------------|
-| 1 | [`week1_topic.md`](../week1_topic.md) | [one-line focus — the week's central concept or skill in concrete terms] | [specific skill or technique the learner gains, e.g., "applying formula X"; "annotating a primary source"; "debugging recursion"] |
+| W7 | [`week7_electric_forces.md`](../week7_electric_forces.md) | [one-line focus — the week's central concept or skill in concrete terms] | [specific skill or technique the learner gains, e.g., "applying formula X"; "annotating a primary source"; "debugging recursion"] |
+
+Note: use the **global** week number from your course's Unit Sequence in COURSE.md — do not restart at W1 for each unit.
 
 **Your unit's Weekly Sequence (fill in):**
 
 | Week | File | Focus | Key Skills |
 |------|------|-------|------------|
-| N | [`weekN_topic.md`](../weekN_topic.md) | {{one-line focus}} | {{skill or technique introduced}} |
-| N+1 | [`week(N+1)_topic.md`](…) | … | … |
+| Wn | [`weekN_topic.md`](../weekN_topic.md) | {{one-line focus}} | {{skill or technique introduced}} |
+| Wn+1 | [`week(N+1)_topic.md`](…) | … | … |
 
 ## Glossary
 
@@ -121,4 +125,5 @@ Self-grade against the Learning Outcomes above. No formal quiz.
 Optional extensions for curiosity-driven follow-up.
 
 - {{Advanced text, paper, video, or topic}}
+- {{…}}
 - {{…}}
