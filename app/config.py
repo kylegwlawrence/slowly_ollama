@@ -127,3 +127,59 @@ def remote_ollama_model() -> str | None:
     """
     raw = os.environ.get("REMOTE_OLLAMA_MODEL")
     return raw or None
+
+
+def remote_db_path() -> str | None:
+    """Return the ``host:/dir`` rsync destination for the database, or ``None``.
+
+    The SQLite database is pushed (mirror-style, overwriting) to this
+    location on every backup. The value is an rsync/ssh remote spec
+    (e.g. ``"host:/path/to/olliellama_chats"``) naming the *directory*
+    the backup module drops ``chats.db`` into.
+
+    Paired with :func:`remote_workspace_path` via :func:`backups_enabled`:
+    backups only run when both are set, following the no-degenerate-
+    fallback gating used by the file tools and the remote Ollama agent.
+
+    Returns:
+        The remote spec, or ``None`` when ``REMOTE_DB_PATH`` is unset or
+        empty.
+    """
+    raw = os.environ.get("REMOTE_DB_PATH")
+    return raw or None
+
+
+def remote_workspace_path() -> str | None:
+    """Return the ``host:/dir`` rsync destination for the workspaces, or ``None``.
+
+    The agent workspace tree (``FILE_TOOL_ROOT``) is pushed (mirror-style)
+    to this location on every backup. The value is an rsync/ssh remote
+    spec (e.g. ``"host:/path/to/agent_workspaces"``).
+
+    Reads the existing ``REMOTE_PATH`` env var — the same default
+    consumed by the standalone ``copy_agent_workspace.py`` script — so a
+    single setting drives both the manual script and the automatic
+    backup module.
+
+    Returns:
+        The remote spec, or ``None`` when ``REMOTE_PATH`` is unset or
+        empty.
+    """
+    raw = os.environ.get("REMOTE_PATH")
+    return raw or None
+
+
+def backups_enabled() -> bool:
+    """Return whether automatic remote backups are configured.
+
+    Backups push two things — the database and the workspaces — to two
+    separate remote destinations, so both :func:`remote_db_path` and
+    :func:`remote_workspace_path` must be set for the feature to engage.
+    When either is missing the backup scheduler no-ops (the same gating
+    discipline as :func:`file_tool_root` and :func:`remote_ollama_host`):
+    no partial backups, no surprises.
+
+    Returns:
+        ``True`` only when both remote destinations are configured.
+    """
+    return remote_db_path() is not None and remote_workspace_path() is not None

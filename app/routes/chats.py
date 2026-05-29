@@ -26,7 +26,7 @@ from typing import Annotated
 from fastapi import APIRouter, Form, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 
-from app import generation, ollama, queries, render
+from app import backup, generation, ollama, queries, render
 from app import rag_servers as _rag_servers
 from app.agents import get_agent
 from app.dependencies import DB, OllamaClient
@@ -339,6 +339,10 @@ async def send_message_endpoint(
     # Phase 19: warm the RAG health cache so the next sidebar render
     # reflects current reality. Background task — adds no latency here.
     _spawn_health_refresh(db)
+
+    # Phase 20: the user message is now persisted — push state to the
+    # remote mirror. Fire-and-forget + debounced; no-ops when unconfigured.
+    backup.request_backup("send")
 
     # Render the user bubble + assistant placeholder as one fragment.
     # The browser receives them both, swaps them into #messages, and

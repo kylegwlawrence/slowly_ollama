@@ -36,7 +36,7 @@ from typing import Literal
 
 import httpx
 
-from app import ollama, queries, rag_servers as _rag_servers, render
+from app import backup, ollama, queries, rag_servers as _rag_servers, render
 from app.ollama import OllamaProtocolError, OllamaUnavailable
 from app.projects import current_workspace_root, project_workspace_root
 from app.templates import templates
@@ -386,6 +386,10 @@ def _make_done_callback(conversation_id: int):
                     conversation_id,
                     exc_info=exc,
                 )
+        # Phase 20: the turn is over and its rows are persisted — push to
+        # the remote mirror. Fires on every completion path; debounced and
+        # a no-op when backups aren't configured.
+        backup.request_backup("generation-complete")
 
     return cb
 
@@ -836,6 +840,14 @@ async def _run_generation(
                 call_index += 1
 
                 result = await run_tool(name, arguments)
+
+                # Phase 20: a successful workspace write changes on-disk
+                # state mid-turn — push it. `run_tool` never raises, so
+                # success is the "Wrote N characters to ..." prefix the
+                # write_file tool returns. Debounce coalesces this with the
+                # generation-complete push into ~one rsync.
+                if name == "write_file" and result.text.startswith("Wrote "):
+                    backup.request_backup("write")
 
                 queries.append_message(
                     db,

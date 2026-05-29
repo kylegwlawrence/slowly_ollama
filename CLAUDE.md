@@ -14,7 +14,7 @@ end-user setup and `docs/plans/PLAN.md` for the build-time roadmap.
 | Question | Read this |
 |---|---|
 | What are we building and why? | `docs/plans/PLAN.md` |
-| What's the latest shipped phase? | `docs/plans/phase19-sidebar-rag-chips.md` + retro |
+| What's the latest shipped phase? | `docs/plans/phase20-remote-backup-sync.md` + retro |
 | What did we learn from prior phases? | `docs/retros/` (per-phase, 6 through 19) |
 | How to write a phase retro? | `docs/retros/RETRO_INSTRUCTIONS.md` |
 | Accumulated conventions + gotchas | `docs/CONVENTIONS.md` |
@@ -22,7 +22,9 @@ end-user setup and `docs/plans/PLAN.md` for the build-time roadmap.
 | Test strategy + how to run | `tests/README.md` |
 | End-user setup | `README.md` |
 
-Plans and retros in `docs/plans/` / `docs/retros/` are version-controlled artifacts, not workspace scratch.
+Plans and retros live in `docs/plans/` / `docs/retros/`. Note: `docs/` is
+gitignored (`.gitignore` line 42), so these are local reference artifacts, not
+committed to version control.
 
 ## Current state
 
@@ -52,8 +54,14 @@ Highlights since:
   default all-on.
 - **Post-19.** `fetch_github_file` tool; clickable model chip unloads from
   Ollama; inline RAG server name/URL editing.
+- **Phase 20 (remote backup/sync).** `app/backup.py` pushes the DB +
+  workspaces to a remote mirror (pop-os) on send / generation-complete /
+  successful `write_file`. Single-flight + debounced fire-and-forget; offline-
+  safe. WAL-consistent DB copy via the SQLite backup API (never the live
+  `-wal`/`-shm`). Daily server-side snapshot. Push-only; restore is manual.
+  Gated on `REMOTE_DB_PATH` + `REMOTE_PATH` both set.
 
-**696/697 tests passing** (known failure: compact threshold test needs KEEP_RECENT 4→2 update); coverage 97% on `app/` + `main.py`.
+**755 tests passing**, 0 failing; coverage 97% on `app/` + `main.py` (100% on `app/backup.py`).
 
 ## Working rules (override Claude defaults where they conflict)
 
@@ -63,10 +71,11 @@ Highlights since:
 - **Python style.** Google-style docstrings (`Args:` / `Returns:` / `Raises:`)
   on functions and classes. Type hints everywhere. Inline comments explain the
   *why*, not the *what*.
-- **Plans live in `docs/plans/`**, retros in `docs/retros/` — searchable,
-  reviewable, version-controlled. For handoff plans, include concrete code,
-  exact diffs, and test specs (see `phase8-frontend-design.md`,
-  `phase12-tool-calling-detail.md`). Plan-mode review pass before code.
+- **Plans live in `docs/plans/`**, retros in `docs/retros/` — searchable and
+  reviewable (note `docs/` is gitignored, so they're local, not committed). For
+  handoff plans, include concrete code, exact diffs, and test specs (see
+  `phase8-frontend-design.md`, `phase12-tool-calling-detail.md`). Plan-mode
+  review pass before code.
 - **Test after each phase.** Use `pytest --cov` to find gaps before writing
   speculative tests.
 - **Smoke-test UI changes in a real browser**, not just curl or pytest. The
