@@ -4,6 +4,7 @@
 
 ## Metadata
 
+- **Parent unit**: [Unit 10: Capstone Project](unit10_capstone/unit10_capstone.md)
 - **Capstone phase**: Proposal
 - **Duration**: ~10–15 hours total this week
 - **Prerequisites**: Units 5–9 content (the project's physics will draw on at least one of these). Familiarity with reading research papers helps but isn't required.

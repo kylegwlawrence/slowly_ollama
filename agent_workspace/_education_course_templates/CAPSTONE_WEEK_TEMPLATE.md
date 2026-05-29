@@ -21,12 +21,13 @@ You are filling this template for one **self-study learner** working on a capsto
 - 3 Deliverables (each with specific format + scope)
 - 6 Activities
 - 3 Tools/methods
-- 3 Reflection Prompts (selected from the menu in the section)
+- 3 Reflection Prompts (write 3 tailored to this specific phase — see the section for examples to adapt)
 
 ---
 
 ## Metadata
 
+- **Parent unit**: [{{Capstone Unit Title}}](unitN_capstone/unitN_capstone.md)
 - **Capstone phase**: {{Proposal | Execution | Submission}}
 - **Duration**: ~N hours total this week
 - **Prerequisites**: {{prior capstone week (if not the first) + specific prior-unit content your project draws on}}
@@ -66,14 +67,14 @@ The tool/method paired with what you'll use it for this week. Write 3.
 
 Self-grade this week's deliverables. Be honest — the rubric is for you.
 
-*(When filling this template, leave the Score column blank. The learner fills it in after doing the work.)*
+*(When filling this template: keep the four criteria fixed; rewrite the "What it means" column to be specific to this capstone phase and subject — the generic text below is a starting point, not the final wording. Leave the Score column blank; the learner fills it after doing the work.)*
 
 | Criterion | What it means | Score (1–5) |
 |-----------|---------------|-------------|
-| **Rigor** | Are claims supported by evidence, reasoning, or data appropriate to the subject? Sources cited where needed? | |
-| **Completeness** | Are all listed deliverables present and finished? No half-done sections? | |
-| **Communication** | Will future-you (in 6 months) understand what you wrote? Is the artifact readable on its own? | |
-| **Technical depth** | Does the work engage the hard parts, or stay at surface summary? | |
+| **Rigor** | {{Rewrite for this phase, e.g., for Proposal: "Is the research question specific enough to answer in two weeks? Are claims in the proposal sourced to specific papers?"}} | |
+| **Completeness** | {{Rewrite for this phase, e.g., "Are all listed deliverables present and finished — no half-done sections?"}} | |
+| **Communication** | {{Rewrite for this phase, e.g., "Will future-you (in 6 months) understand what you wrote? Could someone else follow your methodology?"}} | |
+| **Technical depth** | {{Rewrite for this phase, e.g., "Does the work engage the hard parts of the subject, or stay at surface summary?"}} | |
 
 **Total**: __ / 20
 
@@ -81,10 +82,17 @@ If total < 12: pick the lowest-scoring criterion and spend extra time on it befo
 
 ## Reflection Prompts
 
-Write briefly (3–5 sentences each) on 2–3 of these at week end:
+Write briefly (3–5 sentences each) on each of these at week end. Write exactly 3 prompts tailored to this capstone phase and subject — specific enough that a generic answer is impossible. Adapt from the examples below or write new ones.
 
+Example prompts to adapt:
 - What surprised you this week?
 - What was harder than expected? Why?
 - What would you do differently next time?
 - How does this week's work connect to a specific prior-unit concept? Which one, and how?
 - What's the single biggest risk to your project right now, and how will you mitigate it?
+
+Your 3 prompts (replace these):
+
+- {{Phase-specific prompt 1}}
+- {{Phase-specific prompt 2}}
+- {{Phase-specific prompt 3}}
