@@ -1,6 +1,8 @@
 # Curriculum Style Guide
 
-Short conventions for outlines built from the templates in this folder (`UNIT_TEMPLATE.md`, `WEEK_TEMPLATE.md`, `CAPSTONE_WEEK_TEMPLATE.md`). Subject-agnostic — these rules apply to any self-study curriculum the templates are used for.
+Short conventions for outlines built from the templates in this folder (`DEGREE_TEMPLATE.md`, `COURSE_TEMPLATE.md`, `UNIT_TEMPLATE.md`, `WEEK_TEMPLATE.md`, `CAPSTONE_WEEK_TEMPLATE.md`). Subject-agnostic — these rules apply to any self-study curriculum the templates are used for.
+
+The hierarchy from largest to smallest is: **degree → course → unit → week → session**. A degree is optional; a single standalone course needs no degree above it.
 
 ## Audience
 
@@ -16,15 +18,18 @@ One learner — self-study. Not a classroom. Templates and outlines drop all cla
 
 ## File naming
 
-- Course overview: `COURSE.md` — one per workspace folder (all caps; there is only one per course)
+- Degree overview: `DEGREE.md` — at the root of the degree workspace folder (all caps; there is only one per degree)
+- Course overview: `COURSE.md` — one per course folder (all caps; there is only one per course). When the course sits inside a degree, it lives at `courseN_{{topic}}/COURSE.md`; standalone, it lives at the workspace root.
 - Unit overviews: `unitN_{{topic}}.md` (e.g., `unit3_topic.md`)
 - Week files: `weekN_{{topic}}.md` (e.g., `week13_topic.md`)
 - Capstone weeks: `weekN_{{phase}}.md` (e.g., `weekN_proposal.md`, `weekN_execution.md`, `weekN_submission.md`)
 - All lowercase, underscore-separated. Topic in 1–3 words.
 
+Each course folder is internally identical whether it stands alone or sits inside a degree — adding a degree above a course never requires changes to the course's own files.
+
 ## Week numbering
 
-Global across the entire curriculum: **W1 through W_total** (where W_total is the curriculum's full week count). Do not restart numbering per unit.
+Global across the entire curriculum: **W1 through W_total** (where W_total is the curriculum's full week count). Do not restart numbering per unit, or per course inside a degree. If a degree contains multiple courses, Course 2 starts at the week after Course 1 ends.
 
 ## Prerequisites
 
@@ -75,9 +80,21 @@ Choose the number of units based on the subject's scope and natural structure. A
 - **3–4 units**: short, focused course with a single central thread
 - **5–7 units**: standard course with distinct phases, frameworks, or periods — most courses fall here
 - **8–10 units**: comprehensive survey of a wide field
-- **More than 10 units**: this is a curriculum, not a course — split into multiple courses
+- **More than 10 units**: this is a multi-course program, not a single course — split into multiple courses and consider wrapping them in a degree using `DEGREE_TEMPLATE.md`
 
 If two proposed units feel like one logical block, merge them. If a unit can't be summarized as a single capability the learner gains, it needs to be split or scoped more tightly.
+
+## Course count (per degree)
+
+Use `DEGREE_TEMPLATE.md` only when the subject is genuinely larger than one course. Pick exactly one of: **4, 5, or 6** courses per degree.
+
+- **4 courses**: a tightly focused program with one central thread (e.g., one method family, one historical era, one programming paradigm)
+- **5 courses**: a standard program — most degrees fit here
+- **6 courses**: a broad program spanning two related subfields
+- **Fewer than 4**: don't wrap in a degree — just use `COURSE_TEMPLATE.md` directly
+- **More than 6**: split into two degrees
+
+The final course in a degree is always the **capstone course** — an independent thesis, portfolio, or comprehensive integration project drawing on at least three earlier courses. Fill it with `COURSE_TEMPLATE.md` and use `CAPSTONE_WEEK_TEMPLATE.md` for its final unit's weeks.
 
 ## Core Themes
 
@@ -87,6 +104,17 @@ A theme is a recurring tension, question, or challenge that reappears across mul
 - **Right**: "Order vs. disorder: every system in this course tends toward states that maximize the number of ways things can be arranged" — a recurring tension that reappears in units on gases, chemistry, and information theory.
 
 Each theme should be stated as a claim or question, not a label. Use the formula: *[Tension or recurring challenge]: [one sentence explaining how it shows up across units]*.
+
+At the degree level, themes recur across **courses** (in at least three of the courses, not just two units); at the course level, themes recur across **units**. The formula is the same; the scope expands.
+
+## Degree-course content split
+
+- **Degree file (`DEGREE.md`)**: thin planning overview only — narrative, program outcomes, core themes, Course Sequence table, program arc rationale, degree-spanning resources. **No course detail.**
+- **Course file (`COURSE.md`)**: source of truth for course content — outcomes, themes, unit TOC, course arc.
+
+Degree-level program outcomes must require content from multiple courses to achieve. If an outcome could be fully met within a single course, push it down into that course file and raise the degree outcome higher.
+
+Do not duplicate content between degree and course files. If you find yourself describing a course's content in `DEGREE.md`, push the detail into the course file and leave only a one-line summary in the Course Sequence table.
 
 ## Course-unit content split
 
@@ -123,3 +151,4 @@ These appear in many existing classroom-style outlines and have no home in self-
 - **Classroom-fair / science-fair extensions** — classroom-context only
 - **Classroom Hook framing** ("Show students a video and ask…") — reframe as solo warm-up reading inside Concept Study
 - **Multiple-choice quizzes** — formal grading apparatus; replaced by self-assessment problems + reflection
+- **Registrar/accreditation apparatus** (degree level) — credit hours, GPA, transcripts, departmental requirements, admissions language; a degree here is a coherent self-study program, not an accredited credential
