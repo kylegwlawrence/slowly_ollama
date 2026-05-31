@@ -438,7 +438,10 @@ def content_errors_units(units: list[dict]) -> list[str]:
             errs.append(f"unit '{where}': need exactly 6 outcome_phrases, got {len(outs)}")
         bad = [p for p in outs if not _starts_with_verb(p)]
         if bad:
-            errs.append(f"unit '{where}': these outcomes need an action verb: {bad}")
+            errs.append(
+                f"unit '{where}': these outcomes must start with an action verb "
+                f"({_VERB_LIST}): {bad}"
+            )
         if len(u.get("key_concepts") or []) != 8:
             errs.append(f"unit '{where}': need exactly 8 key_concepts")
         gl = u.get("glossary_terms") or []
@@ -469,7 +472,10 @@ def content_errors_weeks(weeks: list[dict]) -> list[str]:
             errs.append(f"week '{where}': need 3 or 4 outcome_phrases, got {len(outs)}")
         bad = [p for p in outs if not _starts_with_verb(p)]
         if bad:
-            errs.append(f"week '{where}': these outcomes need an action verb: {bad}")
+            errs.append(
+                f"week '{where}': these outcomes must start with an action verb "
+                f"({_VERB_LIST}): {bad}"
+            )
         if not 6 <= len(w.get("key_term_names") or []) <= 8:
             errs.append(f"week '{where}': need 6 to 8 key_term_names")
     return errs

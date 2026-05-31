@@ -873,7 +873,10 @@ def test_content_errors_units_empty_list() -> None:
 def test_content_errors_units_flags_non_verb_outcome() -> None:
     unit = _content_unit(0, 0, 1)
     unit["outcome_phrases"][0] = "Understand the basics"  # not an action verb
-    assert any("need an action verb" in e for e in df.content_errors_units([unit]))
+    errs = df.content_errors_units([unit])
+    assert any("action verb" in e for e in errs)
+    # The retry note must re-state the allowed verbs so the model can fix it.
+    assert any("Apply" in e and "Derive" in e for e in errs)
 
 
 def test_content_errors_units_flags_each_count() -> None:
