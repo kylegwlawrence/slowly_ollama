@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 
 from app.agents.prompts import (
     CONTENT_GENERATOR_PROMPT,
+    DEGREE_ARCHITECT_PROMPT,
     REMOTE_AGENT_PROMPT,
     RESEARCH_AGENT_PROMPT,
 )
@@ -93,6 +94,35 @@ AGENTS: dict[str, AgentSpec] = {
         # Shares Research's model (granite4.1:8b) so the Research -> Content
         # hand-off needs no model swap/reload on a 16GB machine. Not a
         # thinking model, so think stays False.
+        think=False,
+    ),
+    "degree_architect": AgentSpec(
+        name="degree_architect",
+        label="Degree Architect",
+        description="Plans a self-study degree outline interactively.",
+        # Qwen Coder is unusually strong on structured-JSON output, and
+        # the Architect's Phase-3 assembly step needs strict valid JSON.
+        # Different family from granite4.1:8b, so switching between
+        # Research/Content Generator and the Architect triggers an Ollama
+        # model swap — acceptable for an interactive agent invoked at the
+        # start of a session, not acceptable for the bulk-fill phase
+        # (which is why bulk-fill loads its own small model once).
+        model="qwen2.5-coder:7b",
+        system_prompt=DEGREE_ARCHITECT_PROMPT,
+        # The Architect reads templates + style guide, writes the outline
+        # JSON, checks for existing outlines before overwriting, and uses
+        # query_rag + fetch_github_file to sanity-check scope and tier
+        # benchmarks. file tools and query_rag are gated by env in
+        # app.tools — when unset they're absent from TOOLS and the
+        # allowlist filter drops them.
+        tools=frozenset({
+            "read_file",
+            "write_file",
+            "list_directory",
+            "query_rag",
+            "fetch_github_file",
+        }),
+        # qwen2.5-coder is not a thinking model — think MUST stay False.
         think=False,
     ),
 }
