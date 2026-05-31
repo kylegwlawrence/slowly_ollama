@@ -415,6 +415,74 @@ async def test_run_build_retries_then_succeeds(monkeypatch, tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_build_retries_then_succeeds_on_malformed_json(
+    monkeypatch, tmp_path
+) -> None:
+    """First weeks call raises a `generate_json:` protocol error (truncated
+    string); the retry loop should feed it back and the second call succeeds."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    calls = {"weeks": 0}
+
+    async def fake(client, model, *, system, user, format_schema=None,
+                   num_ctx=None, **kwargs):
+        props = (format_schema or {}).get("properties", {})
+        if "courses" in props:
+            return _ok_stage_a(props["courses"]["minItems"])
+        if "units" in props:
+            return {"units": _ok_units(2)}
+        if "weeks" in props:
+            calls["weeks"] += 1
+            if calls["weeks"] == 1:
+                raise df.OllamaProtocolError(
+                    "generate_json: model content was not valid JSON: "
+                    "Unterminated string starting at: line 38 column 9 (char 1378)"
+                )
+            return {"weeks": _ok_weeks(props["weeks"]["minItems"])}
+        if "week_titles" in props:
+            span = props["week_titles"]["minItems"]
+            return {"title": "C", "focus": "f", "unit_title": "U",
+                    "week_titles": [f"t{i}" for i in range(span)]}
+        return {}
+
+    monkeypatch.setattr(df, "generate_json", fake)
+    draft = await df.create_draft(None, FORM, model="m")
+    job = df.DegreeJob(job_id="jjson1", degree_slug=draft.degree_meta["slug"])
+    await df.run_build(job, client=None, draft=draft, model="m")
+    assert job.error is None
+    assert calls["weeks"] >= 2  # retried after malformed-JSON failure
+
+
+@pytest.mark.asyncio
+async def test_generate_checked_does_not_retry_envelope_errors(
+    monkeypatch, tmp_path
+) -> None:
+    """Envelope-shape errors (Ollama itself returned a malformed /api/chat
+    response) must NOT be retried — only the model-side `generate_json:`
+    prefix opts in. The build surfaces the error immediately."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    calls = {"units": 0}
+
+    async def fake(client, model, *, system, user, format_schema=None,
+                   num_ctx=None, **kwargs):
+        props = (format_schema or {}).get("properties", {})
+        if "courses" in props:
+            return _ok_stage_a(props["courses"]["minItems"])
+        if "units" in props:
+            calls["units"] += 1
+            raise df.OllamaProtocolError(
+                "Ollama returned an unexpected /api/chat shape: KeyError('message')"
+            )
+        return {}
+
+    monkeypatch.setattr(df, "generate_json", fake)
+    draft = await df.create_draft(None, FORM, model="m")
+    job = df.DegreeJob(job_id="jenv1", degree_slug=draft.degree_meta["slug"])
+    await df.run_build(job, client=None, draft=draft, model="m")
+    assert job.error is not None
+    assert calls["units"] == 1  # one call, no retry
+
+
+@pytest.mark.asyncio
 async def test_run_build_reconciles_absurd_unit_week_counts(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
 

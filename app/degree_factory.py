@@ -689,17 +689,35 @@ async def _generate_checked(
 ) -> dict:
     """Call :func:`generate_json`, run ``gate``, and retry up to ``_MAX_RETRIES``
     feeding the gate's complaints back. Raises :class:`DegreeFactoryError` when
-    the budget is exhausted (never retries blindly)."""
+    the budget is exhausted (never retries blindly).
+
+    Model-side JSON failures (truncated string, non-object root) raised by
+    :func:`generate_json` as :class:`OllamaProtocolError` are caught and fed
+    back as retry notes — the model gets the same budget to recover as a
+    content gate failure. Envelope-shape errors (Ollama itself returned a
+    malformed ``/api/chat`` response) propagate; only the ``generate_json:``-
+    prefixed messages, which originate in the model's content, are retried.
+    """
     note = ""
     last: list[str] = []
     for _ in range(_MAX_RETRIES + 1):
         prompt = user if not note else (
             f"{user}\n\nYour previous attempt had these problems — fix them:\n{note}"
         )
-        data = await generate_json(
-            client, model, system=system, user=prompt,
-            format_schema=schema, num_ctx=num_ctx,
-        )
+        try:
+            data = await generate_json(
+                client, model, system=system, user=prompt,
+                format_schema=schema, num_ctx=num_ctx,
+            )
+        except OllamaProtocolError as e:
+            if not str(e).startswith("generate_json:"):
+                raise  # envelope-shape problem, not a model JSON failure
+            last = [
+                f"your previous response was not valid JSON ({e}); "
+                "return one complete, valid JSON object matching the schema"
+            ]
+            note = "\n".join(f"- {x}" for x in last)
+            continue
         last = gate(data)
         if not last:
             return data
