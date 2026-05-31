@@ -15,7 +15,7 @@
          data-role="summary">
   <header class="message__summary-badge">
     <span class="material-symbols-outlined">compress</span>
-    summary of earlier conversation
+    summary of conversation
   </header>
   <div class="message__content">{{ message.content | markdown | safe }}</div>
   {% if archived_count is defined and archived_count > 0 %}

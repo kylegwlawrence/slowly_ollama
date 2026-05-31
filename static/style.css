@@ -2069,7 +2069,7 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--accent-tonal-text);
-  margin-bottom: var(--space-xs);
+  margin-bottom: var(--space-lg);
   border-radius: 0;
   background-color: var(--accent-tonal);
 }
