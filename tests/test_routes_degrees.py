@@ -459,6 +459,68 @@ def test_resume_missing_404(make_client, monkeypatch, tmp_path) -> None:
     assert r.status_code == 404
 
 
+def test_degrees_in_progress_renders_delete_button(
+    make_client, monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    with make_client(_noop_handler) as client:
+        _write_partial(tmp_path, built=2, total=4)
+        r = client.get("/degrees", headers={"HX-Request": "true"})
+    assert 'hx-delete="/degrees/partials/physics"' in r.text
+    assert 'hx-target="closest li"' in r.text
+    assert "hx-confirm=" in r.text
+
+
+def test_delete_partial_removes_file_and_empty_dir(
+    make_client, monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    with make_client(_noop_handler) as client:
+        _write_partial(tmp_path)
+        r = client.delete("/degrees/partials/physics")
+    assert r.status_code == 200
+    assert r.text == ""  # empty body so the row swaps out
+    assert not (tmp_path / "physics" / "degree_outline.partial.json").exists()
+    assert not (tmp_path / "physics").exists()  # empty dir cleaned up
+
+
+def test_delete_partial_404_when_missing(
+    make_client, monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    with make_client(_noop_handler) as client:
+        r = client.delete("/degrees/partials/ghost")
+    assert r.status_code == 404
+
+
+def test_delete_partial_preserves_non_empty_dir(
+    make_client, monkeypatch, tmp_path
+) -> None:
+    """If the user added other files under <slug>/, deleting the partial must
+    leave the dir + their files intact."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    with make_client(_noop_handler) as client:
+        _write_partial(tmp_path)
+        (tmp_path / "physics" / "user_notes.md").write_text("hand-added")
+        r = client.delete("/degrees/partials/physics")
+    assert r.status_code == 200
+    assert not (tmp_path / "physics" / "degree_outline.partial.json").exists()
+    assert (tmp_path / "physics" / "user_notes.md").exists()
+
+
+def test_delete_partial_rejects_path_traversal(
+    make_client, monkeypatch, tmp_path
+) -> None:
+    """`_slugify` strips traversal; the slug never escapes the workspace."""
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    (tmp_path.parent / "victim.txt").write_text("do not delete")
+    with make_client(_noop_handler) as client:
+        r = client.delete("/degrees/partials/..%2Fvictim.txt")
+    # Either 404 (no such partial) or 405 (FastAPI didn't match) — never 200.
+    assert r.status_code != 200
+    assert (tmp_path.parent / "victim.txt").exists()
+
+
 def test_build_rest_resume_no_job_spawns_full_build(make_client, monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
     degree_factory.degree_drafts["dRR"] = _sample_draft(draft_id="dRR")

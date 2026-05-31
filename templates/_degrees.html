@@ -81,6 +81,12 @@
                     hx-target="#degree-checkpoint" hx-swap="innerHTML">
               Resume
             </button>
+            <button type="button" class="degree-list__delete"
+                    hx-delete="/degrees/partials/{{ p.slug }}"
+                    hx-target="closest li" hx-swap="outerHTML"
+                    hx-confirm="Delete the in-progress build for '{{ p.title }}'? Approved courses ({{ p.built }} / {{ p.total }}) will be lost.">
+              Delete
+            </button>
           </li>
         {% endfor %}
       </ul>

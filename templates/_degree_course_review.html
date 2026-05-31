@@ -35,13 +35,13 @@
             hx-target="#degree-checkpoint" hx-swap="innerHTML">
       {% if is_last %}Approve &amp; finish{% else %}Approve &amp; build next course{% endif %}
     </button>
-    <button type="button"
+    <button type="button" class="degree-checkpoint__build"
             hx-post="/degrees/draft/{{ draft_id }}/regenerate-course"
             hx-target="#degree-checkpoint" hx-swap="innerHTML">
       Regenerate this course
     </button>
     {% if not is_last %}
-      <button type="button"
+      <button type="button" class="degree-checkpoint__build"
               hx-post="/degrees/draft/{{ draft_id }}/build-rest/{{ job_id }}"
               hx-target="#degree-checkpoint" hx-swap="innerHTML">
         Build all remaining

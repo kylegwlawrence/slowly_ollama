@@ -2167,7 +2167,8 @@ body {
 
 .degree-form button[type="submit"],
 .degree-checkpoint__build,
-.degree-checkpoint__regen button {
+.degree-checkpoint__regen button,
+.degree-list__delete {
   align-self: flex-start;
   background: var(--accent);
   color: var(--accent-on);
@@ -2179,6 +2180,14 @@ body {
   font-weight: 500;
   margin: 0;
   width: auto;
+}
+
+/* Same geometry as the Resume button; only the colour signals "destructive".
+   --accent-on is dark green tuned for sage; on the deep --danger red we need
+   plain white for AA contrast. */
+.degree-list__delete {
+  background: var(--danger);
+  color: #fff;
 }
 
 /* Course table on the checkpoint */

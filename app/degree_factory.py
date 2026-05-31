@@ -1103,7 +1103,15 @@ def load_partial(slug: str) -> DegreeDraft | None:
 
 
 def delete_partial(slug: str) -> None:
-    """Remove the partial once the final outline is written (best-effort)."""
+    """Remove the partial (best-effort).
+
+    Called from two paths: post-success cleanup once the final outline is
+    written, and the user-driven Delete button on the in-progress list. After
+    removing the partial, also rmdir the slug's directory IF it's empty —
+    keeps the workspace tidy so a future degree with the same slug doesn't
+    get bumped to ``_v2`` by an empty leftover dir. The rmdir is best-effort;
+    a non-empty dir (anything the user added) is left alone.
+    """
     target_dir = _degree_dir(slug)
     if target_dir is None:
         return
@@ -1111,6 +1119,11 @@ def delete_partial(slug: str) -> None:
         (target_dir / PARTIAL_NAME).unlink(missing_ok=True)
     except OSError:
         logger.warning("could not delete degree partial for %s", slug, exc_info=True)
+        return
+    try:
+        target_dir.rmdir()  # only succeeds if the dir is empty
+    except OSError:
+        pass  # dir not empty (or already gone) — leave it
 
 
 # ---------------------------------------------------------------------------

@@ -23,7 +23,7 @@
         Build next course (course {{ built + 1 }}/{{ total }})
       </button>
     {% endif %}
-    <button type="button"{% if built >= total %} class="degree-checkpoint__build"{% endif %}
+    <button type="button" class="degree-checkpoint__build"
             hx-post="/degrees/draft/{{ draft.draft_id }}/build-rest"
             hx-target="#degree-checkpoint" hx-swap="innerHTML">
       {% if built < total %}Build all remaining{% else %}Finish &amp; write outline{% endif %}

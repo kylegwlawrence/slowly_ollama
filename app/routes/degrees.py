@@ -331,6 +331,25 @@ async def degree_resume_endpoint(slug: str, request: Request) -> Response:
     )
 
 
+@router.delete("/degrees/partials/{slug}", response_class=HTMLResponse)
+def degree_delete_partial_endpoint(slug: str) -> Response:
+    """Delete an in-progress partial (the Delete button on the In-progress list).
+
+    The slug is re-sanitized to keep the unlink inside the workspace. Returns
+    an empty 200 so the row's ``hx-swap="outerHTML"`` replaces it with nothing;
+    404 when no partial exists (refuses a no-op so the UI can show feedback).
+    """
+    root = file_tool_root()
+    if root is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Workspace not configured.")
+    safe = degree_factory._slugify(slug, fallback="degree")
+    partial = (root / safe / degree_factory.PARTIAL_NAME).resolve()
+    if not partial.is_relative_to(root) or not partial.is_file():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No partial to delete.")
+    degree_factory.delete_partial(safe)
+    return HTMLResponse("")
+
+
 @router.get("/degrees/jobs/{job_id}/events")
 async def degree_events_endpoint(job_id: str) -> StreamingResponse:
     """SSE progress for a build. Attaches to the live job, or emits a single
