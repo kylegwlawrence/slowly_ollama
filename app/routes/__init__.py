@@ -36,6 +36,7 @@ from fastapi import APIRouter
 from app import ollama  # re-exported for tests that do `routes.ollama`
 from app.routes._helpers import _placeholder_name  # re-exported for tests
 from app.routes.chats import router as _chats_router
+from app.routes.degrees import router as _degrees_router
 from app.routes.files import router as _files_router
 from app.routes.projects import router as _projects_router
 from app.routes.settings import router as _settings_router
@@ -45,6 +46,7 @@ from app.tools import rag as _rag_tool  # noqa: F401
 
 router = APIRouter()
 router.include_router(_chats_router)
+router.include_router(_degrees_router)
 router.include_router(_files_router)
 router.include_router(_projects_router)
 router.include_router(_settings_router)

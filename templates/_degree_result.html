@@ -1,0 +1,10 @@
+{# Phase 24: final result, swapped into #degree-checkpoint when the last course
+   is approved (the approve endpoint assembles + writes synchronously — no SSE
+   needed for the no-model-call assemble step). #}
+<div class="degree-progress degree-progress--done">
+  <p class="degree-progress__success">Built <strong>{{ slug }}</strong>.
+    Saved <code>{{ path }}</code>.</p>
+  <a class="degree-progress__link" href="/degrees"
+     hx-get="/degrees" hx-target="#main" hx-swap="innerHTML" hx-push-url="/degrees">
+    Back to Degrees</a>
+</div>

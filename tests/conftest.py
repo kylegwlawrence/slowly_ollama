@@ -21,7 +21,7 @@ from collections.abc import Iterator
 
 import pytest
 
-from app import generation, ollama, rag_health
+from app import degree_factory, generation, ollama, rag_health
 from app.tools import TOOLS
 from app.tools import builtins as _builtins  # noqa: F401 — registers file tools
 
@@ -53,6 +53,13 @@ def _isolate_module_state() -> Iterator[None]:
     """
     saved_gens = dict(generation.live_generations)
     generation.live_generations.clear()
+    # Phase 24: the degree factory's in-memory draft/job registries follow the
+    # same single-process pattern as live_generations — snapshot + clear so a
+    # planted draft/job in one test never leaks into the next.
+    saved_drafts = dict(degree_factory.degree_drafts)
+    saved_jobs = dict(degree_factory.degree_jobs)
+    degree_factory.degree_drafts.clear()
+    degree_factory.degree_jobs.clear()
     ollama.reset_capability_cache()
     saved_query_rag = TOOLS.get("query_rag")
     # The file tools register at import (via the @tool decorator) but
@@ -70,6 +77,10 @@ def _isolate_module_state() -> Iterator[None]:
     yield
     generation.live_generations.clear()
     generation.live_generations.update(saved_gens)
+    degree_factory.degree_drafts.clear()
+    degree_factory.degree_drafts.update(saved_drafts)
+    degree_factory.degree_jobs.clear()
+    degree_factory.degree_jobs.update(saved_jobs)
     ollama.reset_capability_cache()
     rag_health.clear_cache()
     if saved_query_rag is not None:

@@ -7,6 +7,7 @@
    directly — the fallback at the bottom keeps that path alive. #}
 {% block title %}
   {% if layout|default(none) == "projects" %}Projects — {% endif %}
+  {% if layout|default(none) == "degrees" %}Degrees — {% endif %}
   {% if layout|default(none) == "settings" %}Settings — {% endif %}
   {% if project %}{{ project.name }} — {% endif %}
   {% if conversation %}{{ conversation.name }} — {% endif %}olliellama
@@ -19,6 +20,8 @@
     <main id="main">{% include "_projects_index.html" %}</main>
   {% elif layout|default(none) == "project" %}
     <main id="main">{% include "_project_page.html" %}</main>
+  {% elif layout|default(none) == "degrees" %}
+    <main id="main">{% include "_degrees.html" %}</main>
   {% elif layout|default(none) == "settings" %}
     <main id="main">
       {% set servers = rag_servers %}

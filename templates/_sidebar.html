@@ -42,6 +42,14 @@
   {% set oob = false %}
   {% include "_sidebar_rag_section.html" %}
   <div class="sidebar__footer">
+    <a class="sidebar__settings" href="/degrees"
+       hx-get="/degrees"
+       hx-target="#main"
+       hx-swap="innerHTML"
+       hx-push-url="/degrees">
+      <span class="material-symbols-outlined">school</span>
+      Degrees
+    </a>
     <a class="sidebar__settings" href="/settings"
        hx-get="/settings"
        hx-target="#main"

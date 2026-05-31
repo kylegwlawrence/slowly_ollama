@@ -1,0 +1,56 @@
+{# Phase 24: checkpoint — degree summary + course table. The user approves
+   (build the full outline) or regenerates (re-run Stage A). Display-only:
+   the course list round-trips by draft_id, not by editing cells. #}
+<div class="degree-checkpoint" data-draft-id="{{ draft.draft_id }}">
+  <h2 class="settings__section-title">{{ draft.degree_meta.title }}</h2>
+  <p class="settings__section-help">
+    Tier reached: {{ draft.degree_meta.tier_reached }} ·
+    Prerequisites: {{ draft.degree_meta.prerequisites }}
+  </p>
+
+  <details class="degree-checkpoint__detail">
+    <summary>Themes &amp; program outcomes</summary>
+    <p><strong>Themes</strong></p>
+    <ul>{% for t in draft.degree_meta.themes %}<li>{{ t }}</li>{% endfor %}</ul>
+    <p><strong>Program outcomes</strong></p>
+    <ul>{% for o in draft.degree_meta.program_outcome_phrases %}<li>{{ o }}</li>{% endfor %}</ul>
+  </details>
+
+  <table class="degree-course-table">
+    <thead>
+      <tr><th>#</th><th>Course</th><th>Tier</th><th>Weeks</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for c in draft.courses %}
+        <tr data-course-slug="{{ c.slug }}">
+          <td>{{ c.n }}</td>
+          <td>
+            <strong>{{ c.title }}</strong>
+            <span class="degree-course-table__focus">{{ c.focus }}</span>
+          </td>
+          <td>{{ c.tier }}</td>
+          <td>W{{ c.weeks_start }}–{{ c.weeks_end }}</td>
+          <td>{% if c.is_capstone %}<span class="degree-badge">capstone</span>{% endif %}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="degree-checkpoint__actions">
+    <button type="button" class="degree-checkpoint__build"
+            hx-post="/degrees/draft/{{ draft.draft_id }}/build"
+            hx-target="#degree-checkpoint"
+            hx-swap="innerHTML">
+      Approve &amp; start building
+    </button>
+    <form class="degree-checkpoint__regen"
+          hx-post="/degrees/draft/{{ draft.draft_id }}/regenerate"
+          hx-target="#degree-checkpoint"
+          hx-swap="innerHTML">
+      <input type="text" name="note" placeholder="Optional: what to change">
+      <button type="submit">Regenerate</button>
+    </form>
+  </div>
+  <p class="settings__section-help">Builds one course at a time — after each, you
+    review its units and weeks and approve, regenerate it, or hand off the rest.</p>
+</div>

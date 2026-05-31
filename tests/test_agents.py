@@ -62,38 +62,18 @@ def test_shipped_agent_allowlists() -> None:
     assert content.tools == frozenset({"read_file", "write_file", "list_directory", "search_files"})
 
 
-def test_degree_architect_registration() -> None:
-    """Phase 23: Architect is registered with the locked-in model + tools.
+def test_degree_architect_removed_from_roster() -> None:
+    """Phase 24: the chat-based Degree Architect agent is gone.
 
-    The model choice (qwen2.5-coder:7b vs. the granite4.1:8b family used by
-    the other agents) is intentional — Qwen Coder is unusually strong on
-    structured-JSON output, which the Architect's Phase-3 assembly step
-    depends on. Pinned here so a future edit that swaps it on a hunch fails
-    loudly until the test is updated to match the new rationale.
+    It was replaced by the form-driven /degrees factory
+    (app/degree_factory.py). The chat agent overloaded context by re-sending
+    the whole conversation every tool turn, so it must NOT be selectable in
+    the chat header any more. (Its prompt text is intentionally retained in
+    app/agents/prompts.py for the factory to reuse — that's not asserted
+    here.)
     """
-    architect = AGENTS["degree_architect"]
-
-    assert architect.name == "degree_architect"
-    assert architect.label == "Degree Architect"
-    assert architect.model == "qwen2.5-coder:7b"
-    assert architect.tools == frozenset({
-        "read_file",
-        "write_file",
-        "list_directory",
-        "query_rag",
-        "fetch_github_file",
-    })
-    # qwen2.5-coder is not a thinking model — think must stay False or
-    # Ollama 400s on the request.
-    assert architect.think is False
-    # Architect runs on local Ollama (no host pin) — it's the highest-stakes
-    # human-in-loop call, kept near the user.
-    assert architect.ollama_host is None
-    # Prompt is preserved verbatim in code (not a placeholder).
-    assert "Degree Architect" in architect.system_prompt
-    assert "Phase 1: Interview" in architect.system_prompt
-    assert "Phase 2: Outline build" in architect.system_prompt
-    assert "Phase 3: Assemble" in architect.system_prompt
+    assert "degree_architect" not in AGENTS
+    assert get_agent("degree_architect") is None
 
 
 def test_think_defaults_off_and_is_settable() -> None:
