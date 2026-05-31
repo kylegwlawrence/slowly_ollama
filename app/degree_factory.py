@@ -49,12 +49,12 @@ from app.templates import templates
 logger = logging.getLogger(__name__)
 
 
-# Fallback model when the app has no configured default. granite4.1:8b is the
-# app's primary (the Research / Content agents run on it) and handles Ollama
-# structured outputs well, so the factory works out of the box without pulling
-# a separate model. The routes prefer the user's configured default model
-# (queries.get_default_model) and only fall back to this constant.
-DEFAULT_MODEL = "granite4.1:8b"
+# Fallback model when the app has no configured default. qwen2.5:7b is a small,
+# locally installed model that handles Ollama structured outputs well, so the
+# factory works out of the box without pulling a separate model. The routes
+# prefer the user's configured default model (queries.get_default_model) and
+# only fall back to this constant.
+DEFAULT_MODEL = "qwen2.5:7b"
 
 # Sane per-course length bounds — clamps a model that proposes a 1-week course
 # or a 200-week one. Capstone included (a 4-week capstone still tiles into
