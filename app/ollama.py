@@ -737,6 +737,107 @@ async def summarize_conversation(
     return text.strip()
 
 
+async def generate_json(
+    client: httpx.AsyncClient,
+    model: str,
+    *,
+    system: str,
+    user: str,
+    format_schema: dict | None = None,
+    num_ctx: int | None = None,
+    temperature: float = 0.2,
+    host: str | None = None,
+    timeout: float = 180.0,
+) -> dict:
+    """Single-shot, non-streaming structured-JSON generation.
+
+    Phase 24 (degree factory): the low-context primitive each pipeline
+    stage uses. Unlike the chat producer, this sends exactly one
+    ``system`` + one ``user`` message — no growing history — so every
+    call's prompt stays small regardless of how big the degree gets.
+    Mirrors :func:`summarize_conversation`'s non-streaming ``/api/chat``
+    shape (reuses ``_url`` and the ``message.content`` extraction).
+
+    When ``format_schema`` is given it is passed through as Ollama's
+    top-level ``format`` field (structured outputs). Pass a *hand-written
+    flat* JSON Schema dict rather than ``pydantic.model_json_schema()``:
+    the latter emits ``$ref``/``$defs`` for nested models, which Ollama's
+    schema compiler historically rejects. The schema constrains shape
+    (field presence, array ``minItems``/``maxItems``); semantic rules
+    (e.g. "starts with an action verb") are NOT enforced here — the
+    caller validates those and retries.
+
+    Args:
+        client: Async ``httpx.AsyncClient`` pointed at the Ollama host.
+        model: Identifier of an installed Ollama model.
+        system: The ``system``-role message (terse rules for the stage).
+        user: The ``user``-role message (just this node's context).
+        format_schema: Optional flat JSON Schema dict for structured
+            outputs. ``None`` omits the ``format`` key (free-form JSON,
+            still parsed).
+        num_ctx: Optional context-window override. ``None`` omits the key.
+        temperature: Sampling temperature. Defaults low (0.2) — these are
+            structured tasks, not creative prose.
+        host: Optional per-call Ollama host override (mirrors
+            :func:`stream_chat`). ``None`` uses the client's base URL.
+        timeout: Read timeout in seconds. Defaults to 180 — a cold model
+            load plus a structured response can exceed the title call's
+            budget.
+
+    Returns:
+        The parsed JSON object as a ``dict``.
+
+    Raises:
+        OllamaUnavailable: Ollama is unreachable, timed out, or returned
+            a non-2xx status.
+        OllamaProtocolError: the ``/api/chat`` envelope was malformed, the
+            model's content was not valid JSON, or the JSON was not an
+            object (array/scalar).
+    """
+    options: dict = {"temperature": temperature}
+    if num_ctx is not None:
+        options["num_ctx"] = num_ctx
+    payload: dict = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "stream": False,
+        "options": options,
+    }
+    if format_schema is not None:
+        payload["format"] = format_schema
+
+    try:
+        response = await client.post(
+            _url("/api/chat", host), json=payload, timeout=timeout
+        )
+        response.raise_for_status()
+    except (httpx.HTTPError, httpx.InvalidURL) as e:
+        raise OllamaUnavailable(f"generate_json request failed: {e}") from e
+
+    try:
+        content = response.json()["message"]["content"]
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        raise OllamaProtocolError(
+            f"Ollama returned an unexpected /api/chat shape: {e}"
+        ) from e
+
+    try:
+        parsed = json.loads(content)
+    except (json.JSONDecodeError, TypeError) as e:
+        raise OllamaProtocolError(
+            f"generate_json: model content was not valid JSON: {e}"
+        ) from e
+    if not isinstance(parsed, dict):
+        raise OllamaProtocolError(
+            "generate_json: expected a JSON object, got "
+            f"{type(parsed).__name__}"
+        )
+    return parsed
+
+
 async def generate_title(
     client: httpx.AsyncClient,
     model: str,
