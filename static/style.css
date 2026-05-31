@@ -2259,18 +2259,33 @@ body {
   font-size: 14px;
 }
 
-.degree-progress__spinner {
-  width: 14px;
-  height: 14px;
-  border: 2px solid var(--border);
-  border-top-color: var(--accent);
-  border-radius: 50%;
-  animation: degree-spin 0.8s linear infinite;
+/* A spinning Material Symbols wheel — the same indicator the chat
+   compaction uses (progress_activity rotating @ 1s linear). */
+.degree-spin {
+  animation: degree-spin 1s linear infinite;
   flex-shrink: 0;
 }
 
 @keyframes degree-spin {
   to { transform: rotate(360deg); }
+}
+
+/* htmx-indicator shown while a *synchronous* generate is in flight — the
+   brief submit (Stage A) and the course-list regenerate, both of which wait
+   on the model with no SSE. The `.htmx-indicator` opacity-0 base is htmx's;
+   it flips visible via `.htmx-request`. Mirrors `.chat-panel__compacting`. */
+.degree-generating {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-sm) 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.degree-generating .material-symbols-outlined,
+.degree-progress__status .material-symbols-outlined {
+  font-size: 16px;
 }
 
 .degree-progress__success { color: var(--success); margin: 0 0 var(--space-sm); }

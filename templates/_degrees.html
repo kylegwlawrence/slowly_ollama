@@ -26,7 +26,9 @@
       <form class="degree-form"
             hx-post="/degrees/draft"
             hx-target="#degree-checkpoint"
-            hx-swap="innerHTML">
+            hx-swap="innerHTML"
+            hx-indicator="#degree-draft-indicator"
+            hx-disabled-elt="find button[type='submit']">
         <label>Subject — exact scope
           <textarea name="subject" required rows="2"
             placeholder="e.g. Lagrangian &amp; Hamiltonian mechanics — not 'physics'"></textarea>
@@ -51,6 +53,11 @@
           </select>
         </label>
         <button type="submit">Generate course list</button>
+        <div id="degree-draft-indicator" class="degree-generating htmx-indicator"
+             role="status" aria-live="polite">
+          <span class="material-symbols-outlined degree-spin" aria-hidden="true">progress_activity</span>
+          <span>Generating course list&hellip;</span>
+        </div>
         <p class="settings__section-help">Takes a few seconds — the model
           proposes the degree summary and course list, then you approve or
           regenerate before the full build runs.</p>

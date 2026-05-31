@@ -46,10 +46,17 @@
     <form class="degree-checkpoint__regen"
           hx-post="/degrees/draft/{{ draft.draft_id }}/regenerate"
           hx-target="#degree-checkpoint"
-          hx-swap="innerHTML">
+          hx-swap="innerHTML"
+          hx-indicator="#degree-regen-indicator"
+          hx-disabled-elt="find button[type='submit']">
       <input type="text" name="note" placeholder="Optional: what to change">
       <button type="submit">Regenerate</button>
     </form>
+  </div>
+  <div id="degree-regen-indicator" class="degree-generating htmx-indicator"
+       role="status" aria-live="polite">
+    <span class="material-symbols-outlined degree-spin" aria-hidden="true">progress_activity</span>
+    <span>Regenerating course list&hellip;</span>
   </div>
   <p class="settings__section-help">Builds one course at a time — after each, you
     review its units and weeks and approve, regenerate it, or hand off the rest.</p>

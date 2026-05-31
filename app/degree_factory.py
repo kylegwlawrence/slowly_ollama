@@ -998,7 +998,8 @@ async def _signal_done(job: DegreeJob) -> None:
 def _progress_html(text: str) -> str:
     return (
         '<div class="degree-progress__status">'
-        '<span class="degree-progress__spinner" aria-hidden="true"></span>'
+        '<span class="material-symbols-outlined degree-spin" aria-hidden="true">'
+        "progress_activity</span>"
         f"<span>{html.escape(text)}</span></div>"
     )
 
