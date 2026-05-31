@@ -21,11 +21,15 @@ from app.degree_schema import SLUG_PATTERN, validate_outline
 
 
 @pytest.fixture(autouse=True)
-def _no_real_backup(monkeypatch) -> None:
-    """Neutralize the rsync backup hook so build tests never spawn real backup
-    tasks (which open DB connections that leak under coverage's GC timing).
-    Tests that assert the backup-failure path re-patch this themselves."""
+def _isolate_factory(monkeypatch) -> None:
+    """Neutralize the rsync backup hook AND isolate the workspace so build /
+    persistence tests never spawn real backups or write to the real
+    ``agent_workspace`` (FILE_TOOL_ROOT defaults to ``./agent_workspace`` via
+    ``.env``). Tests that need a workspace set FILE_TOOL_ROOT to a tmp_path
+    themselves — that setenv wins over this delenv. Tests asserting the
+    backup-failure path re-patch ``request_backup`` themselves."""
     monkeypatch.setattr(df.backup, "request_backup", lambda reason: None)
+    monkeypatch.delenv("FILE_TOOL_ROOT", raising=False)
 
 
 # ---------------------------------------------------------------------------
@@ -647,6 +651,142 @@ def test_assemble_and_write_rejects_incomplete_outline(monkeypatch, tmp_path) ->
     draft.built_courses = [{"bogus": True}]
     with pytest.raises(Exception):  # pydantic.ValidationError
         df.assemble_and_write(draft)
+
+
+# ---------------------------------------------------------------------------
+# Incremental persistence + resume
+# ---------------------------------------------------------------------------
+
+
+def _draft_with(slug="physics", built=0, total=4):
+    return df.DegreeDraft(
+        draft_id="d", form=FORM,
+        degree_meta={"slug": slug, "title": "Physics", "tier_reached": "advanced",
+                     "prerequisites": "calc", "themes": ["a", "b", "c", "d"],
+                     "program_outcome_phrases": ["Derive x"] * 6},
+        courses=[{"slug": f"c{i}", "title": f"C{i}", "week_count": 6} for i in range(total)],
+        built_courses=[{"slug": f"b{i}", "title": f"Built {i}", "units": []}
+                       for i in range(built)],
+    )
+
+
+def test_persist_and_load_partial_round_trip(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    draft = _draft_with(built=1, total=4)
+    df.persist_draft(draft)
+    assert (tmp_path / "physics" / df.PARTIAL_NAME).is_file()
+
+    loaded = df.load_partial("physics")
+    assert loaded is not None
+    assert loaded.draft_id != "d"  # fresh in-memory id
+    assert loaded.degree_meta["title"] == "Physics"
+    assert len(loaded.built_courses) == 1
+    assert len(loaded.courses) == 4
+    assert loaded.form.subject == FORM.subject  # form round-trips
+    assert df.degree_drafts[loaded.draft_id] is loaded  # registered
+
+
+def test_load_partial_missing_returns_none(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    assert df.load_partial("ghost") is None
+
+
+def test_persist_and_load_noop_when_unconfigured(monkeypatch) -> None:
+    monkeypatch.delenv("FILE_TOOL_ROOT", raising=False)
+    df.persist_draft(_draft_with())  # must not raise
+    assert df.load_partial("physics") is None
+
+
+def test_load_partial_corrupt_returns_none(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    (tmp_path / "physics").mkdir()
+    (tmp_path / "physics" / df.PARTIAL_NAME).write_text("{ not json")
+    assert df.load_partial("physics") is None
+
+
+@pytest.mark.asyncio
+async def test_create_draft_persists_checkpoint(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    monkeypatch.setattr(df, "generate_json", _make_fake())
+    draft = await df.create_draft(None, FORM, model="m")
+    assert (tmp_path / draft.degree_meta["slug"] / df.PARTIAL_NAME).is_file()
+
+
+@pytest.mark.asyncio
+async def test_run_build_deletes_partial_on_finalize(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    monkeypatch.setattr(df, "generate_json", _make_fake())
+    draft = await df.create_draft(None, FORM, model="m")
+    slug = draft.degree_meta["slug"]
+    assert (tmp_path / slug / df.PARTIAL_NAME).is_file()  # checkpoint saved
+    job = df.DegreeJob(job_id="jp", degree_slug=slug)
+    await df.run_build(job, client=None, draft=draft, model="m")
+    assert job.error is None
+    assert (tmp_path / slug / df.OUTLINE_NAME).is_file()         # final written
+    assert not (tmp_path / slug / df.PARTIAL_NAME).is_file()      # partial removed
+
+
+@pytest.mark.asyncio
+async def test_run_course_build_guard_when_all_built(monkeypatch) -> None:
+    monkeypatch.setattr(df, "generate_json", _make_fake())
+    draft = await df.create_draft(None, FORM, model="m")
+    draft.built_courses = list(draft.courses)  # pretend everything is built
+    job = df.DegreeJob(job_id="jg", degree_slug=draft.degree_meta["slug"])
+    await df.run_course_build(job, client=None, draft=draft, model="m")
+    assert job.error is not None
+    assert job.built_course is None
+
+
+# ---------------------------------------------------------------------------
+# Slug uniqueness (versioning)
+# ---------------------------------------------------------------------------
+
+
+def test_unique_degree_slug_free_returns_base(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    assert df._unique_degree_slug("brand_new") == "brand_new"
+
+
+def test_unique_degree_slug_appends_version(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    (tmp_path / "classical_mechanics").mkdir()
+    assert df._unique_degree_slug("classical_mechanics") == "classical_mechanics_v2"
+    (tmp_path / "classical_mechanics_v2").mkdir()
+    assert df._unique_degree_slug("classical_mechanics") == "classical_mechanics_v3"
+
+
+def test_unique_degree_slug_unconfigured_returns_base(monkeypatch) -> None:
+    monkeypatch.delenv("FILE_TOOL_ROOT", raising=False)
+    assert df._unique_degree_slug("anything") == "anything"
+
+
+def test_unique_degree_slug_respects_length_cap(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    base = "a" * 41  # the maximum-length slug
+    (tmp_path / base).mkdir()
+    out = df._unique_degree_slug(base)
+    assert out.endswith("_v2") and len(out) <= 41
+    assert re.match(SLUG_PATTERN, out)
+
+
+@pytest.mark.asyncio
+async def test_create_draft_versions_slug_when_taken(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    monkeypatch.setattr(df, "generate_json", _make_fake())
+    (tmp_path / "classical_mechanics").mkdir()  # an earlier degree owns the slug
+    draft = await df.create_draft(None, FORM, model="m")
+    assert draft.degree_meta["slug"] == "classical_mechanics_v2"
+
+
+@pytest.mark.asyncio
+async def test_regenerate_keeps_existing_slug(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    monkeypatch.setattr(df, "generate_json", _make_fake())
+    draft = await df.create_draft(None, FORM, model="m")
+    original = draft.degree_meta["slug"]  # create_draft persisted -> dir now exists
+    out = await df.regenerate_draft(None, draft, note="more depth", model="m")
+    # must NOT version to _v2 just because its own directory exists
+    assert out.degree_meta["slug"] == original
 
 
 # ---------------------------------------------------------------------------

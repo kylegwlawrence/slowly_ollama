@@ -389,6 +389,108 @@ def test_outline_json_returns_saved_file(make_client, monkeypatch, tmp_path) -> 
     assert r.json()["degree"]["title"] == "Physics"
 
 
+def _write_partial(tmp_path, slug="physics", title="Physics WIP", built=2, total=4):
+    d = tmp_path / slug
+    d.mkdir(exist_ok=True)
+    (d / "degree_outline.partial.json").write_text(json.dumps({
+        "version": 1,
+        "form": {"subject": "s", "learner": "l", "tier_benchmark": "b",
+                 "capstone": "c", "course_count": total},
+        "degree_meta": {"slug": slug, "title": title, "tier_reached": "intro",
+                        "prerequisites": "none", "themes": ["a", "b", "c", "d"],
+                        "program_outcome_phrases": ["Derive x"] * 6},
+        "courses": [{"slug": f"c{i}", "title": f"C{i}", "week_count": 6} for i in range(total)],
+        "built_courses": [{"slug": f"b{i}", "title": f"Built {i}", "units": []}
+                          for i in range(built)],
+    }))
+
+
+def test_degrees_lists_in_progress(make_client, monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    with make_client(_noop_handler) as client:
+        _write_partial(tmp_path, built=2, total=4)
+        r = client.get("/degrees", headers={"HX-Request": "true"})
+    assert "In progress" in r.text
+    assert "Physics WIP" in r.text
+    assert "2 / 4 courses built" in r.text
+    assert 'hx-post="/degrees/resume/physics"' in r.text
+
+
+def test_degrees_excludes_finished_from_in_progress(make_client, monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    with make_client(_noop_handler) as client:
+        _write_partial(tmp_path)  # partial...
+        (tmp_path / "physics" / "degree_outline.json").write_text('{"degree": {"title": "Done"}}')
+        r = client.get("/degrees", headers={"HX-Request": "true"})
+    # the finished degree shows under Saved outlines, not In progress
+    assert 'hx-post="/degrees/resume/physics"' not in r.text
+
+
+def test_resume_loads_partial_and_shows_panel(make_client, monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    with make_client(_noop_handler) as client:
+        _write_partial(tmp_path, built=1, total=4)
+        r = client.post("/degrees/resume/physics")
+    assert r.status_code == 200
+    assert "Resume: Physics WIP" in r.text
+    assert "1 of 4 courses already built" in r.text
+    assert "Built 0" in r.text  # the approved course title
+    assert "/regenerate-course" in r.text  # Build next course
+    assert "/build-rest" in r.text          # Build all remaining
+    assert "data-draft-id=" in r.text
+
+
+def test_degrees_in_progress_tolerates_bad_partial(make_client, monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    with make_client(_noop_handler) as client:
+        d = tmp_path / "wip"
+        d.mkdir()
+        (d / "degree_outline.partial.json").write_text("{ not json")
+        r = client.get("/degrees", headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    # listed by directory name, no crash, resume still offered
+    assert 'hx-post="/degrees/resume/wip"' in r.text
+
+
+def test_resume_missing_404(make_client, monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    with make_client(_noop_handler) as client:
+        r = client.post("/degrees/resume/ghost")
+    assert r.status_code == 404
+
+
+def test_build_rest_resume_no_job_spawns_full_build(make_client, monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    degree_factory.degree_drafts["dRR"] = _sample_draft(draft_id="dRR")
+
+    async def _fake_rest(*, client, draft, **kwargs):
+        nj = DegreeJob(job_id="jRR", degree_slug=draft.degree_meta["slug"])
+        degree_factory.degree_jobs["jRR"] = nj
+        return nj
+
+    monkeypatch.setattr(degree_factory, "start_build", _fake_rest)
+    with make_client(_noop_handler) as client:
+        r = client.post("/degrees/draft/dRR/build-rest")
+    assert r.status_code == 200
+    assert 'sse-connect="/degrees/jobs/jRR/events"' in r.text
+
+
+def test_approve_persists_partial(make_client, monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
+    draft = _sample_draft(draft_id="dAP")  # slug "physics", 4 courses
+    degree_factory.degree_drafts["dAP"] = draft
+    job0 = DegreeJob(job_id="jap0", degree_slug=draft.degree_meta["slug"])
+    job0.built_course = {"slug": "c1", "title": "Course 1", "units": []}
+    job0.done = True
+    degree_factory.degree_jobs["jap0"] = job0
+    monkeypatch.setattr(degree_factory, "start_course_build", _fake_course_starter("japN"))
+    with make_client(_noop_handler) as client:
+        r = client.post("/degrees/draft/dAP/approve/jap0")
+    assert r.status_code == 200
+    # approval wrote the resume file with the one approved course
+    assert (tmp_path / "physics" / "degree_outline.partial.json").is_file()
+
+
 def test_outline_json_missing_404(make_client, monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("FILE_TOOL_ROOT", str(tmp_path))
     with make_client(_noop_handler) as client:

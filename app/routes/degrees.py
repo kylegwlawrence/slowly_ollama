@@ -58,6 +58,31 @@ def _list_existing_outlines() -> list[dict]:
     return outlines
 
 
+def _list_in_progress() -> list[dict]:
+    """Return ``[{slug, title, built, total}]`` for degrees with a saved partial
+    but no finished outline — interrupted per-course builds the user can resume."""
+    root = file_tool_root()
+    if root is None or not root.exists():
+        return []
+    items: list[dict] = []
+    for child in sorted(root.iterdir(), key=lambda p: p.name.lower()):
+        if not child.is_dir():
+            continue
+        partial = child / degree_factory.PARTIAL_NAME
+        if not partial.is_file() or (child / degree_factory.OUTLINE_NAME).is_file():
+            continue  # only in-progress: partial present, final not yet written
+        title, built, total = child.name, 0, 0
+        try:
+            data = json.loads(partial.read_text(encoding="utf-8"))
+            title = (data.get("degree_meta") or {}).get("title") or child.name
+            built = len(data.get("built_courses") or [])
+            total = len(data.get("courses") or [])
+        except (OSError, json.JSONDecodeError, AttributeError):
+            pass
+        items.append({"slug": child.name, "title": title, "built": built, "total": total})
+    return items
+
+
 def _inline_error(message: str) -> HTMLResponse:
     """A 200 error fragment that swaps into ``#degree-checkpoint`` so the user
     sees what went wrong in place (HTMX skips swaps on non-2xx)."""
@@ -99,6 +124,7 @@ def degrees_endpoint(request: Request, db: DB) -> Response:
     """The Degrees page (full shell on a direct hit, fragment for HTMX swaps)."""
     ctx = {
         "outlines": _list_existing_outlines(),
+        "in_progress": _list_in_progress(),
         "workspace_configured": file_tool_root() is not None,
     }
     if request.headers.get("HX-Request"):
@@ -230,6 +256,7 @@ async def degree_approve_course_endpoint(
     if not job.approved:
         draft.built_courses.append(job.built_course)
         job.approved = True
+        degree_factory.persist_draft(draft)  # save progress after each approval
 
     if len(draft.built_courses) < len(draft.courses):
         next_job = await degree_factory.start_course_build(
@@ -263,11 +290,45 @@ async def degree_build_rest_endpoint(
     if job is not None and job.built_course is not None and not job.approved:
         draft.built_courses.append(job.built_course)
         job.approved = True
+        degree_factory.persist_draft(draft)
     rest_job = await degree_factory.start_build(
         client=client, draft=draft, model=_factory_model(db),
         num_ctx=queries.get_default_num_ctx(db),
     )
     return _building(request, rest_job)
+
+
+@router.post("/degrees/draft/{draft_id}/build-rest", response_class=HTMLResponse)
+async def degree_build_rest_resume_endpoint(
+    draft_id: str, request: Request, client: OllamaClient, db: DB
+) -> Response:
+    """Build all remaining courses of a resumed draft (no course pending
+    approval — the Resume panel's 'Build all remaining' / 'Finish')."""
+    draft = _get_draft_or_404(draft_id)
+    rest_job = await degree_factory.start_build(
+        client=client, draft=draft, model=_factory_model(db),
+        num_ctx=queries.get_default_num_ctx(db),
+    )
+    return _building(request, rest_job)
+
+
+@router.post("/degrees/resume/{slug}", response_class=HTMLResponse)
+async def degree_resume_endpoint(slug: str, request: Request) -> Response:
+    """Reload a saved partial into memory and show the resume panel."""
+    draft = degree_factory.load_partial(slug)
+    if draft is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, "No saved progress for that degree."
+        )
+    return templates.TemplateResponse(
+        request=request, name="_degree_resume.html",
+        context={
+            "draft": draft,
+            "built": len(draft.built_courses),
+            "total": len(draft.courses),
+            "built_titles": [c.get("title", "?") for c in draft.built_courses],
+        },
+    )
 
 
 @router.get("/degrees/jobs/{job_id}/events")

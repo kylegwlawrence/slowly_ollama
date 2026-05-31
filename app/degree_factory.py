@@ -32,7 +32,7 @@ import json
 import logging
 import re
 from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from uuid import uuid4
 
@@ -722,7 +722,9 @@ async def _run_stage_a(
         gate=lambda d: content_errors_stage_a(d, form.course_count),
     )
     degree_meta = {
-        "slug": _slugify(data.get("slug") or data.get("title", ""), fallback="degree"),
+        "slug": _unique_degree_slug(
+            _slugify(data.get("slug") or data.get("title", ""), fallback="degree")
+        ),
         "title": _nonempty(data.get("title"), "Self-study degree"),
         "tier_reached": _normalize_tier(data.get("tier_reached")),
         "prerequisites": _nonempty(data.get("prerequisites"), "None stated."),
@@ -765,6 +767,7 @@ def _store_draft(form: DegreeForm, degree_meta: dict, courses: list[dict]) -> De
         courses=courses,
     )
     degree_drafts[draft.draft_id] = draft
+    persist_draft(draft)  # checkpoint is resumable even before any course builds
     return draft
 
 
@@ -817,8 +820,15 @@ async def regenerate_draft(
     _assign_unique_slugs(courses, fallback="course")
     _normalize_course_week_counts(courses)
     tile_courses(courses)
+    # Keep the same slug across regenerations — it's the same degree being
+    # re-planned, so reuse its on-disk identity (and partial file) instead of
+    # versioning to <slug>_v2 on every Regenerate click.
+    if draft.degree_meta.get("slug"):
+        degree_meta["slug"] = draft.degree_meta["slug"]
     draft.degree_meta = degree_meta
     draft.courses = courses
+    draft.built_courses = []  # a new course list invalidates prior approvals
+    persist_draft(draft)
     return draft
 
 
@@ -946,6 +956,53 @@ async def _build_capstone(
     return _pick(out, _COURSE_FIELDS)
 
 
+# Name of the resume file written after each course approval. Lives next to
+# the final degree_outline.json; deleted once that final file is written.
+PARTIAL_NAME = "degree_outline.partial.json"
+OUTLINE_NAME = "degree_outline.json"
+
+
+def _degree_dir(slug: str) -> Path | None:
+    """Resolve ``<FILE_TOOL_ROOT>/<slug>``, or ``None`` when the workspace is
+    unset or the slug would escape it (containment guard)."""
+    root = file_tool_root()
+    if root is None:
+        return None
+    target = (root / slug).resolve()
+    if not target.is_relative_to(root):
+        return None
+    return target
+
+
+def _unique_degree_slug(base: str) -> str:
+    """Return ``base``, or ``base_v2`` / ``base_v3`` / … when the workspace
+    already has a directory for that slug.
+
+    The slug is the on-disk identity (``<FILE_TOOL_ROOT>/<slug>/``), so this
+    ensures a *new* degree never overwrites an existing one — finished or
+    in-progress. Trims the base so the suffixed slug stays within the schema's
+    41-char cap. No-ops (returns ``base``) when the workspace is unset, since
+    there's nothing on disk to collide with and nothing is persisted anyway.
+    """
+    root = file_tool_root()
+    if root is None:
+        return base
+
+    def _taken(slug: str) -> bool:
+        target = _degree_dir(slug)
+        return target is not None and target.exists()
+
+    if not _taken(base):
+        return base
+    n = 2
+    while True:
+        suffix = f"_v{n}"
+        candidate = base[: 41 - len(suffix)].rstrip("_") + suffix
+        if not _taken(candidate):
+            return candidate
+        n += 1
+
+
 def _write_outline(slug: str, outline: dict) -> Path:
     """Write ``<FILE_TOOL_ROOT>/<slug>/degree_outline.json`` and return its path.
 
@@ -953,18 +1010,83 @@ def _write_outline(slug: str, outline: dict) -> Path:
         DegreeFactoryError: when the workspace is unconfigured or the slug
             would escape it (defensive — slugs are sanitized upstream).
     """
-    root = file_tool_root()
-    if root is None:
-        raise DegreeFactoryError("Workspace not configured (FILE_TOOL_ROOT unset).")
-    target_dir = (root / slug).resolve()
-    if not target_dir.is_relative_to(root):
-        raise DegreeFactoryError("Invalid degree slug path.")
+    target_dir = _degree_dir(slug)
+    if target_dir is None:
+        raise DegreeFactoryError(
+            "Workspace not configured (FILE_TOOL_ROOT unset) or invalid slug."
+        )
     target_dir.mkdir(parents=True, exist_ok=True)
-    path = target_dir / "degree_outline.json"
+    path = target_dir / OUTLINE_NAME
     path.write_text(
         json.dumps(outline, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     return path
+
+
+def persist_draft(draft: DegreeDraft) -> None:
+    """Best-effort write of the draft's progress to ``<slug>/degree_outline.partial.json``.
+
+    Lets a per-course build session survive a server restart: the approved
+    courses (``built_courses``) plus the degree plan are saved after each
+    approval (and at the checkpoint). Never raises — persistence is a safety
+    net, not a build dependency, so a write failure only logs."""
+    slug = (draft.degree_meta or {}).get("slug")
+    target_dir = _degree_dir(slug) if slug else None
+    if target_dir is None:
+        return
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "version": 1,
+            "form": asdict(draft.form),
+            "degree_meta": draft.degree_meta,
+            "courses": draft.courses,
+            "built_courses": draft.built_courses,
+        }
+        (target_dir / PARTIAL_NAME).write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+    except OSError:
+        logger.warning("could not persist degree draft for %s", slug, exc_info=True)
+
+
+def load_partial(slug: str) -> DegreeDraft | None:
+    """Reconstruct a :class:`DegreeDraft` from a saved partial and register it.
+
+    Returns a fresh in-memory draft (new ``draft_id``) ready to continue the
+    per-course loop, or ``None`` when there's no readable partial. The slug is
+    re-sanitized so it can't escape the workspace."""
+    target_dir = _degree_dir(_slugify(slug, fallback="degree"))
+    if target_dir is None:
+        return None
+    path = target_dir / PARTIAL_NAME
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        draft = DegreeDraft(
+            draft_id=uuid4().hex,
+            form=DegreeForm(**data["form"]),
+            degree_meta=data["degree_meta"],
+            courses=data["courses"],
+            built_courses=data.get("built_courses", []),
+        )
+    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+        logger.warning("could not load degree partial for %s", slug, exc_info=True)
+        return None
+    degree_drafts[draft.draft_id] = draft
+    return draft
+
+
+def delete_partial(slug: str) -> None:
+    """Remove the partial once the final outline is written (best-effort)."""
+    target_dir = _degree_dir(slug)
+    if target_dir is None:
+        return
+    try:
+        (target_dir / PARTIAL_NAME).unlink(missing_ok=True)
+    except OSError:
+        logger.warning("could not delete degree partial for %s", slug, exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1079,6 +1201,7 @@ def assemble_and_write(draft: DegreeDraft) -> Path:
     }
     validate_outline(outline)
     path = _write_outline(draft.degree_meta["slug"], outline)
+    delete_partial(draft.degree_meta["slug"])  # the final outline supersedes it
     try:
         backup.request_backup("manual")
     except Exception:  # backup is best-effort; never fail a build over it
@@ -1121,12 +1244,12 @@ async def run_build(
         for idx in range(len(draft.built_courses), n):
             c = draft.courses[idx]
             await progress(f"Building course {idx + 1}/{n}: {c['title']}")
-            draft.built_courses.append(
-                await _build_one(
-                    client, c, draft.degree_meta["themes"],
-                    model=model, num_ctx=num_ctx, on_progress=progress,
-                )
+            built = await _build_one(
+                client, c, draft.degree_meta["themes"],
+                model=model, num_ctx=num_ctx, on_progress=progress,
             )
+            draft.built_courses.append(built)
+            persist_draft(draft)  # progress survives a crash mid-tail
         await progress("Validating and writing the outline…")
         path = assemble_and_write(draft)
         job.result_path = str(path)
@@ -1159,6 +1282,8 @@ async def run_course_build(
         await _emit(job, "progress", _progress_html(text))
 
     try:
+        if idx >= n:
+            raise DegreeFactoryError("All courses are already built.")
         c = draft.courses[idx]
         await progress(f"Building course {idx + 1}/{n}: {c['title']}")
         built = await _build_one(

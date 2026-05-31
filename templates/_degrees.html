@@ -67,6 +67,26 @@
     {# Checkpoint + build progress land here. #}
     <section class="settings__section" id="degree-checkpoint"></section>
 
+    {% if in_progress %}
+    <section class="settings__section">
+      <h2 class="settings__section-title">In progress</h2>
+      <p class="settings__section-help">Interrupted builds — pick up where you left off.</p>
+      <ul class="degree-list">
+        {% for p in in_progress %}
+          <li class="degree-list__item" data-slug="{{ p.slug }}">
+            <span class="degree-list__title">{{ p.title }}</span>
+            <span class="degree-list__link">{{ p.built }} / {{ p.total }} courses built</span>
+            <button type="button" class="degree-checkpoint__build"
+                    hx-post="/degrees/resume/{{ p.slug }}"
+                    hx-target="#degree-checkpoint" hx-swap="innerHTML">
+              Resume
+            </button>
+          </li>
+        {% endfor %}
+      </ul>
+    </section>
+    {% endif %}
+
     <section class="settings__section">
       <h2 class="settings__section-title">Saved outlines</h2>
       {% if outlines %}
