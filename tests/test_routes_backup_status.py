@@ -68,7 +68,7 @@ def _reset_status():
         ("pending", "tool-chip--off", "progress_activity"),
         ("pushing", "tool-chip--off", "progress_activity"),
         ("ok", "tool-chip--on", "cloud_done"),
-        ("offline", "tool-chip--off", "cloud_off"),
+        ("offline", "tool-chip--unavailable", "cloud_off"),
         ("failed", "tool-chip--unavailable", "cloud_off"),
     ],
 )

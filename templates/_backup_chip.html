@@ -15,7 +15,7 @@
 {% set state = backup_status()[0] %}
 {% set _busy = state in ("pending", "pushing") %}
 {% set _class = (
-     "tool-chip--unavailable" if state == "failed"
+     "tool-chip--unavailable" if state in ("failed", "offline")
      else "tool-chip--on" if state == "ok"
      else "tool-chip--off"
    ) %}
