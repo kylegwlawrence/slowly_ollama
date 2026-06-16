@@ -124,11 +124,15 @@ def create_client() -> httpx.AsyncClient:
     latency on cold load (a 7B model can take 10-30 seconds to warm
     up the first time it's used in a session). We loosen READ to 600
     seconds (10 minutes) — long enough for any reasonable cold-start
-    and large context processing — while keeping CONNECT at 5 seconds
-    (a localhost connect that takes longer than that means Ollama is
-    wedged, not slow). Per-call overrides still win, e.g.
-    ``generate_title`` passes ``timeout=10`` to bound how long the SSE
-    connection stays open after the user-visible reply.
+    and large context processing — and set CONNECT to 10 seconds. A
+    localhost connect is sub-second, but ``OLLAMA_HOST`` can point at a
+    remote machine over VPN (the split deployment in
+    ``docs/plans/phase23-split-deployment.md``), where the first connect
+    to an idle peer may be relayed through relay or wait for the peer to
+    wake — 10s absorbs that without masking a genuinely wedged server.
+    Per-call overrides still win, e.g. ``generate_title`` passes
+    ``timeout=10`` to bound how long the SSE connection stays open after
+    the user-visible reply.
 
     Returns:
         A freshly built ``httpx.AsyncClient`` with ``base_url`` and a
@@ -140,7 +144,7 @@ def create_client() -> httpx.AsyncClient:
     """
     return httpx.AsyncClient(
         base_url=ollama_host(),
-        timeout=httpx.Timeout(600.0, connect=5.0),
+        timeout=httpx.Timeout(600.0, connect=10.0),
     )
 
 

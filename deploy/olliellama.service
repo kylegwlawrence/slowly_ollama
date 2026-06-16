@@ -1,0 +1,44 @@
+# olliellama webserver — systemd unit for the web-host (web-tier) deployment.
+#
+# This runs ONLY the FastAPI/uvicorn web tier. Ollama and the DB/workspace
+# mirror live on a separate machine (<gpu-host>); see
+# docs/plans/phase23-split-deployment.md.
+#
+# Install:
+#   sudo cp deploy/olliellama.service /etc/systemd/system/olliellama.service
+#   # edit the <placeholders> below to match this machine, then:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now olliellama.service
+#
+# Logs:    journalctl -u olliellama -f
+# Restart: sudo systemctl restart olliellama
+#
+# Placeholders to replace:
+#   <pi-user>  → the Linux user that owns the checkout (e.g. "pi")
+#   <repo>     → absolute path to the slowly_ollama checkout
+#                (e.g. /home/pi/slowly_ollama)
+
+[Unit]
+Description=olliellama webserver (FastAPI + uvicorn)
+# Ollama is remote, but VPN must be up before we bind/serve so the
+# first chat turn can reach <gpu-host> over the private network.
+After=network-online.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=<pi-user>
+# WorkingDirectory MUST be the repo root: python-dotenv (app/config.py)
+# loads .env by walking up from the process CWD, so .env is found only
+# when uvicorn starts from here.
+WorkingDirectory=<repo>
+# Bind localhost only — `reverse proxy` fronts it with HTTPS on the
+# private network (see the plan doc). Never add --reload in production.
+ExecStart=<repo>/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=3
+# Unbuffered stdout/stderr so journalctl shows logs in real time.
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
