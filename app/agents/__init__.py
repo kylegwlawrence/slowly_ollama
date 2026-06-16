@@ -116,8 +116,8 @@ def _build_remote_agent() -> AgentSpec | None:
     monkeypatched env without reimporting the module.
 
     Returns:
-        A populated AgentSpec when both REMOTE_OLLAMA_HOST and
-        REMOTE_OLLAMA_MODEL are set; None otherwise.
+        A populated AgentSpec when both SLOWLY_OLLAMA_HOST and
+        SLOWLY_OLLAMA_MODEL are set; None otherwise.
     """
     host = remote_ollama_host()
     model = remote_ollama_model()

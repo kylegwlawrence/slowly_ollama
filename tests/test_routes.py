@@ -1746,7 +1746,7 @@ def test_settings_remote_section_unconfigured_shows_info_note(
         response = client.get("/settings", headers={"HX-Request": "true"})
     assert response.status_code == 200
     # The "set these env vars" hint contains the var name.
-    assert "REMOTE_OLLAMA_HOST" in response.text
+    assert "SLOWLY_OLLAMA_HOST" in response.text
     # The toggle form is absent.
     assert 'hx-post="/settings/remote-ollama-enabled"' not in response.text
 

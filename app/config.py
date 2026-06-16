@@ -107,9 +107,9 @@ def remote_ollama_host() -> str | None:
 
     Returns:
         The URL string (e.g. ``"http://host1:11434"``) or ``None`` when
-        ``REMOTE_OLLAMA_HOST`` is unset or empty.
+        ``SLOWLY_OLLAMA_HOST`` is unset or empty.
     """
-    raw = os.environ.get("REMOTE_OLLAMA_HOST")
+    raw = os.environ.get("SLOWLY_OLLAMA_HOST")
     return raw or None
 
 
@@ -123,9 +123,9 @@ def remote_ollama_model() -> str | None:
 
     Returns:
         The model tag (e.g. ``"llama3.1:70b"``) or ``None`` when
-        ``REMOTE_OLLAMA_MODEL`` is unset or empty.
+        ``SLOWLY_OLLAMA_MODEL`` is unset or empty.
     """
-    raw = os.environ.get("REMOTE_OLLAMA_MODEL")
+    raw = os.environ.get("SLOWLY_OLLAMA_MODEL")
     return raw or None
 
 

@@ -200,8 +200,8 @@
     {% if remote_configured %}
       <p class="settings__section-help">
         The Remote agent routes inference (and compaction) to a second
-        Ollama instance configured via <code>REMOTE_OLLAMA_HOST</code> and
-        <code>REMOTE_OLLAMA_MODEL</code> in <code>.env</code>. Untoggle
+        Ollama instance configured via <code>SLOWLY_OLLAMA_HOST</code> and
+        <code>SLOWLY_OLLAMA_MODEL</code> in <code>.env</code>. Untoggle
         to hide the agent from the dropdown without restarting — existing
         chats using it fall back to their pinned local model.
       </p>
@@ -221,8 +221,8 @@
       </form>
     {% else %}
       <p class="settings__section-help">
-        Set <code>REMOTE_OLLAMA_HOST</code> and
-        <code>REMOTE_OLLAMA_MODEL</code> in <code>.env</code> and restart
+        Set <code>SLOWLY_OLLAMA_HOST</code> and
+        <code>SLOWLY_OLLAMA_MODEL</code> in <code>.env</code> and restart
         the server to enable a second Ollama instance (e.g. a
         VPN-reachable machine) as the "Remote" agent.
       </p>

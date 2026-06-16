@@ -164,8 +164,8 @@ def test_build_remote_agent_returns_none_when_env_unset(monkeypatch) -> None:
     """Both env vars missing → no remote agent (matches tool-gating pattern)."""
     from app.agents import _build_remote_agent
 
-    monkeypatch.delenv("REMOTE_OLLAMA_HOST", raising=False)
-    monkeypatch.delenv("REMOTE_OLLAMA_MODEL", raising=False)
+    monkeypatch.delenv("SLOWLY_OLLAMA_HOST", raising=False)
+    monkeypatch.delenv("SLOWLY_OLLAMA_MODEL", raising=False)
     assert _build_remote_agent() is None
 
 
@@ -173,8 +173,8 @@ def test_build_remote_agent_returns_none_when_only_host_set(monkeypatch) -> None
     """Partial config is treated as no config — drop the agent."""
     from app.agents import _build_remote_agent
 
-    monkeypatch.setenv("REMOTE_OLLAMA_HOST", "http://host1:11434")
-    monkeypatch.delenv("REMOTE_OLLAMA_MODEL", raising=False)
+    monkeypatch.setenv("SLOWLY_OLLAMA_HOST", "http://host1:11434")
+    monkeypatch.delenv("SLOWLY_OLLAMA_MODEL", raising=False)
     assert _build_remote_agent() is None
 
 
@@ -182,8 +182,8 @@ def test_build_remote_agent_returns_none_when_only_model_set(monkeypatch) -> Non
     """Partial config is treated as no config — drop the agent."""
     from app.agents import _build_remote_agent
 
-    monkeypatch.delenv("REMOTE_OLLAMA_HOST", raising=False)
-    monkeypatch.setenv("REMOTE_OLLAMA_MODEL", "llama3.1:70b")
+    monkeypatch.delenv("SLOWLY_OLLAMA_HOST", raising=False)
+    monkeypatch.setenv("SLOWLY_OLLAMA_MODEL", "llama3.1:70b")
     assert _build_remote_agent() is None
 
 
@@ -191,8 +191,8 @@ def test_build_remote_agent_populated_when_env_set(monkeypatch) -> None:
     """Both env vars set → spec carries the host + model + a non-empty allowlist."""
     from app.agents import _build_remote_agent
 
-    monkeypatch.setenv("REMOTE_OLLAMA_HOST", "http://host1:11434")
-    monkeypatch.setenv("REMOTE_OLLAMA_MODEL", "llama3.1:70b")
+    monkeypatch.setenv("SLOWLY_OLLAMA_HOST", "http://host1:11434")
+    monkeypatch.setenv("SLOWLY_OLLAMA_MODEL", "llama3.1:70b")
     spec = _build_remote_agent()
     assert spec is not None
     assert spec.name == "remote"
@@ -244,7 +244,7 @@ def test_enabled_agents_includes_remote_when_toggle_default(_db) -> None:
     """Default state (no row) → toggle is True → remote agent (if present)
     is included alongside local agents."""
     # Inject a remote spec directly into AGENTS so the test doesn't depend on
-    # REMOTE_OLLAMA_HOST env state. Snapshot + restore so other tests aren't
+    # SLOWLY_OLLAMA_HOST env state. Snapshot + restore so other tests aren't
     # affected.
     saved = AGENTS.get("remote")
     AGENTS["remote"] = AgentSpec(
