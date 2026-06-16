@@ -31,13 +31,12 @@
         Description
         <textarea name="description" maxlength="400" rows="3">{{ project.description }}</textarea>
       </label>
-      {# Per-project system prompt prepended to Normal-chat turns in this
-         project. Capped at 200 chars (enforced server-side too). Ignored
-         on invoked-agent turns. #}
+      {# Per-project system prompt prepended to every plain-chat turn in this
+         project, on EITHER host. Capped at 200 chars (enforced server-side). #}
       <label class="project-settings__field--full">
-        System prompt (Normal chat only, max 200 chars)
+        System prompt (max 200 chars)
         <textarea name="system_prompt" maxlength="200" rows="3"
-                  placeholder="Optional. Prepended to every Normal-chat turn in this project.">{{ project.system_prompt }}</textarea>
+                  placeholder="Optional. Prepended to every turn in this project, on either host.">{{ project.system_prompt }}</textarea>
       </label>
       <label class="project-settings__field--full">
         Default model (for new chats in this project)
@@ -55,9 +54,9 @@
         </select>
       </label>
       <label class="project-settings__field--full">
-        Default agent (for new chats in this project)
+        Default Ollama host (for new chats in this project)
         <select name="default_agent">
-          <option value=""{% if not project.default_agent %} selected{% endif %}>Normal (no agent)</option>
+          <option value=""{% if not project.default_agent %} selected{% endif %}>{{ primary_host_label() }}</option>
           {% for a in agents %}
             <option value="{{ a.name }}"{% if project.default_agent == a.name %} selected{% endif %}>{{ a.label }}</option>
           {% endfor %}

@@ -50,9 +50,9 @@
     </form>
     {% endif %}
     {# Per-chat tool chips, rendered only when the model supports tools.
-       Wrapped in _chat_tool_chips.html so the agent-picker endpoint can
-       OOB-swap the whole #chat-tool-chips bar: the chips when Normal, the
-       active agent's read-only tool list while an agent is invoked. #}
+       Wrapped in _chat_tool_chips.html so the host-picker endpoint can
+       OOB-swap the whole #chat-tool-chips bar. The chips apply on either
+       host, so they render the same regardless of the selected host. #}
     {% if supports_tools %}
     {% include "_chat_tool_chips.html" %}
     {% endif %}

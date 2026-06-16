@@ -101,8 +101,13 @@ async def _sidebar_rag_context(
 
     When ``conversation`` is None (no active chat), returns the minimal
     shape with empty lists — the guard in ``_sidebar.html`` shorts the
-    section to hidden. When an agent is active or no servers are
-    configured, also returns empty ``rag_health`` (no need to probe).
+    section to hidden. When no servers are configured, also returns empty
+    ``rag_health`` (no need to probe).
+
+    The RAG chips apply on either Ollama host (the picker selects a host,
+    not an agent with its own allowlist), so ``active_chat_agent_active`` is
+    always False — the section is governed solely by tool support + whether
+    any servers are configured.
 
     Probes server health in parallel via the cache; render-time cost is
     one ``asyncio.gather`` per chat-panel render (cache-hit fast path:
@@ -122,15 +127,11 @@ async def _sidebar_rag_context(
     rag_server_states = queries.get_chat_rag_states(
         db, conversation.id, [s.name for s in servers]
     )
-    agent_active = (
-        conversation.active_agent is not None
-        and get_agent(conversation.active_agent) is not None
-    )
-    if agent_active or not servers:
+    if not servers:
         return {
             "active_conversation": conversation,
             "active_chat_supports_tools": supports_tools,
-            "active_chat_agent_active": agent_active,
+            "active_chat_agent_active": False,
             "rag_server_states": rag_server_states,
             "rag_health": {},
         }
@@ -199,17 +200,18 @@ def _resolve_active_spec(
     Wraps :func:`app.agents.get_agent` so callers that render the chat
     header (model chip, agent indicator, unload button) all see the same
     "what's actually going to run" view: a chat with
-    ``active_agent="remote"`` resolves to ``None`` when the phase-20b
-    Remote Ollama toggle is off, so the indicator shows the chat's
-    pinned model instead of the now-disabled agent label.
+    ``active_agent="host2"`` resolves to ``None`` when the phase-20b
+    Remote Ollama toggle is off, so the indicator shows the primary host's
+    pinned model instead of the now-disabled second host.
 
     Args:
         conversation: The chat whose ``active_agent`` to resolve.
         db: Open SQLite connection — the toggle lives in ``app_settings``.
 
     Returns:
-        The resolved ``AgentSpec``, or ``None`` for Normal (no agent set,
-        unknown name, OR a remote spec while the toggle is off).
+        The resolved ``AgentSpec``, or ``None`` for the primary host (no
+        selection, unknown name, OR a second-host spec while the toggle is
+        off).
     """
     spec = get_agent(conversation.active_agent)
     if spec is not None and spec.ollama_host is not None:
@@ -221,19 +223,28 @@ def _resolve_active_spec(
 def _agent_overrides(
     conversation: queries.Conversation, db: sqlite3.Connection
 ) -> dict:
-    """Resolve a conversation's active agent into ``start_generation`` kwargs.
+    """Resolve a conversation's selected Ollama host into ``start_generation`` kwargs.
 
-    Returns the effective ``model`` plus ``system_prompt_override`` /
-    ``tool_allowlist`` / ``think`` / ``ollama_host``. For Normal chat (no
-    agent, or an unknown/removed agent name) this is the chat's pinned
-    model with no overrides, ``think=None`` (omit the flag), and
-    ``ollama_host=None`` (local) — i.e. today's plain-chat behavior.
+    The per-chat picker selects a host, stored in
+    ``conversation.active_agent``: NULL/empty (or an unknown/removed name)
+    means the primary host ("host1"); a known name (e.g. ``"host2"``) means
+    that registered second host.
 
-    Phase 20b: when the resolved spec has a non-None ``ollama_host`` AND
-    the app-wide ``remote_ollama_enabled`` toggle is off, fall back to
-    the Normal-overrides path. Chats with ``active_agent="remote"`` then
-    silently degrade to plain chat on the chat's pinned local model —
-    no data loss, no errors, regardless of whether host1 is reachable.
+    The primary host returns the chat's pinned model with no overrides,
+    ``think=None`` (omit the flag), and ``ollama_host=None`` (local). A
+    selected second host returns its pinned ``model`` and its ``ollama_host``
+    but is otherwise IDENTICAL: ``tool_allowlist=None`` and
+    ``system_prompt_override=None`` route it through the plain-chat generation
+    path, so the per-chat tool/RAG chips and the project system prompt apply on
+    either host — only the machine and the model differ. The host spec's own
+    ``system_prompt`` / ``tools`` fields are deliberately ignored (a host is
+    not an agent).
+
+    Phase 20b gating still applies: when a selected host's spec has a non-None
+    ``ollama_host`` AND the app-wide ``remote_ollama_enabled`` toggle is off,
+    ``_resolve_active_spec`` returns None and we fall back to the primary host
+    — chats with ``active_agent="host2"`` then run plain on the chat's pinned
+    local model, no data loss, regardless of whether the second host is up.
     """
     spec = _resolve_active_spec(conversation, db)
     if spec is None:
@@ -246,9 +257,9 @@ def _agent_overrides(
         }
     return {
         "model": spec.model,
-        "system_prompt_override": spec.system_prompt,
-        "tool_allowlist": spec.tools,
-        "think": spec.think,
+        "system_prompt_override": None,
+        "tool_allowlist": None,
+        "think": None,
         "ollama_host": spec.ollama_host,
     }
 

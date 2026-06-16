@@ -320,71 +320,80 @@ def agent_client(
         app.dependency_overrides.update(saved_overrides)
 
 
-def test_invoked_agent_journey(agent_client: TestClient) -> None:
-    """Start a chat on the Research agent, drain its stream, switch to the
-    Content Generator, then back to Normal — asserting the header indicator
-    (and thus the persisted active agent) at each step.
+def test_host_picker_journey(agent_client: TestClient) -> None:
+    """Start a chat on the primary host, drain its stream, switch to the
+    "host2" host, then back — asserting the header indicator (and thus the
+    persisted host selection) at each step.
 
-    The agent runs on its own model (granite4.1:8b), overriding the chat's
-    pinned Normal model (llama3) only while it's active.
+    The "host2" host is injected into the registry so the journey doesn't
+    depend on SLOWLY_OLLAMA_* being set in the test env. Its distinctive
+    pinned model name ("host2-model") appears in the header indicator ONLY
+    while that host is selected.
     """
     client = agent_client
 
-    # Look up the Default project id; phase 17 nests all chat URLs.
+    from app.agents import AGENTS, AgentSpec
     from app.connection import open_connection
     import os
 
-    with open_connection(os.environ["DB_PATH"]) as conn:
-        pid = conn.execute(
-            "SELECT id FROM projects ORDER BY id LIMIT 1;"
-        ).fetchone()[0]
-
-    # 1. Create a chat with the Research agent selected.
-    created = client.post(
-        f"/projects/{pid}/chats",
-        data={
-            "model": "llama3",
-            "content": "research X",
-            "agent": "research",
-        },
+    saved = AGENTS.get("host2")
+    AGENTS["host2"] = AgentSpec(
+        name="host2", label="host2", description="d",
+        model="host2-model", system_prompt="", tools=frozenset(),
+        ollama_host="http://host1:11434",
     )
-    assert created.status_code == 201
-    chat_id = int(re.search(r'data-chat-id="(\d+)"', created.text).group(1))
-    # Header indicator names the agent + its assigned model.
-    assert "Agent: Research" in created.text
-    assert "granite4.1:8b" in created.text
+    try:
+        # Look up the Default project id; phase 17 nests all chat URLs.
+        with open_connection(os.environ["DB_PATH"]) as conn:
+            pid = conn.execute(
+                "SELECT id FROM projects ORDER BY id LIMIT 1;"
+            ).fetchone()[0]
 
-    # 2. Drive the research turn's stream to completion.
-    stream = client.get(f"/chats/{chat_id}/stream")
-    assert stream.status_code == 200
-    assert "event: done" in stream.text
+        # 1. Create a chat on the primary host (no selection).
+        created = client.post(
+            f"/projects/{pid}/chats",
+            data={"model": "llama3", "content": "hello", "agent": ""},
+        )
+        assert created.status_code == 201
+        chat_id = int(re.search(r'data-chat-id="(\d+)"', created.text).group(1))
+        # Indicator shows the chat's pinned model; the host2 host's pinned
+        # model is NOT active.
+        assert "llama3" in created.text
+        assert "host2-model" not in created.text
 
-    # 3. Reload: research's reply persisted; indicator still shows Research.
-    panel = client.get(f"/projects/{pid}/chats/{chat_id}")
-    assert "Done." in panel.text
-    assert "Agent: Research" in panel.text
+        # 2. Drive the turn's stream to completion (on the primary host).
+        stream = client.get(f"/chats/{chat_id}/stream")
+        assert stream.status_code == 200
+        assert "event: done" in stream.text
 
-    # 4. Switch to the Content Generator mid-chat.
-    switch = client.post(
-        f"/chats/{chat_id}/agent",
-        data={"agent": "content_generator"},
-        headers={"HX-Request": "true"},
-    )
-    assert switch.status_code == 200
-    assert "Content Generator" in switch.text
-    panel2 = client.get(f"/projects/{pid}/chats/{chat_id}")
-    assert "Agent: Content Generator" in panel2.text
+        # 3. Switch this chat to the "host2" host.
+        switch = client.post(
+            f"/chats/{chat_id}/agent",
+            data={"agent": "host2"},
+            headers={"HX-Request": "true"},
+        )
+        assert switch.status_code == 200
+        # Indicator now names the host2 host's pinned model.
+        assert "host2-model" in switch.text
+        panel2 = client.get(f"/projects/{pid}/chats/{chat_id}")
+        assert "Done." in panel2.text  # the earlier reply persisted
+        assert "host2-model" in panel2.text
 
-    # 5. Switch back to Normal — the indicator drops the agent and shows
-    # the chat's pinned model again.
-    normal = client.post(
-        f"/chats/{chat_id}/agent",
-        data={"agent": ""},
-        headers={"HX-Request": "true"},
-    )
-    assert normal.status_code == 200
-    panel3 = client.get(f"/projects/{pid}/chats/{chat_id}")
-    assert "Agent:" not in panel3.text
-    assert "llama3" in panel3.text
+        # 4. Switch back to the primary host — the indicator drops the host2
+        # host and shows the chat's pinned model again.
+        normal = client.post(
+            f"/chats/{chat_id}/agent",
+            data={"agent": ""},
+            headers={"HX-Request": "true"},
+        )
+        assert normal.status_code == 200
+        panel3 = client.get(f"/projects/{pid}/chats/{chat_id}")
+        assert "host2-model" not in panel3.text
+        assert "llama3" in panel3.text
+    finally:
+        if saved is None:
+            AGENTS.pop("host2", None)
+        else:
+            AGENTS["host2"] = saved
 
 

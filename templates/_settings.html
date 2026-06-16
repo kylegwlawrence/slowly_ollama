@@ -185,7 +185,7 @@
     </form>
   </section>
 
-  {# Phase 20b: Remote Ollama toggle. Two states:
+  {# Ollama-hosts toggle (the "host2" second host). Two states:
        - remote_configured = False → informational note only, no toggle
          (the env vars haven't been set, so there's nothing to enable).
        - remote_configured = True → a checkbox bound to the
@@ -196,14 +196,16 @@
      "0" — so the checked state cleanly maps to "1" and unchecked to
      "0" with no JS gymnastics. #}
   <section class="settings__section">
-    <h2 class="settings__section-title">Remote Ollama</h2>
+    <h2 class="settings__section-title">Ollama hosts</h2>
     {% if remote_configured %}
       <p class="settings__section-help">
-        The Remote agent routes inference (and compaction) to a second
-        Ollama instance configured via <code>SLOWLY_OLLAMA_HOST</code> and
-        <code>SLOWLY_OLLAMA_MODEL</code> in <code>.env</code>. Untoggle
-        to hide the agent from the dropdown without restarting — existing
-        chats using it fall back to their pinned local model.
+        Chats run on the primary host (<code>OLLAMA_HOST</code>) by default.
+        The <strong>host2</strong> host adds a second Ollama instance,
+        configured via <code>SLOWLY_OLLAMA_HOST</code> and
+        <code>SLOWLY_OLLAMA_MODEL</code> in <code>.env</code>, selectable
+        per chat from the header host picker. Untoggle to hide it from the
+        picker without restarting — existing chats using it fall back to the
+        primary host.
       </p>
       <form class="settings__remote-ollama"
             hx-post="/settings/remote-ollama-enabled"
@@ -212,7 +214,7 @@
         <label class="settings__toggle">
           <input type="checkbox" name="enabled" value="1"
                  {% if remote_enabled %}checked{% endif %}>
-          Enable Remote agent
+          Enable the "host2" host
         </label>
         <p class="settings__field-note">
           <strong>Host:</strong> <code>{{ remote_host }}</code><br>
@@ -223,44 +225,9 @@
       <p class="settings__section-help">
         Set <code>SLOWLY_OLLAMA_HOST</code> and
         <code>SLOWLY_OLLAMA_MODEL</code> in <code>.env</code> and restart
-        the server to enable a second Ollama instance (e.g. a
-        VPN-reachable machine) as the "Remote" agent.
+        the server to add a second Ollama instance (e.g. a
+        VPN-reachable machine) as the "host2" host.
       </p>
     {% endif %}
-  </section>
-
-  {# Read-only view of each agent's system prompt so they're easy to locate
-     without digging through source files. Normal has no system prompt (plain
-     chat), so only the registered agents appear here. #}
-  <section class="settings__section">
-    <h2 class="settings__section-title">Agent prompts</h2>
-    <p class="settings__section-help">
-      Read-only. Edit <code>app/agents/prompts.py</code> to change prompts;
-      restart the server to pick up changes.
-    </p>
-
-    <details class="agentic-prompts">
-      <summary>Normal — no system prompt</summary>
-      <div class="agentic-prompts__group">
-        <p class="settings__section-help" style="margin:0">
-          Normal mode is plain chat with no system message. Tools depend on
-          per-chat chip settings.
-        </p>
-      </div>
-    </details>
-
-    {% for agent in agents %}
-    <details class="agentic-prompts">
-      <summary>
-        {{ agent.label }}
-        {% if agent.tools %} · tools: {{ agent.tools | sort | join(", ") }}{% else %} · no tools{% endif %}
-        · {{ agent.model }}
-      </summary>
-      <div class="agentic-prompts__group">
-        <h3>System prompt</h3>
-        <pre class="agentic-prompts__text">{{ agent.system_prompt }}</pre>
-      </div>
-    </details>
-    {% endfor %}
   </section>
 </section>

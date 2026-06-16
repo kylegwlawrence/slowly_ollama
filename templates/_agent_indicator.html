@@ -1,10 +1,11 @@
-{# Header indicator (phase 16 + post-phase-19): which agent (if any) is
-   driving this chat, on which model, AND whether that model is currently
-   resident in Ollama.
+{# Header indicator: which Ollama host is driving this chat, on which model,
+   AND whether that model is currently resident in Ollama. Rendered as
+   "{host} · {model}".
 
-   - Normal (no active agent): just the chat's pinned model, exactly as the
-     pre-phase-16 `chat-panel__model` span showed.
-   - Agent active: the agent label + its assigned model.
+   - Primary host (no selection): the primary host's label + the chat's
+     pinned model.
+   - Second host selected (e.g. "host2"): that host's label + its pinned
+     model.
 
    The chip is a <button>. Clicking it POSTs to
    ``/chats/{id}/unload-model`` which evicts the model from Ollama's memory
@@ -30,12 +31,10 @@
         hx-swap="outerHTML"
         title="{% if model_loaded|default(True) %}Click to unload this model from Ollama's memory{% else %}Unloaded — the next message will reload it{% endif %}"
         {% if oob %}hx-swap-oob="true" {% endif %}>
+  <span class="material-symbols-outlined">dns</span>
   {%- if active_agent_spec -%}
-    <span class="material-symbols-outlined">smart_toy</span>
-    Agent: {{ active_agent_spec.label }} ({{ active_agent_spec.model }})
-    {%- set host_label = active_agent_spec | agent_host_label -%}
-    {%- if host_label %} · {{ host_label }}{%- endif -%}
+    {{ active_agent_spec.label }} · {{ active_agent_spec.model }}
   {%- else -%}
-    {{ conversation.model }}
+    {{ primary_host_label() }} · {{ conversation.model }}
   {%- endif -%}
 </button>

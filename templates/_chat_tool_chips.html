@@ -1,24 +1,14 @@
-{# Per-chat tool-chip bar wrapper (phase 16). Rendered whenever the chat's
-   model supports tools, so #chat-tool-chips is a stable OOB target for the
-   agent-picker endpoint.
+{# Per-chat tool-chip bar wrapper. Rendered whenever the chat's model supports
+   tools, so #chat-tool-chips is a stable OOB target for the host-picker
+   endpoint.
 
-   Inner content switches on the active agent:
-   - Normal: the per-chat tool/RAG chips (_tool_chips.html).
-   - Agent active: the agent's tool allowlist, read-only — the per-chat chips
-     don't apply because the agent's own allowlist governs which tools it may
-     call.
+   The per-chat tool/RAG chips apply on EITHER Ollama host (the picker selects
+   a host, not an agent with its own allowlist), so the chips always render and
+   stay editable regardless of the selected host.
 
-   Context: conversation, active_agent_spec, tool_states, rag_server_states.
+   Context: conversation, tool_states, rag_server_states.
    Pass oob=True (from the picker endpoint) to OOB-replace the whole bar. #}
 <div id="chat-tool-chips"{% if oob %} hx-swap-oob="true"{% endif %}>
-  {% if active_agent_spec %}
-  <span class="agent-tools" role="status">
-    <span class="material-symbols-outlined">build</span>
-    {{ active_agent_spec.label }} tools:
-    {% if active_agent_spec.tools %}{{ active_agent_spec.tools | sort | join(", ") }}{% else %}none{% endif %}
-  </span>
-  {% else %}
   {% set is_composer = false %}
   {% include "_tool_chips.html" %}
-  {% endif %}
 </div>

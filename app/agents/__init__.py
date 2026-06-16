@@ -1,26 +1,24 @@
-"""Phase 16: registry of user-invoked agents.
+"""Registry of selectable Ollama *hosts* for the per-chat picker.
 
-An agent is a named bundle of (system prompt, assigned Ollama model, tool
-allowlist). The user picks one from the composer dropdown; that agent's turn
-runs the ordinary single-agent producer (`app.generation._run_generation`)
-parameterized by those three things. "Normal" (plain chat) is the *absence* of
-an agent — see `get_agent`.
+Originally a registry of user-invoked agents (Phase 16); repurposed into an
+Ollama-host selector. The primary host (``OLLAMA_HOST``) is the *absence* of a
+selection — the picker's leading "host1" option, ``active_agent`` NULL (see
+``get_agent``). An optional second host ("host2", ``SLOWLY_OLLAMA_HOST``) is
+registered when its env vars are set; selecting it routes a chat's inference
+to that machine on its pinned model, but otherwise behaves like plain chat —
+the per-chat tool/RAG chips and the project prompt still apply (see
+``app.routes._helpers._agent_overrides``).
 
-Code-defined on purpose (mirrors `app/tools/__init__.py` and the hardcoded
-prompts): adding an agent is a few lines here plus a restart, version-controlled
-and testable, with no runtime CRUD surface to maintain. New agents are expected
-to be added over time by editing `AGENTS`.
+The storage column (``conversations.active_agent``), the
+``/chats/{id}/agent`` route, and the ``AgentSpec`` dataclass keep their
+original names to avoid a migration; only the registry contents and the
+user-facing labels reflect the host framing.
 """
 
 import sqlite3
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
-from app.agents.prompts import (
-    CONTENT_GENERATOR_PROMPT,
-    REMOTE_AGENT_PROMPT,
-    RESEARCH_AGENT_PROMPT,
-)
 from app.config import remote_ollama_host, remote_ollama_model
 from app.queries.settings import get_remote_ollama_enabled
 
@@ -63,95 +61,53 @@ class AgentSpec:
     ollama_host: str | None = None
 
 
-# Insertion order is the dropdown order. "Normal" is rendered by the UI as a
-# leading option and is NOT in this dict — it maps to `active_agent = None`.
-AGENTS: dict[str, AgentSpec] = {
-    "research": AgentSpec(
-        name="research",
-        label="Research",
-        description="Gathers information with tools and reports findings.",
-        model="granite4.1:8b",
-        system_prompt=RESEARCH_AGENT_PROMPT,
-        tools=frozenset({"current_time", "query_rag", "fetch_github_file"}),
-        # granite4.1:8b is tool-capable and fast on 16GB. It is NOT a
-        # thinking model, so think MUST stay False — Ollama 400s on
-        # think=true for a model without the capability.
-        think=False,
-    ),
-    "content_generator": AgentSpec(
-        name="content_generator",
-        label="Content Generator",
-        description="Writes a polished piece from the conversation so far.",
-        model="granite4.1:8b",
-        system_prompt=CONTENT_GENERATOR_PROMPT,
-        # read_file / write_file / list_directory let it browse, draft
-        # into, and revise files in the workspace. Gated on FILE_TOOL_ROOT:
-        # when that's unset all three are absent from TOOLS, and
-        # _run_generation's allowlist filter simply drops them — the agent
-        # degrades to tool-less synthesis.
-        tools=frozenset({"read_file", "write_file", "list_directory", "search_files"}),
-        # Shares Research's model (granite4.1:8b) so the Research -> Content
-        # hand-off needs no model swap/reload on a 16GB machine. Not a
-        # thinking model, so think stays False.
-        think=False,
-    ),
-    # Note: the chat-based "degree_architect" agent (Phase 23 Phase A) was
-    # removed in Phase 24 — it overloaded context by re-sending the whole
-    # conversation each tool turn. It's replaced by the form-driven /degrees
-    # factory (app/degree_factory.py), which generates the outline in small,
-    # independent calls. Its prompt text lives on in app/agents/prompts.py
-    # (DEGREE_ARCHITECT_PROMPT) — the factory mines its rule snippets.
-}
+# The primary host ("host1") is the *absence* of a selection (active_agent
+# NULL); the UI renders it as the leading picker option and it is NOT in this
+# dict. The only registered entry is the optional "host2" second host, added
+# below when both SLOWLY_OLLAMA_HOST and SLOWLY_OLLAMA_MODEL are set.
+AGENTS: dict[str, AgentSpec] = {}
 
 
-def _build_remote_agent() -> AgentSpec | None:
-    """Return the "Remote" AgentSpec when its env vars are set, else None.
+def _build_slowly_host() -> AgentSpec | None:
+    """Return the "host2" host spec when its env vars are set, else None.
 
-    Same gating pattern as the file tools and query_rag — when EITHER env
-    var is missing we drop the agent from the registry entirely rather
-    than register a degenerate version that would fail on its first turn.
-    Tools still execute on this server; only inference is offloaded.
+    Same both-or-nothing gating as the file tools and ``query_rag`` — when
+    EITHER ``SLOWLY_OLLAMA_HOST`` or ``SLOWLY_OLLAMA_MODEL`` is missing we drop
+    the host from the registry rather than register a half-configured one that
+    would fail on its first turn.
 
-    Extracted as a function (not inlined) so tests can drive it with
-    monkeypatched env without reimporting the module.
+    The spec carries only what a host needs — a pinned model and the host URL.
+    ``system_prompt`` and ``tools`` are intentionally left empty:
+    ``_agent_overrides`` routes a selected host through the plain-chat path
+    (per-chat chips + project prompt), so neither field is consulted. Extracted
+    as a function (not inlined) so tests can drive it with monkeypatched env
+    without reimporting the module.
 
     Returns:
-        A populated AgentSpec when both SLOWLY_OLLAMA_HOST and
-        SLOWLY_OLLAMA_MODEL are set; None otherwise.
+        A populated AgentSpec when both ``SLOWLY_OLLAMA_HOST`` and
+        ``SLOWLY_OLLAMA_MODEL`` are set; None otherwise.
     """
     host = remote_ollama_host()
     model = remote_ollama_model()
     if not host or not model:
         return None
     return AgentSpec(
-        name="remote",
-        label="Remote",
-        description="General-purpose agent running on a second Ollama instance.",
+        name="host2",
+        label="host2",
+        description="Run this chat on the 'host2' Ollama host.",
         model=model,
-        system_prompt=REMOTE_AGENT_PROMPT,
-        # Allow every tool name we know about. Tools gated off at runtime
-        # (file tools without FILE_TOOL_ROOT, query_rag without configured
-        # servers) are simply absent from TOOLS and the allowlist filter
-        # skips them — same fallthrough as the other agents.
-        tools=frozenset({
-            "current_time",
-            "read_file",
-            "write_file",
-            "list_directory",
-            "search_files",
-            "query_rag",
-            "fetch_github_file",
-        }),
-        # think=False is safe on any model. If the remote model is
-        # thinking-capable and reasoning is wanted, flip this and ship.
+        # Empty — a host is not an agent. _agent_overrides ignores these and
+        # uses the per-chat chips + project prompt, exactly like the primary.
+        system_prompt="",
+        tools=frozenset(),
         think=False,
         ollama_host=host,
     )
 
 
-_remote_agent = _build_remote_agent()
-if _remote_agent is not None:
-    AGENTS[_remote_agent.name] = _remote_agent
+_slowly_host = _build_slowly_host()
+if _slowly_host is not None:
+    AGENTS[_slowly_host.name] = _slowly_host
 
 
 def list_agents() -> list[AgentSpec]:

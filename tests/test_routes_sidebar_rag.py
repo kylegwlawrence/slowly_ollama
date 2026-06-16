@@ -175,28 +175,6 @@ def test_sidebar_section_empty_when_no_servers_configured(
     assert 'class="sidebar__rag-section"' not in response.text
 
 
-def test_sidebar_section_empty_when_agent_active(
-    make_client: ClientFactory,
-) -> None:
-    """Non-Normal agent invoked: empty wrapper (agent has its own
-    allowlist; the chat-header indicator already shows it)."""
-    _seed_server("arxiv", "http://fake/arxiv")
-    # 'research' agent is registered by app.agents (one of the built-ins
-    # listed in CLAUDE.md). If the roster changes, swap this to any
-    # name returned by `list_agents()`.
-    from app.agents import list_agents
-    agent_name = list_agents()[0].name
-    chat_id = _seed_chat(active_agent=agent_name)
-    pid = _default_project_id()
-
-    with make_client(_tool_capable_handler) as client:
-        response = client.get(f"/projects/{pid}/chats/{chat_id}")
-
-    assert response.status_code == 200
-    assert 'id="sidebar-rag-section"' in response.text
-    assert 'class="sidebar__rag-section"' not in response.text
-
-
 def test_sidebar_section_empty_when_model_lacks_tools(
     make_client: ClientFactory,
     monkeypatch: pytest.MonkeyPatch,
