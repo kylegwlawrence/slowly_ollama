@@ -68,8 +68,16 @@ async def list_models_endpoint(
     request: Request,
     client: OllamaClient,
     prepend_blank: bool = False,
+    host: str | None = None,
 ) -> Response:
     """Return ``<option>`` tags for the model dropdown.
+
+    ``host`` selects which Ollama host's models to list: unset/``None``
+    (or the primary host) lists ``OLLAMA_HOST``'s models; ``"host2"``
+    lists the second host's models (``SLOWLY_OLLAMA_HOST``). The composer's
+    per-host model dropdowns pass it so each host offers its own models.
+    A ``"host2"`` request when that host isn't configured falls back to
+    the primary host's list.
 
     Phase 12f filters this list to models whose ``/api/show`` capability
     list advertises ``"tools"`` — picking a non-tool-capable model from
@@ -92,8 +100,12 @@ async def list_models_endpoint(
     (empty value + the form's `required` attribute) while giving the
     user a clear message to act on.
     """
+    # "host2" → the second host; anything else → the primary host (None).
+    target_host = config.remote_ollama_host() if host == "host2" else None
     try:
-        models = sorted(await ollama.list_tool_capable_models(client))
+        models = sorted(
+            await ollama.list_tool_capable_models(client, host=target_host)
+        )
     except OllamaUnavailable:
         return templates.TemplateResponse(
             request=request,
@@ -521,10 +533,12 @@ async def set_chat_agent_endpoint(
         db, conversation_id, spec.name if spec else None
     )
 
-    # The effective model can change with the agent (each agent has its
-    # own assigned model), so re-probe residency before re-rendering
-    # the chip rather than carrying over the old state.
-    effective_model = spec.model if spec else conversation.model
+    # The effective model can change with the host (the second host uses the
+    # chat's per-host slowly_model, or its default), so re-probe residency
+    # before re-rendering the chip rather than carrying over the old state.
+    effective_model = (
+        (conversation.slowly_model or spec.model) if spec else conversation.model
+    )
     model_loaded = await ollama.is_model_loaded(client, effective_model)
 
     indicator_html = templates.get_template("_agent_indicator.html").render(
@@ -596,7 +610,9 @@ async def unload_chat_model_endpoint(
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
 
     spec = _resolve_active_spec(conversation, db)
-    effective_model = spec.model if spec else conversation.model
+    effective_model = (
+        (conversation.slowly_model or spec.model) if spec else conversation.model
+    )
 
     try:
         await ollama.unload_model(client, effective_model)

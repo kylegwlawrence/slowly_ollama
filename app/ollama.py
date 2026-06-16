@@ -148,12 +148,17 @@ def create_client() -> httpx.AsyncClient:
     )
 
 
-async def list_models(client: httpx.AsyncClient) -> list[str]:
+async def list_models(
+    client: httpx.AsyncClient, host: str | None = None
+) -> list[str]:
     """Return the names of every model installed in the Ollama server.
 
     Args:
         client: An ``httpx.AsyncClient`` pointed at the Ollama host
             (typically from ``create_client``).
+        host: Optional override base URL (e.g. ``"http://host1:11434"``).
+            ``None`` queries the client's ``base_url`` (the primary host);
+            set it to list a second host's models (the "host2" host picker).
 
     Returns:
         Model names in the order Ollama returned them, e.g.
@@ -167,7 +172,7 @@ async def list_models(client: httpx.AsyncClient) -> list[str]:
             valid JSON or didn't have the expected shape.
     """
     try:
-        response = await client.get("/api/tags")
+        response = await client.get(_url("/api/tags", host))
         response.raise_for_status()
     except (httpx.HTTPError, httpx.InvalidURL) as e:
         # httpx.HTTPError is the umbrella for connection failures,
@@ -211,7 +216,9 @@ _CAPABILITY_TTL_SECONDS = 60.0
 _capability_cache: dict | None = None
 
 
-async def list_tool_capable_models(client: httpx.AsyncClient) -> list[str]:
+async def list_tool_capable_models(
+    client: httpx.AsyncClient, host: str | None = None
+) -> list[str]:
     """Return installed models whose /api/show capabilities include 'tools'.
 
     Fans /api/show out over the installed models with ``asyncio.gather``
@@ -222,6 +229,11 @@ async def list_tool_capable_models(client: httpx.AsyncClient) -> list[str]:
     Args:
         client: An ``httpx.AsyncClient`` pointed at the Ollama host
             (typically from ``create_client``).
+        host: Optional override base URL. ``None`` lists the primary host
+            (cached). When set (the "host2" host picker), the probe targets
+            that host and is NOT cached — the module cache is host-agnostic,
+            and mixing a second host's models into it would corrupt the
+            primary dropdown.
 
     Returns:
         Tool-capable model names in /api/tags order. Models whose
@@ -236,16 +248,16 @@ async def list_tool_capable_models(client: httpx.AsyncClient) -> list[str]:
     """
     global _capability_cache
     now = time.monotonic()
-    if _capability_cache and _capability_cache["expires_at"] > now:
+    if host is None and _capability_cache and _capability_cache["expires_at"] > now:
         # Defensive copy so callers can't mutate the cached list.
         return list(_capability_cache["names"])
 
-    all_models = await list_models(client)
+    all_models = await list_models(client, host=host)
 
     async def _supports(name: str) -> str | None:
         """Probe one model; return its name if tool-capable, else None."""
         try:
-            resp = await client.post("/api/show", json={"model": name})
+            resp = await client.post(_url("/api/show", host), json={"model": name})
             resp.raise_for_status()
             caps = resp.json().get("capabilities") or []
             # Require BOTH "completion" and "tools". Ollama occasionally
@@ -272,10 +284,13 @@ async def list_tool_capable_models(client: httpx.AsyncClient) -> list[str]:
 
     results = await asyncio.gather(*(_supports(n) for n in all_models))
     names = [n for n in results if n is not None]
-    _capability_cache = {
-        "expires_at": now + _CAPABILITY_TTL_SECONDS,
-        "names": names,
-    }
+    if host is None:
+        # Only the primary host is cached; a second host's list bypasses the
+        # host-agnostic cache (see the docstring).
+        _capability_cache = {
+            "expires_at": now + _CAPABILITY_TTL_SECONDS,
+            "names": names,
+        }
     return list(names)
 
 

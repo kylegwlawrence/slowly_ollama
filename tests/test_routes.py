@@ -287,6 +287,64 @@ def test_models_returns_disabled_option_on_protocol_error(
     assert "unexpected" in response.text.lower()
 
 
+def test_models_endpoint_targets_slowly_host(
+    make_client: ClientFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GET /models?host=host2 lists the SECOND host's models.
+
+    The endpoint resolves "host2" to SLOWLY_OLLAMA_HOST and passes it to
+    list_tool_capable_models, so the composer's host2 dropdown shows that
+    host's models rather than the primary's.
+    """
+    captured: dict = {}
+
+    async def fake_list(_client: object, host: str | None = None) -> list[str]:
+        captured["host"] = host
+        return ["mac-model:1"]
+
+    monkeypatch.setattr(
+        "app.routes.chats.ollama.list_tool_capable_models", fake_list
+    )
+    monkeypatch.setattr(
+        "app.routes.chats.config.remote_ollama_host",
+        lambda: "http://host1:11434",
+    )
+
+    with make_client(_tool_capable_handler) as client:
+        response = client.get("/models?host=host2")
+
+    assert response.status_code == 200
+    assert 'value="mac-model:1"' in response.text
+    assert captured["host"] == "http://host1:11434"
+
+
+def test_primary_host_label_extracts_hostname(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The host-picker label is the hostname parsed from OLLAMA_HOST."""
+    from app import templates as templates_mod
+
+    monkeypatch.setattr(
+        templates_mod._config, "ollama_host", lambda: "http://host1:11434"
+    )
+    assert templates_mod._primary_host_label() == "host1"
+
+
+def test_primary_host_label_falls_back_when_ollama_host_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If OLLAMA_HOST is unset, the label degrades to 'default' rather than
+    raising and 500-ing the page render."""
+    from app import templates as templates_mod
+
+    def _raise_keyerror() -> str:
+        raise KeyError("OLLAMA_HOST")
+
+    monkeypatch.setattr(templates_mod._config, "ollama_host", _raise_keyerror)
+    assert templates_mod._primary_host_label() == "default"
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -1874,6 +1932,44 @@ def test_agent_overrides_respects_remote_toggle(tmp_path: Path) -> None:
             AGENTS["host2"] = saved
 
 
+def test_agent_overrides_uses_per_chat_slowly_model(tmp_path: Path) -> None:
+    """On the host2 host, `_agent_overrides` uses the chat's per-host model,
+    falling back to the host spec's default model when it's unset."""
+    from app.agents import AGENTS, AgentSpec
+    from app.routes._helpers import _agent_overrides
+
+    db_path = tmp_path / "chats.db"
+    initialize_database(db_path)
+    saved = AGENTS.get("host2")
+    AGENTS["host2"] = AgentSpec(
+        name="host2", label="host2", description="d",
+        model="default-model", system_prompt="", tools=frozenset(),
+        ollama_host="http://host1:11434",
+    )
+    try:
+        with open_connection(db_path) as conn:
+            # Per-chat model set → used verbatim on the host2 host.
+            picked = queries.create_conversation(
+                conn, "t", "local-model", active_agent="host2",
+                slowly_model="picked-model",
+            )
+            ov = _agent_overrides(picked, conn)
+            assert ov["model"] == "picked-model"
+            assert ov["ollama_host"] == "http://host1:11434"
+
+            # No per-chat model → falls back to the host spec's default.
+            default = queries.create_conversation(
+                conn, "t2", "local-model", active_agent="host2",
+            )
+            ov2 = _agent_overrides(default, conn)
+            assert ov2["model"] == "default-model"
+    finally:
+        if saved is None:
+            AGENTS.pop("host2", None)
+        else:
+            AGENTS["host2"] = saved
+
+
 def test_settings_renders_default_tool_cap_input(
     make_client: ClientFactory,
 ) -> None:
@@ -2766,6 +2862,34 @@ def test_create_chat_with_agent_persists_active_agent(
             AGENTS.pop("host2", None)
         else:
             AGENTS["host2"] = saved
+
+
+def test_create_chat_persists_slowly_model(
+    make_client: ClientFactory,
+) -> None:
+    """POST /chats with a `slowly_model` field stores the per-host model
+    without disturbing the primary-host `model`."""
+    db_path = Path(os.environ["DB_PATH"])
+    initialize_database(db_path)
+
+    with make_client(_tool_capable_handler) as client:
+        response = client.post(
+            f"/projects/{_default_project_id()}/chats",
+            data={
+                "model": "llama3",
+                "content": "hi",
+                "slowly_model": "mac-model:1",
+            },
+        )
+
+    assert response.status_code == 201
+    import re as _re
+
+    chat_id = int(_re.search(r'data-chat-id="(\d+)"', response.text).group(1))
+    with open_connection(db_path) as conn:
+        conv = queries.get_conversation(conn, chat_id)
+    assert conv.slowly_model == "mac-model:1"
+    assert conv.model == "llama3"
 
 
 # ---------------------------------------------------------------------------

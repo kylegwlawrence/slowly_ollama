@@ -46,10 +46,15 @@ class Conversation:
         updated_at: When the row was last touched — bumped by rename, by
             appending a message, or by replacing the last assistant message.
             Used as the sort key for the sidebar so active chats float up.
-        active_agent: Name of the user-invoked agent currently active for this
-            chat (a key in `app.agents.AGENTS`), or None for the default
-            "Normal" plain-chat behavior. Persisted so the picker + indicator
-            survive reloads.
+        active_agent: Name of the selected Ollama host for this chat (a key in
+            `app.agents.AGENTS`, e.g. "host2"), or None for the primary host.
+            Persisted so the picker + indicator survive reloads.
+        model: The primary-host model. See ``slowly_model`` for the second
+            host's per-chat model.
+        slowly_model: The model used when the "host2" host is active, or None
+            to fall back to the ``SLOWLY_OLLAMA_MODEL`` env default. Lets each
+            host keep its own remembered model so switching hosts mid-chat is
+            clean.
         project_id: The project this chat belongs to (phase 17). NOT NULL on
             the schema side: the migration assigns every legacy chat to the
             Default project before enforcing the FK.
@@ -65,6 +70,7 @@ class Conversation:
     created_at: datetime
     updated_at: datetime
     active_agent: str | None = None
+    slowly_model: str | None = None
 
 
 @dataclass(frozen=True)

@@ -49,11 +49,10 @@
        option blocks submission via the `required` attribute until /models
        responds (or until the user manually picks). #}
     <div class="composer__toolbar">
-      {# Ollama-host picker, to the LEFT of the model selector. Picking a
-         non-primary host (e.g. "host2") greys the model dropdown (app.js)
-         since that host runs on its own pinned model; the chat still persists
-         the (greyed) primary-host model for when the user switches back. The
-         selection submits as the `agent` form field with POST /chats. #}
+      {# Ollama-host picker, to the LEFT of the model selector. It selects
+         which host the chat STARTS on; the model for each host is chosen in
+         that host's own dropdown below. Submits as the `agent` form field
+         with POST /chats. #}
       <label class="composer__toolbar-label" for="composer-agent">Ollama host</label>
       {# Pre-select the project's default host (if any). The underlying
          _agent_select.html honors `selected_agent`. #}
@@ -72,6 +71,22 @@
               hx-swap="innerHTML">
         <option value="">Loading models…</option>
       </select>
+      {# A per-host model dropdown for each configured second host (e.g.
+         "host2"), loading THAT host's own models via /models?host=<name>.
+         The chat remembers each host's model (submitted as `<name>_model`),
+         so switching hosts mid-chat keeps each host's choice. data-default
+         pre-selects the host's env default once /models replies. #}
+      {% for host in agents %}
+      <label class="composer__toolbar-label" for="composer-{{ host.name }}-model">{{ host.label }} model</label>
+      <select id="composer-{{ host.name }}-model" name="{{ host.name }}_model"
+              data-default="{{ host.model }}"
+              hx-get="/models?host={{ host.name }}"
+              hx-trigger="load"
+              hx-target="this"
+              hx-swap="innerHTML">
+        <option value="">Loading models…</option>
+      </select>
+      {% endfor %}
       <div class="tool-chip tool-chip--on temp-chip">
         <span class="tool-chip__label">Temp</span>
         <input id="composer-temperature" type="number" name="temperature"

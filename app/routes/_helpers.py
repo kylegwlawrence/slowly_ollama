@@ -232,8 +232,10 @@ def _agent_overrides(
 
     The primary host returns the chat's pinned model with no overrides,
     ``think=None`` (omit the flag), and ``ollama_host=None`` (local). A
-    selected second host returns its pinned ``model`` and its ``ollama_host``
-    but is otherwise IDENTICAL: ``tool_allowlist=None`` and
+    selected second host returns its ``ollama_host`` and the chat's per-host
+    model (``conversation.slowly_model``, falling back to the host spec's
+    default ``SLOWLY_OLLAMA_MODEL``), but is otherwise IDENTICAL:
+    ``tool_allowlist=None`` and
     ``system_prompt_override=None`` route it through the plain-chat generation
     path, so the per-chat tool/RAG chips and the project system prompt apply on
     either host — only the machine and the model differ. The host spec's own
@@ -255,8 +257,10 @@ def _agent_overrides(
             "think": None,
             "ollama_host": None,
         }
+    # A selected second host ("host2") uses the chat's per-host model when
+    # set, falling back to the host spec's default (SLOWLY_OLLAMA_MODEL).
     return {
-        "model": spec.model,
+        "model": conversation.slowly_model or spec.model,
         "system_prompt_override": None,
         "tool_allowlist": None,
         "think": None,

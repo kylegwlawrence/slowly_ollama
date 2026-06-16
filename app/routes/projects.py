@@ -511,6 +511,7 @@ async def create_project_chat_endpoint(
     temperature: Annotated[float | None, Form()] = None,
     tool_iteration_cap: Annotated[int | None, Form()] = None,
     agent: Annotated[str | None, Form()] = None,
+    slowly_model: Annotated[str | None, Form()] = None,
 ) -> Response:
     """Create a chat inside a project AND save its first message.
 
@@ -543,6 +544,10 @@ async def create_project_chat_endpoint(
         temperature=temperature,
         tool_iteration_cap=tool_iteration_cap,
         active_agent=agent_spec.name if agent_spec else None,
+        # Per-host model for the "host2" second host. Empty ("" before
+        # /models loads, or no second host) → None → fall back to the env
+        # default. `model` above remains the primary-host model.
+        slowly_model=slowly_model or None,
     )
     queries.append_message(db, chat.id, "user", content)
 

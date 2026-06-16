@@ -284,33 +284,10 @@ document.body.addEventListener('htmx:afterRequest', (e) => {
   }
 });
 
-// ---------------------------------------------------------------------
-// Phase 16: empty-state composer — grey the model dropdown when an agent
-// is picked
-// ---------------------------------------------------------------------
-// Each agent runs on its own assigned model, so the model dropdown is
-// irrelevant while a non-Normal agent is selected. We lock it VISUALLY
-// (.composer__model--locked) but keep it ENABLED so the form still
-// submits a Normal model — a disabled <select> submits nothing, and the
-// chat persists that model for when the user switches back to Normal.
-// Delegated on document.body so a freshly /new-swapped composer is covered
-// without a re-bind. The in-chat picker has no #composer-agent id, so it
-// falls through to its own hx-post.
-
-function syncComposerModelLock() {
-  const agent = document.getElementById('composer-agent');
-  const model = document.getElementById('composer-model');
-  if (!agent || !model) return;
-  const locked = agent.value !== '';
-  model.classList.toggle('composer__model--locked', locked);
-  model.setAttribute('aria-disabled', locked ? 'true' : 'false');
-}
-
-document.body.addEventListener('change', (e) => {
-  if (e.target instanceof Element && e.target.id === 'composer-agent') {
-    syncComposerModelLock();
-  }
-});
+// The composer host picker no longer greys the model dropdown: each host
+// (primary + any second host like "host2") has its OWN model dropdown that
+// self-loads from /models?host=<name>, so both models are always meaningful
+// and editable. The picker only selects which host the chat starts on.
 
 // Phase 15: composer tool chips — keep the visual --on/--off class in
 // sync with the underlying checkbox state. The chip's <label> wraps a

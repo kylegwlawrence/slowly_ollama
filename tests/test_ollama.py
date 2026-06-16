@@ -80,6 +80,27 @@ async def test_list_models_returns_names_in_server_order() -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_models_targets_host_override() -> None:
+    """A host override builds an absolute /api/tags URL against that host.
+
+    This is what lets the composer list a second host's ("host2") models
+    while the client's base_url still points at the primary host.
+    """
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json={"models": [{"name": "mac:1"}]})
+
+    async with _client_with(handler) as client:
+        models = await list_models(client, host="http://host1:11434")
+
+    assert models == ["mac:1"]
+    # base_url was http://test, but the override sent the request to host1.
+    assert seen == ["http://host1:11434/api/tags"]
+
+
+@pytest.mark.asyncio
 async def test_list_models_raises_when_ollama_unreachable() -> None:
     """ConnectError is wrapped as OllamaUnavailable."""
 

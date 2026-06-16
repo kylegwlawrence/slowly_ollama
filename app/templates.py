@@ -70,19 +70,6 @@ def _render_markdown(text: str) -> str:
 templates.env.filters["markdown"] = _render_markdown
 
 
-# Phase 20b: agent_host_label is imported lazily inside the wrapper so this
-# module stays importable from app.generation without dragging in the agent
-# registry at module load (and the cycle that would create with app.config /
-# app.queries). The first template render warms the import.
-def _agent_host_label(spec):
-    """Jinja filter: hostname for an agent's ollama_host (or None)."""
-    from app.agents import agent_host_label
-    return agent_host_label(spec)
-
-
-templates.env.filters["agent_host_label"] = _agent_host_label
-
-
 # Phase 21: expose the backup feature-gate + status to templates as globals so
 # the backup-status chip can self-gate and self-seed without every chat-panel
 # render site threading two more context vars. `app.backup` imports only

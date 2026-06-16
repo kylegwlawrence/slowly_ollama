@@ -74,9 +74,13 @@ CREATE TABLE IF NOT EXISTS conversations (
     temperature  REAL NOT NULL DEFAULT 0.8,
     -- Per-chat cap on tool-call iterations per turn (1–10).
     tool_iteration_cap INTEGER NOT NULL DEFAULT 5,
-    -- Phase 16: name of the user-invoked agent active for this chat
-    -- (a key in app.agents.AGENTS), or NULL for Normal plain chat.
+    -- Name of the selected Ollama host for this chat (a key in
+    -- app.agents.AGENTS, e.g. "host2"), or NULL for the primary host.
     active_agent TEXT,
+    -- Per-chat model for the "host2" second host. NULL → fall back to
+    -- SLOWLY_OLLAMA_MODEL (the env default). `model` above is the
+    -- primary-host model; this lets each host keep its own remembered model.
+    slowly_model TEXT,
     -- Phase 17: the project this chat belongs to. NOT NULL — every
     -- chat lives in a project; the migration ensures a "Default"
     -- project exists before this column is enforced.
@@ -383,6 +387,26 @@ def _ensure_conversations_active_agent_column(conn: sqlite3.Connection) -> None:
         )
 
 
+def _ensure_conversations_slowly_model_column(conn: sqlite3.Connection) -> None:
+    """Backfill the ``slowly_model`` column on pre-existing conversations tables.
+
+    Nullable with no default — existing chats come back as NULL, i.e. the
+    "host2" host falls back to the ``SLOWLY_OLLAMA_MODEL`` env default. Same
+    ``PRAGMA table_info`` guard as the other backfills so the ``ALTER TABLE``
+    is a no-op on fresh DBs where ``_SCHEMA_SQL`` already created the column.
+
+    Args:
+        conn: Open SQLite connection.
+    """
+    columns = {row[1] for row in conn.execute(
+        "PRAGMA table_info(conversations);"
+    )}
+    if "slowly_model" not in columns:
+        conn.execute(
+            "ALTER TABLE conversations ADD COLUMN slowly_model TEXT;"
+        )
+
+
 def _ensure_rag_servers_description_column(conn: sqlite3.Connection) -> None:
     """Backfill the ``description`` column on rag_servers tables that pre-date this phase.
 
@@ -579,6 +603,12 @@ def initialize_database(path: Path | None = None) -> Path:
         # legacy chat to point at Default.
         default_project_id = _ensure_default_project(conn)
         _ensure_conversations_project_id_column(conn, default_project_id)
+        # Per-chat "host2" host model: backfill the slowly_model column on
+        # conversations tables created before host-aware model selection.
+        # MUST run AFTER the project_id migration — that step rebuilds the
+        # conversations table (legacy DBs) and only preserves columns it
+        # knows about, so adding slowly_model earlier would be dropped.
+        _ensure_conversations_slowly_model_column(conn)
         # Per-project Ollama context-window override: backfill the
         # num_ctx column on projects tables created before this phase.
         _ensure_projects_num_ctx_column(conn)

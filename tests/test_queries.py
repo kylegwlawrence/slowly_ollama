@@ -111,6 +111,26 @@ def test_create_conversation_honors_explicit_tool_iteration_cap(
     assert get_conversation(conn, c.id).tool_iteration_cap == 3
 
 
+def test_create_conversation_defaults_slowly_model_to_none(
+    conn: sqlite3.Connection,
+) -> None:
+    """A new conversation has no per-host 'host2' model by default."""
+    c = create_conversation(conn, name="My chat", model="llama3")
+    assert c.slowly_model is None
+    assert get_conversation(conn, c.id).slowly_model is None
+
+
+def test_create_conversation_persists_slowly_model(
+    conn: sqlite3.Connection,
+) -> None:
+    """create_conversation stores and round-trips the per-host host2 model."""
+    c = create_conversation(
+        conn, name="My chat", model="llama3", slowly_model="qwen2.5:7b"
+    )
+    assert c.slowly_model == "qwen2.5:7b"
+    assert get_conversation(conn, c.id).slowly_model == "qwen2.5:7b"
+
+
 def test_set_conversation_tool_iteration_cap_round_trips(
     conn: sqlite3.Connection,
 ) -> None:

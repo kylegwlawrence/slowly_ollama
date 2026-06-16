@@ -304,6 +304,41 @@ def test_migration_backfills_active_agent_column(tmp_path: Path) -> None:
         assert value is None
 
 
+def test_migration_backfills_slowly_model_column(tmp_path: Path) -> None:
+    """A conversations table that pre-dates host-aware model selection gets
+    the nullable slowly_model column backfilled (NULL = use env default)."""
+    db = tmp_path / "chats.db"
+    with sqlite3.connect(db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE conversations (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                model TEXT NOT NULL,
+                name_locked INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO conversations
+                (name, model, name_locked, created_at, updated_at)
+                VALUES ('legacy', 'm', 0, 'now', 'now');
+            """
+        )
+
+    initialize_database(db)
+
+    with sqlite3.connect(db) as conn:
+        columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(conversations);")
+        }
+        assert "slowly_model" in columns
+        # The pre-existing row defaults to NULL (fall back to the env default).
+        value = conn.execute(
+            "SELECT slowly_model FROM conversations WHERE name = 'legacy';"
+        ).fetchone()[0]
+        assert value is None
+
+
 def test_migration_backfills_archived_at_column(tmp_path: Path) -> None:
     """Phase 18: a messages table that pre-dates this phase gets the
     nullable archived_at column backfilled on init (NULL = active row).
