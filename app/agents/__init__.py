@@ -3,23 +3,24 @@
 Originally a registry of user-invoked agents (Phase 16); repurposed into an
 Ollama-host selector. The primary host (``OLLAMA_HOST``) is the *absence* of a
 selection — the picker's leading "host1" option, ``active_agent`` NULL (see
-``get_agent``). An optional second host ("host2", ``SLOWLY_OLLAMA_HOST``) is
-registered when its env vars are set; selecting it routes a chat's inference
-to that machine on its pinned model, but otherwise behaves like plain chat —
-the per-chat tool/RAG chips and the project prompt still apply (see
+``get_agent``). Any number of additional hosts are registered from
+``config.extra_ollama_hosts()`` (the ``OLLAMA_EXTRA_HOSTS`` JSON list, with a
+legacy ``SLOWLY_OLLAMA_*`` single-host fallback); selecting one routes a chat's
+inference to that machine, but otherwise behaves like plain chat — the per-chat
+tool/RAG chips and the project prompt still apply (see
 ``app.routes._helpers._agent_overrides``).
 
 The storage column (``conversations.active_agent``), the
 ``/chats/{id}/agent`` route, and the ``AgentSpec`` dataclass keep their
-original names to avoid a migration; only the registry contents and the
-user-facing labels reflect the host framing.
+original names to avoid churn; only the registry contents and the user-facing
+labels reflect the host framing.
 """
 
 import sqlite3
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
-from app.config import remote_ollama_host, remote_ollama_model
+from app.config import extra_ollama_hosts
 from app.queries.settings import get_remote_ollama_enabled
 
 
@@ -63,51 +64,46 @@ class AgentSpec:
 
 # The primary host ("host1") is the *absence* of a selection (active_agent
 # NULL); the UI renders it as the leading picker option and it is NOT in this
-# dict. The only registered entry is the optional "host2" second host, added
-# below when both SLOWLY_OLLAMA_HOST and SLOWLY_OLLAMA_MODEL are set.
+# dict. Every registered entry is a non-primary host built from
+# ``config.extra_ollama_hosts()`` (see ``_build_agents``).
 AGENTS: dict[str, AgentSpec] = {}
 
 
-def _build_slowly_host() -> AgentSpec | None:
-    """Return the "host2" host spec when its env vars are set, else None.
+def _build_agents() -> dict[str, AgentSpec]:
+    """Build the host registry from ``config.extra_ollama_hosts()``.
 
-    Same both-or-nothing gating as the file tools and ``query_rag`` — when
-    EITHER ``SLOWLY_OLLAMA_HOST`` or ``SLOWLY_OLLAMA_MODEL`` is missing we drop
-    the host from the registry rather than register a half-configured one that
-    would fail on its first turn.
+    One ``AgentSpec`` per configured non-primary host (the ``OLLAMA_EXTRA_HOSTS``
+    JSON list, or the legacy ``SLOWLY_OLLAMA_*`` single-host fallback). Adding a
+    machine to ``.env`` adds a picker option with no code change.
 
-    The spec carries only what a host needs — a pinned model and the host URL.
+    Each spec carries only what a host needs — a default model and the host URL.
     ``system_prompt`` and ``tools`` are intentionally left empty:
     ``_agent_overrides`` routes a selected host through the plain-chat path
-    (per-chat chips + project prompt), so neither field is consulted. Extracted
-    as a function (not inlined) so tests can drive it with monkeypatched env
-    without reimporting the module.
+    (per-chat chips + project prompt), so neither field is consulted. A later
+    duplicate ``name`` overwrites an earlier one (last wins) — defensive against
+    a copy-paste in the config.
 
     Returns:
-        A populated AgentSpec when both ``SLOWLY_OLLAMA_HOST`` and
-        ``SLOWLY_OLLAMA_MODEL`` are set; None otherwise.
+        A ``name -> AgentSpec`` dict in declaration order.
     """
-    host = remote_ollama_host()
-    model = remote_ollama_model()
-    if not host or not model:
-        return None
-    return AgentSpec(
-        name="host2",
-        label="host2",
-        description="Run this chat on the 'host2' Ollama host.",
-        model=model,
-        # Empty — a host is not an agent. _agent_overrides ignores these and
-        # uses the per-chat chips + project prompt, exactly like the primary.
-        system_prompt="",
-        tools=frozenset(),
-        think=False,
-        ollama_host=host,
-    )
+    agents: dict[str, AgentSpec] = {}
+    for host in extra_ollama_hosts():
+        agents[host["name"]] = AgentSpec(
+            name=host["name"],
+            label=host["label"],
+            description=f"Run this chat on the '{host['label']}' Ollama host.",
+            model=host["default_model"],
+            # Empty — a host is not an agent. _agent_overrides ignores these and
+            # uses the per-chat chips + project prompt, exactly like the primary.
+            system_prompt="",
+            tools=frozenset(),
+            think=False,
+            ollama_host=host["url"],
+        )
+    return agents
 
 
-_slowly_host = _build_slowly_host()
-if _slowly_host is not None:
-    AGENTS[_slowly_host.name] = _slowly_host
+AGENTS = _build_agents()
 
 
 def list_agents() -> list[AgentSpec]:

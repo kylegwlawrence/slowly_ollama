@@ -22,7 +22,7 @@ from fastapi.responses import HTMLResponse
 from app import queries
 from app import rag_servers as _rag_servers
 from app.agents import list_agents
-from app.config import remote_ollama_host, remote_ollama_model
+from app.config import extra_ollama_hosts
 from app.dependencies import DB
 from app.rag_health import probe_rag_health
 from app.templates import templates
@@ -46,12 +46,12 @@ def settings_endpoint(request: Request, db: DB) -> Response:
     default_model = queries.get_default_model(db)
     default_num_ctx = queries.get_default_num_ctx(db)
     agents = list_agents()
-    # Phase 20b: surface remote-Ollama state to the settings template.
-    # remote_configured is the gate for showing the toggle vs the
-    # "set env vars first" hint; remote_host/_model are read-only labels.
-    remote_host = remote_ollama_host()
-    remote_model = remote_ollama_model()
-    remote_configured = bool(remote_host and remote_model)
+    # Surface the configured non-primary hosts (OLLAMA_EXTRA_HOSTS, or the
+    # legacy SLOWLY_OLLAMA_* fallback) to the settings template.
+    # remote_configured gates the toggle vs the "set env vars first" hint;
+    # extra_hosts feeds the read-only per-host labels.
+    extra_hosts = extra_ollama_hosts()
+    remote_configured = bool(extra_hosts)
     remote_enabled = queries.get_remote_ollama_enabled(db)
     settings_ctx = {
         "servers": servers,
@@ -61,8 +61,7 @@ def settings_endpoint(request: Request, db: DB) -> Response:
         "default_num_ctx": default_num_ctx,
         "agents": agents,
         "remote_configured": remote_configured,
-        "remote_host": remote_host,
-        "remote_model": remote_model,
+        "extra_hosts": extra_hosts,
         "remote_enabled": remote_enabled,
     }
     if request.headers.get("HX-Request"):

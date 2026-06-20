@@ -77,10 +77,9 @@ CREATE TABLE IF NOT EXISTS conversations (
     -- Name of the selected Ollama host for this chat (a key in
     -- app.agents.AGENTS, e.g. "host2"), or NULL for the primary host.
     active_agent TEXT,
-    -- Per-chat model for the "host2" second host. NULL → fall back to
-    -- SLOWLY_OLLAMA_MODEL (the env default). `model` above is the
-    -- primary-host model; this lets each host keep its own remembered model.
-    slowly_model TEXT,
+    -- Per-chat model for a non-primary host lives in `chat_host_models`
+    -- (keyed by host name), not here. `model` above is the primary-host
+    -- model, kept NOT NULL so a chat always has a valid model to fall back to.
     -- Phase 17: the project this chat belongs to. NOT NULL — every
     -- chat lives in a project; the migration ensures a "Default"
     -- project exists before this column is enforced.
@@ -173,6 +172,21 @@ CREATE TABLE IF NOT EXISTS chat_rag_settings (
     server_name     TEXT NOT NULL,
     enabled         INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY (conversation_id, server_name)
+);
+
+-- Per-chat model for each non-primary Ollama host the chat has picked a
+-- model for. One row per (conversation_id, host_name); host_name matches a
+-- key in app.agents.AGENTS (e.g. "host2"). A missing row means "use that
+-- host's default model" (the host's `default_model` from config). The
+-- primary host's model is NOT stored here — it lives in conversations.model.
+-- Recording the host name (rather than a single conversations column) lets a
+-- chat remember a distinct model per machine. Cascade-deletes with the chat.
+CREATE TABLE IF NOT EXISTS chat_host_models (
+    conversation_id INTEGER NOT NULL
+        REFERENCES conversations(id) ON DELETE CASCADE,
+    host_name       TEXT NOT NULL,
+    model           TEXT NOT NULL,
+    PRIMARY KEY (conversation_id, host_name)
 );
 """
 
@@ -387,24 +401,47 @@ def _ensure_conversations_active_agent_column(conn: sqlite3.Connection) -> None:
         )
 
 
-def _ensure_conversations_slowly_model_column(conn: sqlite3.Connection) -> None:
-    """Backfill the ``slowly_model`` column on pre-existing conversations tables.
+def _ensure_chat_host_models(conn: sqlite3.Connection) -> None:
+    """Migrate the legacy ``conversations.slowly_model`` column to ``chat_host_models``.
 
-    Nullable with no default — existing chats come back as NULL, i.e. the
-    "host2" host falls back to the ``SLOWLY_OLLAMA_MODEL`` env default. Same
-    ``PRAGMA table_info`` guard as the other backfills so the ``ALTER TABLE``
-    is a no-op on fresh DBs where ``_SCHEMA_SQL`` already created the column.
+    Replaces the hardcoded single ``slowly_model`` column with the generic
+    per-host store. ``CREATE TABLE IF NOT EXISTS`` for ``chat_host_models``
+    already ran in ``_SCHEMA_SQL`` on fresh DBs; this helper handles legacy DBs
+    that still carry ``slowly_model``:
+
+    1. Ensure the ``chat_host_models`` table exists (idempotent — covers DBs
+       where ``_SCHEMA_SQL`` predates the table).
+    2. Backfill every chat with a non-NULL ``slowly_model`` into a
+       ``("host2", slowly_model)`` row. ``INSERT OR IGNORE`` makes a re-run a
+       no-op (the PK collides).
+    3. Drop the now-redundant ``slowly_model`` column. SQLite ≥ 3.35 supports
+       ``DROP COLUMN``; Python 3.13 ships ≥ 3.40.
+
+    Idempotent on fresh DBs (no ``slowly_model`` column → steps 2-3 skip) and on
+    already-migrated DBs.
 
     Args:
         conn: Open SQLite connection.
     """
-    columns = {row[1] for row in conn.execute(
-        "PRAGMA table_info(conversations);"
-    )}
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS chat_host_models ("
+        " conversation_id INTEGER NOT NULL"
+        "   REFERENCES conversations(id) ON DELETE CASCADE,"
+        " host_name TEXT NOT NULL,"
+        " model TEXT NOT NULL,"
+        " PRIMARY KEY (conversation_id, host_name));"
+    )
+    columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(conversations);")
+    }
     if "slowly_model" not in columns:
-        conn.execute(
-            "ALTER TABLE conversations ADD COLUMN slowly_model TEXT;"
-        )
+        return
+    conn.execute(
+        "INSERT OR IGNORE INTO chat_host_models (conversation_id, host_name, model)"
+        " SELECT id, 'host2', slowly_model FROM conversations"
+        " WHERE slowly_model IS NOT NULL;"
+    )
+    conn.execute("ALTER TABLE conversations DROP COLUMN slowly_model;")
 
 
 def _ensure_rag_servers_description_column(conn: sqlite3.Connection) -> None:
@@ -603,12 +640,12 @@ def initialize_database(path: Path | None = None) -> Path:
         # legacy chat to point at Default.
         default_project_id = _ensure_default_project(conn)
         _ensure_conversations_project_id_column(conn, default_project_id)
-        # Per-chat "host2" host model: backfill the slowly_model column on
-        # conversations tables created before host-aware model selection.
-        # MUST run AFTER the project_id migration — that step rebuilds the
-        # conversations table (legacy DBs) and only preserves columns it
-        # knows about, so adding slowly_model earlier would be dropped.
-        _ensure_conversations_slowly_model_column(conn)
+        # Per-chat host model store: create chat_host_models and migrate any
+        # legacy conversations.slowly_model column into it. MUST run AFTER the
+        # project_id migration — that step rebuilds the conversations table
+        # (legacy DBs) and only preserves columns it knows about, so the
+        # slowly_model it carries over is what this step reads + drops.
+        _ensure_chat_host_models(conn)
         # Per-project Ollama context-window override: backfill the
         # num_ctx column on projects tables created before this phase.
         _ensure_projects_num_ctx_column(conn)

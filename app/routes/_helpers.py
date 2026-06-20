@@ -220,6 +220,38 @@ def _resolve_active_spec(
     return spec
 
 
+def _effective_model(
+    conversation: queries.Conversation,
+    spec,
+    db: sqlite3.Connection,
+) -> str:
+    """Return the model a conversation will actually run on, given its host.
+
+    The single rule every header-render + generation site shares:
+
+    - Primary host (``spec is None``): the chat's pinned ``conversation.model``.
+    - A non-primary host: the chat's remembered model for that host
+      (``chat_host_models``), or the host's ``default_model`` when the chat has
+      none.
+
+    Args:
+        conversation: The chat whose effective model to resolve.
+        spec: The resolved host ``AgentSpec`` (from :func:`_resolve_active_spec`),
+            or ``None`` for the primary host.
+        db: Open SQLite connection — non-primary models live in
+            ``chat_host_models``.
+
+    Returns:
+        The Ollama model tag to use for this chat on its current host.
+    """
+    if spec is None:
+        return conversation.model
+    return (
+        queries.get_chat_host_model(db, conversation.id, spec.name)
+        or spec.model
+    )
+
+
 def _agent_overrides(
     conversation: queries.Conversation, db: sqlite3.Connection
 ) -> dict:
@@ -233,8 +265,8 @@ def _agent_overrides(
     The primary host returns the chat's pinned model with no overrides,
     ``think=None`` (omit the flag), and ``ollama_host=None`` (local). A
     selected second host returns its ``ollama_host`` and the chat's per-host
-    model (``conversation.slowly_model``, falling back to the host spec's
-    default ``SLOWLY_OLLAMA_MODEL``), but is otherwise IDENTICAL:
+    model (the ``chat_host_models`` row for that host, falling back to the host
+    spec's ``default_model``), but is otherwise IDENTICAL:
     ``tool_allowlist=None`` and
     ``system_prompt_override=None`` route it through the plain-chat generation
     path, so the per-chat tool/RAG chips and the project system prompt apply on
@@ -257,14 +289,59 @@ def _agent_overrides(
             "think": None,
             "ollama_host": None,
         }
-    # A selected second host ("host2") uses the chat's per-host model when
-    # set, falling back to the host spec's default (SLOWLY_OLLAMA_MODEL).
+    # A selected non-primary host uses the chat's per-host model when set,
+    # falling back to the host spec's default_model.
     return {
-        "model": conversation.slowly_model or spec.model,
+        "model": _effective_model(conversation, spec, db),
         "system_prompt_override": None,
         "tool_allowlist": None,
         "think": None,
         "ollama_host": spec.ollama_host,
+    }
+
+
+def _composer_host_context(
+    db: sqlite3.Connection, project: queries.Project
+) -> dict:
+    """Initial-host + model-default hooks for the composer's single model dropdown.
+
+    The composer renders ONE model dropdown that re-fetches the selected host's
+    models (instead of one dropdown per host). On first render it loads the
+    *initial* host's models and pre-selects that host's default model:
+
+    - primary initial host → the project (or global) default model;
+    - a non-primary default host → that host's configured ``default_model``.
+
+    ``primary_default_model`` is the picker's primary option's
+    ``data-default-model`` — app.js reads it when the user switches BACK to the
+    primary host so the dropdown re-selects the right default.
+
+    Args:
+        db: Open SQLite connection (for the global default model).
+        project: The project the composer is scoped to.
+
+    Returns:
+        ``composer_initial_host`` (host name or ""), ``composer_initial_model``
+        (the model dropdown's initial ``data-default``), and
+        ``primary_default_model``.
+    """
+    primary_default_model = (
+        project.default_model or queries.get_default_model(db) or ""
+    )
+    initial_host = project.default_agent or ""
+    initial_model_default = primary_default_model
+    if initial_host:
+        spec = get_agent(initial_host)
+        if spec is not None:
+            initial_model_default = spec.model
+        else:
+            # Project default points at a host that's no longer configured →
+            # fall back to the primary host.
+            initial_host = ""
+    return {
+        "composer_initial_host": initial_host,
+        "composer_initial_model": initial_model_default,
+        "primary_default_model": primary_default_model,
     }
 
 

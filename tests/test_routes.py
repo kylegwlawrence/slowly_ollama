@@ -287,16 +287,18 @@ def test_models_returns_disabled_option_on_protocol_error(
     assert "unexpected" in response.text.lower()
 
 
-def test_models_endpoint_targets_slowly_host(
+def test_models_endpoint_targets_configured_host(
     make_client: ClientFactory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """GET /models?host=host2 lists the SECOND host's models.
+    """GET /models?host=<name> lists THAT host's models (registry-resolved).
 
-    The endpoint resolves "host2" to SLOWLY_OLLAMA_HOST and passes it to
-    list_tool_capable_models, so the composer's host2 dropdown shows that
-    host's models rather than the primary's.
+    The endpoint resolves the host NAME via the registry to its base URL and
+    passes it to list_tool_capable_models, so the composer's single model
+    dropdown shows the selected machine's models rather than the primary's.
     """
+    from app.agents import AGENTS, AgentSpec
+
     captured: dict = {}
 
     async def fake_list(_client: object, host: str | None = None) -> list[str]:
@@ -306,9 +308,15 @@ def test_models_endpoint_targets_slowly_host(
     monkeypatch.setattr(
         "app.routes.chats.ollama.list_tool_capable_models", fake_list
     )
-    monkeypatch.setattr(
-        "app.routes.chats.config.remote_ollama_host",
-        lambda: "http://host1:11434",
+    # Inject a configured host into the registry (independent of env state).
+    monkeypatch.setitem(
+        AGENTS,
+        "host2",
+        AgentSpec(
+            name="host2", label="host2", description="d", model="m",
+            system_prompt="", tools=frozenset(),
+            ollama_host="http://host1:11434",
+        ),
     )
 
     with make_client(_tool_capable_handler) as client:
@@ -587,7 +595,9 @@ def test_composer_model_dropdown_auto_loads_from_models(
         response = client.get(f"/projects/{pid}/chats")
 
     assert "<select" in response.text
-    assert 'hx-get="/models"' in response.text
+    # One model dropdown that loads the initial host's models (host param is
+    # empty for the primary host).
+    assert 'hx-get="/models?host="' in response.text
     assert 'hx-trigger="load"' in response.text
     # The placeholder is visible until /models responds.
     assert "Loading models" in response.text
@@ -1789,21 +1799,32 @@ def test_new_composer_reflects_default_temperature(
 # ---------------------------------------------------------------------------
 
 
+def _one_extra_host() -> list[dict]:
+    """A single configured non-primary host, for settings-page tests."""
+    return [
+        {
+            "name": "host2",
+            "label": "host2",
+            "url": "http://host1:11434",
+            "default_model": "llama3.1:70b",
+        }
+    ]
+
+
 def test_settings_remote_section_unconfigured_shows_info_note(
     make_client: ClientFactory, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """No env vars → /settings shows the 'set these env vars first' note and
-    NOT the toggle. We can't unset env vars at request time (the agents
-    module already imported), so we monkeypatch the config accessors that
-    /settings calls."""
+    """No extra hosts → /settings shows the 'set these env vars first' note and
+    NOT the toggle. We monkeypatch the config accessor that /settings calls
+    (the agents module already imported, so env can't change at request time)."""
     from app.routes import settings as settings_routes
-    monkeypatch.setattr(settings_routes, "remote_ollama_host", lambda: None)
-    monkeypatch.setattr(settings_routes, "remote_ollama_model", lambda: None)
+    monkeypatch.setattr(settings_routes, "extra_ollama_hosts", lambda: [])
 
     with make_client(_ollama_unreachable) as client:
         response = client.get("/settings", headers={"HX-Request": "true"})
     assert response.status_code == 200
-    # The "set these env vars" hint contains the var name.
+    # The "set these env vars" hint names the new + legacy vars.
+    assert "OLLAMA_EXTRA_HOSTS" in response.text
     assert "SLOWLY_OLLAMA_HOST" in response.text
     # The toggle form is absent.
     assert 'hx-post="/settings/remote-ollama-enabled"' not in response.text
@@ -1812,14 +1833,11 @@ def test_settings_remote_section_unconfigured_shows_info_note(
 def test_settings_remote_section_configured_shows_toggle(
     make_client: ClientFactory, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Both env vars set → /settings renders the toggle form + host/model
+    """A configured host → /settings renders the toggle form + host/model
     labels."""
     from app.routes import settings as settings_routes
     monkeypatch.setattr(
-        settings_routes, "remote_ollama_host", lambda: "http://host1:11434"
-    )
-    monkeypatch.setattr(
-        settings_routes, "remote_ollama_model", lambda: "llama3.1:70b"
+        settings_routes, "extra_ollama_hosts", _one_extra_host
     )
 
     with make_client(_ollama_unreachable) as client:
@@ -1839,10 +1857,7 @@ def test_set_remote_ollama_enabled_persists_off(
     """POST without `enabled` (unchecked form) persists as disabled."""
     from app.routes import settings as settings_routes
     monkeypatch.setattr(
-        settings_routes, "remote_ollama_host", lambda: "http://host1:11434"
-    )
-    monkeypatch.setattr(
-        settings_routes, "remote_ollama_model", lambda: "llama3.1:70b"
+        settings_routes, "extra_ollama_hosts", _one_extra_host
     )
 
     with make_client(_ollama_unreachable) as client:
@@ -1864,10 +1879,7 @@ def test_set_remote_ollama_enabled_persists_on(
     """POST with `enabled=1` (checked checkbox) persists as enabled."""
     from app.routes import settings as settings_routes
     monkeypatch.setattr(
-        settings_routes, "remote_ollama_host", lambda: "http://host1:11434"
-    )
-    monkeypatch.setattr(
-        settings_routes, "remote_ollama_model", lambda: "llama3.1:70b"
+        settings_routes, "extra_ollama_hosts", _one_extra_host
     )
 
     with make_client(_ollama_unreachable) as client:
@@ -1932,9 +1944,10 @@ def test_agent_overrides_respects_remote_toggle(tmp_path: Path) -> None:
             AGENTS["host2"] = saved
 
 
-def test_agent_overrides_uses_per_chat_slowly_model(tmp_path: Path) -> None:
-    """On the host2 host, `_agent_overrides` uses the chat's per-host model,
-    falling back to the host spec's default model when it's unset."""
+def test_agent_overrides_uses_per_chat_host_model(tmp_path: Path) -> None:
+    """On a non-primary host, `_agent_overrides` uses the chat's per-host model
+    (chat_host_models), falling back to the host spec's default_model when
+    it's unset."""
     from app.agents import AGENTS, AgentSpec
     from app.routes._helpers import _agent_overrides
 
@@ -1948,16 +1961,16 @@ def test_agent_overrides_uses_per_chat_slowly_model(tmp_path: Path) -> None:
     )
     try:
         with open_connection(db_path) as conn:
-            # Per-chat model set → used verbatim on the host2 host.
+            # Per-chat host model set → used verbatim on the host2 host.
             picked = queries.create_conversation(
                 conn, "t", "local-model", active_agent="host2",
-                slowly_model="picked-model",
             )
+            queries.set_chat_host_model(conn, picked.id, "host2", "picked-model")
             ov = _agent_overrides(picked, conn)
             assert ov["model"] == "picked-model"
             assert ov["ollama_host"] == "http://host1:11434"
 
-            # No per-chat model → falls back to the host spec's default.
+            # No per-chat model → falls back to the host spec's default_model.
             default = queries.create_conversation(
                 conn, "t2", "local-model", active_agent="host2",
             )
@@ -1968,6 +1981,65 @@ def test_agent_overrides_uses_per_chat_slowly_model(tmp_path: Path) -> None:
             AGENTS.pop("host2", None)
         else:
             AGENTS["host2"] = saved
+
+
+def test_composer_host_context_uses_project_default_host(tmp_path: Path) -> None:
+    """`_composer_host_context` pre-selects the project's default host and that
+    host's default model when the host is still configured."""
+    from app.agents import AGENTS, AgentSpec
+    from app.routes._helpers import _composer_host_context
+
+    db_path = tmp_path / "chats.db"
+    initialize_database(db_path)
+    saved = AGENTS.get("host2")
+    AGENTS["host2"] = AgentSpec(
+        name="host2", label="host2", description="d",
+        model="host2-default", system_prompt="", tools=frozenset(),
+        ollama_host="http://host1:11434",
+    )
+    try:
+        with open_connection(db_path) as conn:
+            project = queries.create_project(
+                conn, "P", default_model="proj-model", default_agent="host2",
+            )
+            ctx = _composer_host_context(conn, project)
+            # Initial host is the project default; the model dropdown's initial
+            # default is THAT host's default_model, not the project's model.
+            assert ctx["composer_initial_host"] == "host2"
+            assert ctx["composer_initial_model"] == "host2-default"
+            # The primary option still carries the project (or global) default.
+            assert ctx["primary_default_model"] == "proj-model"
+    finally:
+        if saved is None:
+            AGENTS.pop("host2", None)
+        else:
+            AGENTS["host2"] = saved
+
+
+def test_composer_host_context_falls_back_when_host_removed(
+    tmp_path: Path,
+) -> None:
+    """A project pinned to a host that's since left the registry falls back to
+    the primary host (empty initial host + the primary default model)."""
+    from app.agents import AGENTS
+    from app.routes._helpers import _composer_host_context
+
+    db_path = tmp_path / "chats.db"
+    initialize_database(db_path)
+    # Ensure the pinned host name is NOT in the registry.
+    saved = AGENTS.pop("gone", None)
+    try:
+        with open_connection(db_path) as conn:
+            project = queries.create_project(
+                conn, "P", default_model="proj-model", default_agent="gone",
+            )
+            ctx = _composer_host_context(conn, project)
+            assert ctx["composer_initial_host"] == ""
+            assert ctx["composer_initial_model"] == "proj-model"
+            assert ctx["primary_default_model"] == "proj-model"
+    finally:
+        if saved is not None:
+            AGENTS["gone"] = saved
 
 
 def test_settings_renders_default_tool_cap_input(
@@ -2864,32 +2936,57 @@ def test_create_chat_with_agent_persists_active_agent(
             AGENTS["host2"] = saved
 
 
-def test_create_chat_persists_slowly_model(
+def test_create_chat_on_host_stores_model_in_side_table(
     make_client: ClientFactory,
 ) -> None:
-    """POST /chats with a `slowly_model` field stores the per-host model
-    without disturbing the primary-host `model`."""
+    """POST /chats on a non-primary host stores the picked `model` in
+    chat_host_models for that host; conversations.model keeps the primary
+    fallback (the global default) so a later switch to primary still works."""
+    from app.agents import AGENTS, AgentSpec
+
     db_path = Path(os.environ["DB_PATH"])
     initialize_database(db_path)
-
-    with make_client(_tool_capable_handler) as client:
-        response = client.post(
-            f"/projects/{_default_project_id()}/chats",
-            data={
-                "model": "llama3",
-                "content": "hi",
-                "slowly_model": "mac-model:1",
-            },
-        )
-
-    assert response.status_code == 201
-    import re as _re
-
-    chat_id = int(_re.search(r'data-chat-id="(\d+)"', response.text).group(1))
+    # A distinct global default so the primary fallback is observably NOT the
+    # model the user picked for the non-primary host.
     with open_connection(db_path) as conn:
-        conv = queries.get_conversation(conn, chat_id)
-    assert conv.slowly_model == "mac-model:1"
-    assert conv.model == "llama3"
+        queries.set_default_model(conn, "primary-default")
+
+    saved = AGENTS.get("host2")
+    AGENTS["host2"] = AgentSpec(
+        name="host2", label="host2", description="d",
+        model="host2-default", system_prompt="", tools=frozenset(),
+        ollama_host="http://host1:11434",
+    )
+    try:
+        with make_client(_tool_capable_handler) as client:
+            response = client.post(
+                f"/projects/{_default_project_id()}/chats",
+                data={
+                    "model": "mac-model:1",
+                    "content": "hi",
+                    "agent": "host2",
+                },
+            )
+
+        assert response.status_code == 201
+        import re as _re
+
+        chat_id = int(
+            _re.search(r'data-chat-id="(\d+)"', response.text).group(1)
+        )
+        with open_connection(db_path) as conn:
+            conv = queries.get_conversation(conn, chat_id)
+            host_model = queries.get_chat_host_model(conn, chat_id, "host2")
+        # The picked model lives in the side table under the selected host.
+        assert host_model == "mac-model:1"
+        # The primary column keeps the global default as a safe fallback.
+        assert conv.model == "primary-default"
+        assert conv.active_agent == "host2"
+    finally:
+        if saved is None:
+            AGENTS.pop("host2", None)
+        else:
+            AGENTS["host2"] = saved
 
 
 # ---------------------------------------------------------------------------
@@ -4193,6 +4290,52 @@ def test_unload_model_endpoint_uses_agent_model_when_agent_active(
 
         assert response.status_code == 200
         assert seen == [{"model": "host2-model", "keep_alive": 0}]
+    finally:
+        if saved is None:
+            AGENTS.pop("host2", None)
+        else:
+            AGENTS["host2"] = saved
+
+
+def test_chat_header_indicator_shows_effective_model(
+    make_client: ClientFactory,
+) -> None:
+    """The header chip reads '{host} · {effective_model}': the primary host's
+    pinned model for a Normal chat, and a non-primary host's per-chat model
+    (from chat_host_models, NOT the host default) when that host is selected."""
+    from app.agents import AGENTS, AgentSpec
+
+    db_path = Path(os.environ["DB_PATH"])
+    initialize_database(db_path)
+
+    saved = AGENTS.get("host2")
+    AGENTS["host2"] = AgentSpec(
+        name="host2", label="host2", description="d",
+        model="host2-default", system_prompt="", tools=frozenset(),
+        ollama_host="http://host1:11434",
+    )
+    try:
+        pid = _default_project_id()
+        with open_connection(db_path) as conn:
+            primary = queries.create_conversation(
+                conn, name="p", model="llama3", project_id=pid
+            )
+            on_host = queries.create_conversation(
+                conn, name="h", model="llama3", project_id=pid,
+                active_agent="host2",
+            )
+            queries.set_chat_host_model(
+                conn, on_host.id, "host2", "qwen2.5:14b"
+            )
+
+        with make_client(_tool_capable_handler) as client:
+            r1 = client.get(f"/projects/{pid}/chats/{primary.id}")
+            r2 = client.get(f"/projects/{pid}/chats/{on_host.id}")
+
+        # Primary chat: the chat's pinned model.
+        assert "· llama3" in r1.text
+        # Host chat: host label + the chat's per-host model (not the default).
+        assert "host2 · qwen2.5:14b" in r2.text
     finally:
         if saved is None:
             AGENTS.pop("host2", None)

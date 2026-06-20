@@ -151,51 +151,82 @@ def test_agentspec_ollama_host_defaults_none_and_is_settable() -> None:
     assert remote.ollama_host == "http://host1:11434"
 
 
-def test_build_slowly_host_returns_none_when_env_unset(monkeypatch) -> None:
-    """Both env vars missing → no host2 host (matches tool-gating pattern)."""
-    from app.agents import _build_slowly_host
+def test_build_agents_empty_when_no_hosts(monkeypatch) -> None:
+    """No extra-host config → empty registry (matches tool-gating pattern)."""
+    from app.agents import _build_agents
 
+    monkeypatch.delenv("OLLAMA_EXTRA_HOSTS", raising=False)
     monkeypatch.delenv("SLOWLY_OLLAMA_HOST", raising=False)
     monkeypatch.delenv("SLOWLY_OLLAMA_MODEL", raising=False)
-    assert _build_slowly_host() is None
+    assert _build_agents() == {}
 
 
-def test_build_slowly_host_returns_none_when_only_host_set(monkeypatch) -> None:
-    """Partial config is treated as no config — drop the host."""
-    from app.agents import _build_slowly_host
-
-    monkeypatch.setenv("SLOWLY_OLLAMA_HOST", "http://host1:11434")
-    monkeypatch.delenv("SLOWLY_OLLAMA_MODEL", raising=False)
-    assert _build_slowly_host() is None
-
-
-def test_build_slowly_host_returns_none_when_only_model_set(monkeypatch) -> None:
-    """Partial config is treated as no config — drop the host."""
-    from app.agents import _build_slowly_host
-
-    monkeypatch.delenv("SLOWLY_OLLAMA_HOST", raising=False)
-    monkeypatch.setenv("SLOWLY_OLLAMA_MODEL", "llama3.1:70b")
-    assert _build_slowly_host() is None
-
-
-def test_build_slowly_host_populated_when_env_set(monkeypatch) -> None:
-    """Both env vars set → spec carries the host + pinned model.
+def test_build_agents_legacy_slowly_fallback(monkeypatch) -> None:
+    """With OLLAMA_EXTRA_HOSTS unset, the legacy SLOWLY_* pair → one host.
 
     A host is not an agent: ``tools`` and ``system_prompt`` are empty (the
     per-chat chips + project prompt govern, via ``_agent_overrides``).
     """
-    from app.agents import _build_slowly_host
+    from app.agents import _build_agents
 
+    monkeypatch.delenv("OLLAMA_EXTRA_HOSTS", raising=False)
     monkeypatch.setenv("SLOWLY_OLLAMA_HOST", "http://host1:11434")
     monkeypatch.setenv("SLOWLY_OLLAMA_MODEL", "llama3.1:70b")
-    spec = _build_slowly_host()
-    assert spec is not None
-    assert spec.name == "host2"
+    agents_map = _build_agents()
+    assert set(agents_map) == {"host2"}
+    spec = agents_map["host2"]
     assert spec.label == "host2"
     assert spec.model == "llama3.1:70b"
     assert spec.ollama_host == "http://host1:11434"
     assert spec.tools == frozenset()
     assert spec.system_prompt == ""
+
+
+def test_build_agents_drops_partial_legacy(monkeypatch) -> None:
+    """Partial legacy config (host but no model) is treated as no config."""
+    from app.agents import _build_agents
+
+    monkeypatch.delenv("OLLAMA_EXTRA_HOSTS", raising=False)
+    monkeypatch.setenv("SLOWLY_OLLAMA_HOST", "http://host1:11434")
+    monkeypatch.delenv("SLOWLY_OLLAMA_MODEL", raising=False)
+    assert _build_agents() == {}
+
+
+def test_build_agents_from_extra_hosts_json(monkeypatch) -> None:
+    """OLLAMA_EXTRA_HOSTS JSON builds one host spec per entry, in order.
+
+    ``label`` defaults to ``name`` when omitted; ``default_model`` maps to the
+    spec's ``model`` (the host's fallback model).
+    """
+    import json
+
+    from app.agents import _build_agents
+
+    monkeypatch.setenv(
+        "OLLAMA_EXTRA_HOSTS",
+        json.dumps(
+            [
+                {
+                    "name": "host2",
+                    "url": "http://host2:11434",
+                    "default_model": "qwen2.5:14b",
+                },
+                {
+                    "name": "mac",
+                    "label": "Mac Studio",
+                    "url": "http://mac:11434",
+                    "default_model": "llama3:70b",
+                },
+            ]
+        ),
+    )
+    agents_map = _build_agents()
+    assert list(agents_map) == ["host2", "mac"]
+    assert agents_map["host2"].label == "host2"  # default label = name
+    assert agents_map["host2"].model == "qwen2.5:14b"
+    assert agents_map["host2"].ollama_host == "http://host2:11434"
+    assert agents_map["mac"].label == "Mac Studio"
+    assert agents_map["mac"].ollama_host == "http://mac:11434"
 
 
 def test_agent_host_label_extracts_hostname() -> None:

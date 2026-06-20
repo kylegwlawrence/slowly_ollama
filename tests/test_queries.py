@@ -22,6 +22,7 @@ from app.queries import (
     count_assistant_messages,
     create_conversation,
     delete_conversation,
+    get_chat_host_model,
     get_chat_rag_states,
     get_chat_tool_states,
     get_conversation,
@@ -41,6 +42,7 @@ from app.queries import (
     seed_chat_rag_servers,
     seed_chat_tools,
     set_active_agent,
+    set_chat_host_model,
     set_conversation_temperature,
     set_conversation_tool_iteration_cap,
     set_default_model,
@@ -111,24 +113,28 @@ def test_create_conversation_honors_explicit_tool_iteration_cap(
     assert get_conversation(conn, c.id).tool_iteration_cap == 3
 
 
-def test_create_conversation_defaults_slowly_model_to_none(
+def test_get_chat_host_model_defaults_to_none(
     conn: sqlite3.Connection,
 ) -> None:
-    """A new conversation has no per-host 'host2' model by default."""
+    """A chat with no stored per-host model returns None (→ host default)."""
     c = create_conversation(conn, name="My chat", model="llama3")
-    assert c.slowly_model is None
-    assert get_conversation(conn, c.id).slowly_model is None
+    assert get_chat_host_model(conn, c.id, "host2") is None
 
 
-def test_create_conversation_persists_slowly_model(
+def test_set_chat_host_model_round_trips_and_upserts(
     conn: sqlite3.Connection,
 ) -> None:
-    """create_conversation stores and round-trips the per-host host2 model."""
-    c = create_conversation(
-        conn, name="My chat", model="llama3", slowly_model="qwen2.5:7b"
-    )
-    assert c.slowly_model == "qwen2.5:7b"
-    assert get_conversation(conn, c.id).slowly_model == "qwen2.5:7b"
+    """set_chat_host_model stores per (chat, host) and upserts on re-set."""
+    c = create_conversation(conn, name="My chat", model="llama3")
+    set_chat_host_model(conn, c.id, "host2", "qwen2.5:7b")
+    assert get_chat_host_model(conn, c.id, "host2") == "qwen2.5:7b"
+    # A different host keeps its own model (no cross-talk).
+    set_chat_host_model(conn, c.id, "mac", "llama3:70b")
+    assert get_chat_host_model(conn, c.id, "mac") == "llama3:70b"
+    assert get_chat_host_model(conn, c.id, "host2") == "qwen2.5:7b"
+    # Re-setting the same host overwrites (upsert on the PK).
+    set_chat_host_model(conn, c.id, "host2", "qwen2.5:14b")
+    assert get_chat_host_model(conn, c.id, "host2") == "qwen2.5:14b"
 
 
 def test_set_conversation_tool_iteration_cap_round_trips(

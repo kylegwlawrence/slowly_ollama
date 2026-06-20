@@ -39,6 +39,7 @@ from app.ollama import OllamaProtocolError, OllamaUnavailable
 from app.routes._helpers import (
     _agent_overrides,
     _chip_states,
+    _effective_model,
     _resolve_active_spec,
     _resolve_num_ctx,
     _sidebar_rag_context,
@@ -72,12 +73,11 @@ async def list_models_endpoint(
 ) -> Response:
     """Return ``<option>`` tags for the model dropdown.
 
-    ``host`` selects which Ollama host's models to list: unset/``None``
-    (or the primary host) lists ``OLLAMA_HOST``'s models; ``"host2"``
-    lists the second host's models (``SLOWLY_OLLAMA_HOST``). The composer's
-    per-host model dropdowns pass it so each host offers its own models.
-    A ``"host2"`` request when that host isn't configured falls back to
-    the primary host's list.
+    ``host`` is the selected host's NAME (a key in ``app.agents.AGENTS``, e.g.
+    ``"host2"``), as submitted by the composer's machine picker. Unset/empty
+    (or an unknown name) lists the primary ``OLLAMA_HOST``'s models; a known
+    name lists that host's models. This is what powers the single model
+    dropdown re-fetching when the user switches machines.
 
     Phase 12f filters this list to models whose ``/api/show`` capability
     list advertises ``"tools"`` — picking a non-tool-capable model from
@@ -100,8 +100,10 @@ async def list_models_endpoint(
     (empty value + the form's `required` attribute) while giving the
     user a clear message to act on.
     """
-    # "host2" → the second host; anything else → the primary host (None).
-    target_host = config.remote_ollama_host() if host == "host2" else None
+    # Resolve the host NAME to its base URL via the registry: a known
+    # non-primary host → its ollama_host; primary / unknown → None (local).
+    spec = get_agent(host)
+    target_host = spec.ollama_host if spec else None
     try:
         models = sorted(
             await ollama.list_tool_capable_models(client, host=target_host)
@@ -381,6 +383,7 @@ async def send_message_endpoint(
     indicator_oob = templates.get_template("_agent_indicator.html").render(
         conversation=conversation,
         active_agent_spec=spec,
+        effective_model=_effective_model(conversation, spec, db),
         model_loaded=True,
         oob=True,
     )
@@ -490,6 +493,7 @@ async def regenerate_endpoint(
     indicator_oob = templates.get_template("_agent_indicator.html").render(
         conversation=conversation,
         active_agent_spec=spec,
+        effective_model=_effective_model(conversation, spec, db),
         model_loaded=True,
         oob=True,
     )
@@ -528,22 +532,27 @@ async def set_chat_agent_endpoint(
     except LookupError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
 
-    spec = get_agent(agent)
+    selected = get_agent(agent)
     conversation = queries.set_active_agent(
-        db, conversation_id, spec.name if spec else None
+        db, conversation_id, selected.name if selected else None
     )
+    # Resolve through the toggle so a disabled remote host falls back to the
+    # primary (matches the indicator + generation path).
+    spec = _resolve_active_spec(conversation, db)
 
-    # The effective model can change with the host (the second host uses the
-    # chat's per-host slowly_model, or its default), so re-probe residency
-    # before re-rendering the chip rather than carrying over the old state.
-    effective_model = (
-        (conversation.slowly_model or spec.model) if spec else conversation.model
+    # The effective model can change with the host (a non-primary host uses the
+    # chat's per-host model, or its default), so re-probe residency ON THAT
+    # HOST before re-rendering the chip rather than carrying over the old state.
+    effective_model = _effective_model(conversation, spec, db)
+    effective_host = spec.ollama_host if spec else None
+    model_loaded = await ollama.is_model_loaded(
+        client, effective_model, host=effective_host
     )
-    model_loaded = await ollama.is_model_loaded(client, effective_model)
 
     indicator_html = templates.get_template("_agent_indicator.html").render(
         conversation=conversation,
         active_agent_spec=spec,
+        effective_model=effective_model,
         model_loaded=model_loaded,
         oob=True,
     )
@@ -610,12 +619,11 @@ async def unload_chat_model_endpoint(
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
 
     spec = _resolve_active_spec(conversation, db)
-    effective_model = (
-        (conversation.slowly_model or spec.model) if spec else conversation.model
-    )
+    effective_model = _effective_model(conversation, spec, db)
+    effective_host = spec.ollama_host if spec else None
 
     try:
-        await ollama.unload_model(client, effective_model)
+        await ollama.unload_model(client, effective_model, host=effective_host)
     except OllamaUnavailable as e:
         raise HTTPException(
             status.HTTP_502_BAD_GATEWAY,
@@ -625,6 +633,7 @@ async def unload_chat_model_endpoint(
     indicator_html = templates.get_template("_agent_indicator.html").render(
         conversation=conversation,
         active_agent_spec=spec,
+        effective_model=effective_model,
         model_loaded=False,
     )
     return HTMLResponse(content=indicator_html)

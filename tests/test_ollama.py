@@ -1151,6 +1151,36 @@ async def test_stream_chat_without_host_uses_client_base_url() -> None:
 
 
 @pytest.mark.asyncio
+async def test_is_model_loaded_host_override_targets_remote_ps() -> None:
+    """`host=` makes the /api/ps residency probe land on the remote URL."""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json={"models": [{"name": "m"}]})
+
+    async with _client_with(handler) as client:
+        assert await is_model_loaded(client, "m", host="http://host1:11434")
+
+    assert seen == ["http://host1:11434/api/ps"]
+
+
+@pytest.mark.asyncio
+async def test_unload_model_host_override_targets_remote_url() -> None:
+    """`host=` makes the unload POST land on the remote /api/generate."""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json={"model": "m", "done": True})
+
+    async with _client_with(handler) as client:
+        await unload_model(client, "m", host="http://host1:11434")
+
+    assert seen == ["http://host1:11434/api/generate"]
+
+
+@pytest.mark.asyncio
 async def test_maybe_tool_call_host_override_targets_remote_url() -> None:
     """`host=` makes the non-streaming probe land on the remote URL."""
     seen: list[str] = []

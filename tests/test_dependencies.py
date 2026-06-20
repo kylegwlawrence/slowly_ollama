@@ -10,9 +10,10 @@ import importlib
 import pytest
 
 # Module (import) names. These differ from the distribution names in
-# requirements.txt for two packages:
-#   pytest-asyncio  -> pytest_asyncio
-#   python-dotenv   -> dotenv
+# requirements.txt for a few packages:
+#   pytest-asyncio     -> pytest_asyncio
+#   python-dotenv      -> dotenv
+#   pymdown-extensions -> pymdownx
 # (python-multipart imports as `python_multipart` since 0.0.13; the
 # legacy `multipart` import name is deprecated.)
 MODULES: list[str] = [
@@ -20,6 +21,8 @@ MODULES: list[str] = [
     "uvicorn",
     "httpx",
     "jinja2",
+    "markdown",
+    "pymdownx",
     "dotenv",
     "python_multipart",
     "pytest",

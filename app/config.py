@@ -10,6 +10,7 @@ Accessors raise `KeyError` if the key isn't set — there are no in-code
 fallbacks. The setup ritual is `cp .env.example .env` before first run.
 """
 
+import json
 import os
 from pathlib import Path
 
@@ -127,6 +128,76 @@ def remote_ollama_model() -> str | None:
     """
     raw = os.environ.get("SLOWLY_OLLAMA_MODEL")
     return raw or None
+
+
+def extra_ollama_hosts() -> list[dict[str, str]]:
+    """Return the configured non-primary Ollama hosts (the host picker's options).
+
+    The primary host (``OLLAMA_HOST``) is NOT in this list — it is the picker's
+    leading "no selection" option (``active_agent`` NULL). Each entry here is an
+    *additional* machine a chat can be routed to, so the user can add machines
+    without a code change.
+
+    Two sources, in priority order:
+
+    1. ``OLLAMA_EXTRA_HOSTS`` — a JSON array of objects, each with ``name``,
+       ``url``, and ``default_model`` (``label`` optional, defaults to
+       ``name``). This is the scalable, N-machine config: add a machine by
+       appending an object. Malformed JSON, a non-list top level, or an entry
+       missing a required key is skipped defensively — a typo in one machine
+       must not take the whole picker down.
+    2. Legacy fallback — when ``OLLAMA_EXTRA_HOSTS`` is unset/empty, a single
+       ``host2`` host is synthesised from ``SLOWLY_OLLAMA_HOST`` +
+       ``SLOWLY_OLLAMA_MODEL`` (both required), so deployments predating the
+       JSON config keep working without an .env change.
+
+    Returns:
+        A list of ``{"name", "label", "url", "default_model"}`` dicts (all
+        strings), in declaration order. Empty when nothing is configured.
+    """
+    raw = os.environ.get("OLLAMA_EXTRA_HOSTS")
+    if raw and raw.strip():
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            # A malformed value disables the extra hosts rather than crashing
+            # every render that touches the registry.
+            return []
+        hosts: list[dict[str, str]] = []
+        if isinstance(parsed, list):
+            for entry in parsed:
+                if not isinstance(entry, dict):
+                    continue
+                name = entry.get("name")
+                url = entry.get("url")
+                default_model = entry.get("default_model")
+                # All three are required; skip a half-configured entry rather
+                # than register a host that would fail on its first turn (the
+                # same both-or-nothing gating used by the legacy pair below).
+                if not (name and url and default_model):
+                    continue
+                hosts.append(
+                    {
+                        "name": str(name),
+                        "label": str(entry.get("label") or name),
+                        "url": str(url),
+                        "default_model": str(default_model),
+                    }
+                )
+        return hosts
+    # Legacy single-host fallback (pre-OLLAMA_EXTRA_HOSTS deployments).
+    host = remote_ollama_host()
+    model = remote_ollama_model()
+    if host and model:
+        return [
+            {
+                "name": "host2",
+                "label": "host2",
+                "url": host,
+                "default_model": model,
+            }
+        ]
+    return []
 
 
 def remote_db_path() -> str | None:

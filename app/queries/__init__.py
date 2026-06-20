@@ -16,6 +16,7 @@ Submodules:
     :mod:`app.queries.settings` — app_settings get/set + global default-*
         helpers (temperature, model, tool cap, num_ctx).
     :mod:`app.queries.chat_state` — per-chat tool + RAG-server chip state.
+    :mod:`app.queries.chat_hosts` — per-chat model for each non-primary host.
 
 Each function takes a ``sqlite3.Connection`` and wraps writes in
 ``with conn:`` so a partial update never lands if anything raises mid-way.
@@ -33,6 +34,10 @@ from app.queries._models import (
     Role,
     _Unset,
     _UNSET,
+)
+from app.queries.chat_hosts import (
+    get_chat_host_model,
+    set_chat_host_model,
 )
 from app.queries.chat_state import (
     get_chat_rag_states,
@@ -147,6 +152,9 @@ __all__ = [
     "set_default_tool_iteration_cap",
     "set_remote_ollama_enabled",
     "set_setting",
+    # Per-chat host models
+    "get_chat_host_model",
+    "set_chat_host_model",
     # Chat state (per-chat chips)
     "get_chat_rag_states",
     "get_chat_tool_states",

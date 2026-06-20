@@ -84,6 +84,8 @@ def test_initialize_is_idempotent(initialized_db: Path) -> None:
         "chat_rag_settings",
         # Phase 17 added the projects table.
         "projects",
+        # Generic per-chat host→model store (replaced the slowly_model column).
+        "chat_host_models",
     }
 
 
@@ -304,39 +306,69 @@ def test_migration_backfills_active_agent_column(tmp_path: Path) -> None:
         assert value is None
 
 
-def test_migration_backfills_slowly_model_column(tmp_path: Path) -> None:
-    """A conversations table that pre-dates host-aware model selection gets
-    the nullable slowly_model column backfilled (NULL = use env default)."""
+def test_migration_moves_slowly_model_to_chat_host_models(tmp_path: Path) -> None:
+    """The legacy ``slowly_model`` column is migrated into ``chat_host_models``.
+
+    A conversations table still carrying ``slowly_model`` has each non-NULL
+    value moved into a ``("host2", <model>)`` row in the generic per-host
+    store, and the column is dropped. A chat with NULL ``slowly_model`` gets no
+    row (it falls back to the host's default model). Re-running init is a no-op.
+    """
     db = tmp_path / "chats.db"
     with sqlite3.connect(db) as conn:
+        # Simulate the HEAD-1 shape: project_id already present (so the
+        # project_id rebuild no-ops) plus the legacy slowly_model column.
         conn.executescript(
             """
+            CREATE TABLE projects (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                description TEXT NOT NULL DEFAULT '',
+                workspace_subdir TEXT NOT NULL UNIQUE,
+                default_model TEXT,
+                default_agent TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO projects (id, name, workspace_subdir, created_at, updated_at)
+                VALUES (1, 'Default', 'default', 'now', 'now');
             CREATE TABLE conversations (
                 id INTEGER PRIMARY KEY,
                 name TEXT NOT NULL,
                 model TEXT NOT NULL,
                 name_locked INTEGER NOT NULL DEFAULT 0,
+                temperature REAL NOT NULL DEFAULT 0.8,
+                tool_iteration_cap INTEGER NOT NULL DEFAULT 5,
+                active_agent TEXT,
+                slowly_model TEXT,
+                project_id INTEGER NOT NULL,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
             INSERT INTO conversations
-                (name, model, name_locked, created_at, updated_at)
-                VALUES ('legacy', 'm', 0, 'now', 'now');
+                (id, name, model, active_agent, slowly_model, project_id,
+                 created_at, updated_at)
+                VALUES
+                (1, 'on-host2', 'm', 'host2', 'slow:1', 1, 'now', 'now'),
+                (2, 'on-primary', 'm', NULL, NULL, 1, 'now', 'now');
             """
         )
 
+    initialize_database(db)
+    # Idempotent: a second run must not raise or duplicate rows.
     initialize_database(db)
 
     with sqlite3.connect(db) as conn:
         columns = {
             row[1] for row in conn.execute("PRAGMA table_info(conversations);")
         }
-        assert "slowly_model" in columns
-        # The pre-existing row defaults to NULL (fall back to the env default).
-        value = conn.execute(
-            "SELECT slowly_model FROM conversations WHERE name = 'legacy';"
-        ).fetchone()[0]
-        assert value is None
+        assert "slowly_model" not in columns  # dropped
+        rows = conn.execute(
+            "SELECT conversation_id, host_name, model FROM chat_host_models"
+            " ORDER BY conversation_id;"
+        ).fetchall()
+        # Only chat 1 (had a slowly_model) migrated; chat 2 (NULL) got no row.
+        assert rows == [(1, "host2", "slow:1")]
 
 
 def test_migration_backfills_archived_at_column(tmp_path: Path) -> None:

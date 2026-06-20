@@ -365,7 +365,9 @@ def reset_capability_cache() -> None:
 # `/api/ps` lets us colour the chip to reflect the actual residency state.
 
 
-async def list_loaded_models(client: httpx.AsyncClient) -> list[str]:
+async def list_loaded_models(
+    client: httpx.AsyncClient, host: str | None = None
+) -> list[str]:
     """Return the names of models currently held in Ollama's memory.
 
     Wraps ``GET /api/ps`` — Ollama's "what's resident right now" endpoint.
@@ -375,6 +377,9 @@ async def list_loaded_models(client: httpx.AsyncClient) -> list[str]:
     Args:
         client: An ``httpx.AsyncClient`` pointed at the Ollama host
             (typically from ``create_client``).
+        host: Optional override base URL. ``None`` queries the client's
+            ``base_url`` (the primary host); set it to probe a non-primary
+            host's residency (the header chip targets the selected host).
 
     Returns:
         Loaded model names in the order Ollama returned them. Empty
@@ -387,7 +392,7 @@ async def list_loaded_models(client: httpx.AsyncClient) -> list[str]:
             valid JSON or didn't have the expected shape.
     """
     try:
-        response = await client.get("/api/ps")
+        response = await client.get(_url("/api/ps", host))
         response.raise_for_status()
     except (httpx.HTTPError, httpx.InvalidURL) as e:
         raise OllamaUnavailable(f"Ollama request failed: {e}") from e
@@ -400,7 +405,9 @@ async def list_loaded_models(client: httpx.AsyncClient) -> list[str]:
         ) from e
 
 
-async def is_model_loaded(client: httpx.AsyncClient, name: str) -> bool:
+async def is_model_loaded(
+    client: httpx.AsyncClient, name: str, host: str | None = None
+) -> bool:
     """Best-effort check: is ``name`` resident in Ollama right now?
 
     Wraps :func:`list_loaded_models` and swallows Ollama errors —
@@ -411,6 +418,9 @@ async def is_model_loaded(client: httpx.AsyncClient, name: str) -> bool:
     Args:
         client: An ``httpx.AsyncClient`` pointed at the Ollama host.
         name: The model identifier to check (e.g. ``"llama3.1:8b"``).
+        host: Optional override base URL. ``None`` checks the primary host;
+            set it so the header chip reflects residency on the chat's
+            selected non-primary host.
 
     Returns:
         True if /api/ps lists ``name``. False only when /api/ps
@@ -419,12 +429,14 @@ async def is_model_loaded(client: httpx.AsyncClient, name: str) -> bool:
         click correct it than to lie about residency.
     """
     try:
-        return name in await list_loaded_models(client)
+        return name in await list_loaded_models(client, host=host)
     except (OllamaUnavailable, OllamaProtocolError):
         return True
 
 
-async def unload_model(client: httpx.AsyncClient, name: str) -> None:
+async def unload_model(
+    client: httpx.AsyncClient, name: str, host: str | None = None
+) -> None:
     """Ask Ollama to evict ``name`` from memory immediately.
 
     Ollama's unload protocol: POST ``/api/generate`` (or ``/api/chat``)
@@ -439,6 +451,8 @@ async def unload_model(client: httpx.AsyncClient, name: str) -> None:
     Args:
         client: An ``httpx.AsyncClient`` pointed at the Ollama host.
         name: The model identifier to evict (e.g. ``"llama3.1:8b"``).
+        host: Optional override base URL. ``None`` unloads from the primary
+            host; set it to evict from the chat's selected non-primary host.
 
     Raises:
         OllamaUnavailable: Ollama is unreachable, the request timed out,
@@ -448,7 +462,7 @@ async def unload_model(client: httpx.AsyncClient, name: str) -> None:
     """
     try:
         response = await client.post(
-            "/api/generate",
+            _url("/api/generate", host),
             json={"model": name, "keep_alive": 0},
             timeout=10.0,
         )

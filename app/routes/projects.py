@@ -30,8 +30,11 @@ from app.projects import ensure_project_workspace
 from app.routes._helpers import (
     _agent_overrides,
     _chip_states,
+    _composer_host_context,
+    _effective_model,
     _placeholder_name,
     _project_context,
+    _resolve_active_spec,
     _sidebar_rag_context,
     _spawn_health_refresh,
 )
@@ -370,6 +373,8 @@ def project_chats_endpoint(
             # propagates into the model / agent selects.
             "project_default_model": project.default_model,
             "project_default_agent": project.default_agent,
+            # Initial host + model-default for the single model dropdown.
+            **_composer_host_context(db, project),
         },
     )
 
@@ -402,6 +407,7 @@ def project_new_chat_endpoint(
             "project": project,
             "project_default_model": project.default_model,
             "project_default_agent": project.default_agent,
+            **_composer_host_context(db, project),
         },
     )
 
@@ -460,16 +466,20 @@ async def project_chat_panel_endpoint(
     else:
         tool_states, rag_server_states = [], []
 
-    active_agent_spec = get_agent(conversation.active_agent)
+    # Resolve through the toggle so a disabled remote host renders as the
+    # primary (matches the indicator + generation path).
+    active_agent_spec = _resolve_active_spec(conversation, db)
 
-    # Reflect Ollama's actual memory state in the header chip. The
-    # "effective" model is the agent's model when an agent is active,
-    # else the chat's pinned model — same rule the indicator uses to
-    # decide what text to render.
-    effective_model = (
-        active_agent_spec.model if active_agent_spec else conversation.model
+    # Reflect Ollama's actual memory state in the header chip. The "effective"
+    # model is the chat's per-host model on its selected host, else the chat's
+    # pinned model — same rule the indicator uses to decide what to render.
+    effective_model = _effective_model(conversation, active_agent_spec, db)
+    effective_host = (
+        active_agent_spec.ollama_host if active_agent_spec else None
     )
-    model_loaded = await ollama.is_model_loaded(client, effective_model)
+    model_loaded = await ollama.is_model_loaded(
+        client, effective_model, host=effective_host
+    )
 
     sidebar_ctx = await _sidebar_rag_context(
         db, conversation, supports_tools=supports_tools
@@ -490,6 +500,7 @@ async def project_chat_panel_endpoint(
             "tool_states": tool_states,
             "rag_server_states": rag_server_states,
             "active_agent_spec": active_agent_spec,
+            "effective_model": effective_model,
             "model_loaded": model_loaded,
             **sidebar_ctx,
         },
@@ -511,7 +522,6 @@ async def create_project_chat_endpoint(
     temperature: Annotated[float | None, Form()] = None,
     tool_iteration_cap: Annotated[int | None, Form()] = None,
     agent: Annotated[str | None, Form()] = None,
-    slowly_model: Annotated[str | None, Form()] = None,
 ) -> Response:
     """Create a chat inside a project AND save its first message.
 
@@ -536,19 +546,29 @@ async def create_project_chat_endpoint(
         tool_iteration_cap = queries.get_default_tool_iteration_cap(db)
     tool_iteration_cap = max(1, min(10, tool_iteration_cap))
     agent_spec = get_agent(agent)
+    # The single `model` field is the model for the SELECTED host. On the
+    # primary host it IS conversations.model. On a non-primary host it belongs
+    # in chat_host_models; conversations.model (NOT NULL) keeps a sensible
+    # primary fallback so switching to primary mid-chat still has a valid model.
+    if agent_spec is None:
+        primary_model = model
+    else:
+        primary_model = (
+            project.default_model or queries.get_default_model(db) or model
+        )
     chat = queries.create_conversation(
         db,
         name=_placeholder_name(content),
-        model=model,
+        model=primary_model,
         project_id=project_id,
         temperature=temperature,
         tool_iteration_cap=tool_iteration_cap,
         active_agent=agent_spec.name if agent_spec else None,
-        # Per-host model for the "host2" second host. Empty ("" before
-        # /models loads, or no second host) → None → fall back to the env
-        # default. `model` above remains the primary-host model.
-        slowly_model=slowly_model or None,
     )
+    # Remember the picked model for the non-primary host. Empty ("" before
+    # /models loads) → skip, so the host falls back to its default_model.
+    if agent_spec is not None and model:
+        queries.set_chat_host_model(db, chat.id, agent_spec.name, model)
     queries.append_message(db, chat.id, "user", content)
 
     form_data = await request.form()
@@ -598,6 +618,10 @@ async def create_project_chat_endpoint(
     else:
         tool_states, rag_server_states = [], []
 
+    # Toggle-aware host spec for the header chip (a disabled remote host
+    # renders as the primary), matching the generation path's resolution.
+    active_spec = _resolve_active_spec(chat, db)
+
     panel_html = templates.get_template("_chat_panel.html").render(
         conversation=chat,
         blocks=blocks,
@@ -612,7 +636,8 @@ async def create_project_chat_endpoint(
         tool_states=tool_states,
         rag_server_states=rag_server_states,
         agents=list_agents(),
-        active_agent_spec=agent_spec,
+        active_agent_spec=active_spec,
+        effective_model=_effective_model(chat, active_spec, db),
         # Brand-new chat: we just kicked off start_generation, which is
         # (re)loading the effective model right now. Skip the /api/ps
         # round trip and render the chip in its loaded colour.

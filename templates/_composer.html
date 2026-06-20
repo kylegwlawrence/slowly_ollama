@@ -49,44 +49,31 @@
        option blocks submission via the `required` attribute until /models
        responds (or until the user manually picks). #}
     <div class="composer__toolbar">
-      {# Ollama-host picker, to the LEFT of the model selector. It selects
-         which host the chat STARTS on; the model for each host is chosen in
-         that host's own dropdown below. Submits as the `agent` form field
-         with POST /chats. #}
+      {# Machine picker, to the LEFT of the model selector. It selects which
+         host the chat runs on; the single model dropdown to its right
+         re-fetches THAT host's models on change (app.js). Submits as the
+         `agent` form field with POST /chats. #}
       <label class="composer__toolbar-label" for="composer-agent">Ollama host</label>
-      {# Pre-select the project's default host (if any). The underlying
-         _agent_select.html honors `selected_agent`. #}
-      {% set selected_agent = project_default_agent|default("") or "" %}
+      {# Pre-select the initial host (project default, or primary). The host
+         options carry `data-default-model` (via primary_default_model) so
+         app.js can pre-select the right default when the machine changes. #}
+      {% set selected_agent = composer_initial_host|default("") or "" %}
       {% set select_id = "composer-agent" %}
       {% include "_agent_select.html" %}
       <label class="composer__toolbar-label" for="composer-model">Model</label>
-      {# Phase 17: data-default attribute is read by app.js after the
-         /models response loads — it pre-selects the project's default
-         model when one matches a loaded option. #}
+      {# ONE model dropdown for every machine. It loads the initially-selected
+         host's models on insert (hx-get below) and re-loads when the machine
+         picker changes (app.js fires /models?host=<name> into this select).
+         data-default is read by the htmx:afterSwap handler in app.js to
+         pre-select the chosen host's default model once options land. #}
       <select id="composer-model" name="model" required
-              data-default="{{ project_default_model|default('') or global_default_model|default('') or '' }}"
-              hx-get="/models"
+              data-default="{{ composer_initial_model|default('') or '' }}"
+              hx-get="/models?host={{ composer_initial_host|default('') or '' }}"
               hx-trigger="load"
               hx-target="this"
               hx-swap="innerHTML">
         <option value="">Loading models…</option>
       </select>
-      {# A per-host model dropdown for each configured second host (e.g.
-         "host2"), loading THAT host's own models via /models?host=<name>.
-         The chat remembers each host's model (submitted as `<name>_model`),
-         so switching hosts mid-chat keeps each host's choice. data-default
-         pre-selects the host's env default once /models replies. #}
-      {% for host in agents %}
-      <label class="composer__toolbar-label" for="composer-{{ host.name }}-model">{{ host.label }} model</label>
-      <select id="composer-{{ host.name }}-model" name="{{ host.name }}_model"
-              data-default="{{ host.model }}"
-              hx-get="/models?host={{ host.name }}"
-              hx-trigger="load"
-              hx-target="this"
-              hx-swap="innerHTML">
-        <option value="">Loading models…</option>
-      </select>
-      {% endfor %}
       <div class="tool-chip tool-chip--on temp-chip">
         <span class="tool-chip__label">Temp</span>
         <input id="composer-temperature" type="number" name="temperature"

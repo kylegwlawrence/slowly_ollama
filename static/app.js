@@ -284,10 +284,29 @@ document.body.addEventListener('htmx:afterRequest', (e) => {
   }
 });
 
-// The composer host picker no longer greys the model dropdown: each host
-// (primary + any second host like "host2") has its OWN model dropdown that
-// self-loads from /models?host=<name>, so both models are always meaningful
-// and editable. The picker only selects which host the chat starts on.
+// ---------------------------------------------------------------------
+// Composer: machine picker drives the single model dropdown
+// ---------------------------------------------------------------------
+// The composer has ONE model <select> shared by every machine. When the user
+// switches machines, re-fetch that machine's installed models into the same
+// dropdown and pre-select the machine's default model. The host <option>s
+// carry data-default-model (see _agent_select.html); we copy the selected
+// one onto the model select's data-default so the existing htmx:afterSwap
+// handler (responsibility #2) re-selects it once the options land. Delegated
+// on document.body so it survives the composer being HTMX-swapped in.
+document.body.addEventListener('change', (e) => {
+  const host = e.target;
+  if (!(host instanceof HTMLSelectElement) || host.id !== 'composer-agent') return;
+  const modelSelect = document.getElementById('composer-model');
+  if (!modelSelect) return;
+  const opt = host.selectedOptions[0];
+  modelSelect.dataset.default = (opt && opt.dataset.defaultModel) || '';
+  modelSelect.innerHTML = '<option value="">Loading models…</option>';
+  htmx.ajax('GET', '/models?host=' + encodeURIComponent(host.value), {
+    target: modelSelect,
+    swap: 'innerHTML',
+  });
+});
 
 // Phase 15: composer tool chips — keep the visual --on/--off class in
 // sync with the underlying checkbox state. The chip's <label> wraps a

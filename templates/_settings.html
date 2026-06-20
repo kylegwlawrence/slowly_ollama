@@ -185,12 +185,12 @@
     </form>
   </section>
 
-  {# Ollama-hosts toggle (the "host2" second host). Two states:
+  {# Ollama-hosts toggle (the configured non-primary hosts). Two states:
        - remote_configured = False → informational note only, no toggle
-         (the env vars haven't been set, so there's nothing to enable).
-       - remote_configured = True → a checkbox bound to the
-         `remote_ollama_enabled` app_settings key, plus the read-only
-         host + model labels so the user can confirm what's wired up.
+         (no extra hosts configured, so there's nothing to enable).
+       - remote_configured = True → a single checkbox bound to the
+         `remote_ollama_enabled` app_settings key, plus a read-only list of
+         every configured host so the user can confirm what's wired up.
      Form submission semantics: unchecking is the only way the form
      submits without an `enabled` field, which the endpoint defaults to
      "0" — so the checked state cleanly maps to "1" and unchecked to
@@ -200,12 +200,12 @@
     {% if remote_configured %}
       <p class="settings__section-help">
         Chats run on the primary host (<code>OLLAMA_HOST</code>) by default.
-        The <strong>host2</strong> host adds a second Ollama instance,
-        configured via <code>SLOWLY_OLLAMA_HOST</code> and
-        <code>SLOWLY_OLLAMA_MODEL</code> in <code>.env</code>, selectable
-        per chat from the header host picker. Untoggle to hide it from the
-        picker without restarting — existing chats using it fall back to the
-        primary host.
+        Additional machines are configured via <code>OLLAMA_EXTRA_HOSTS</code>
+        (a JSON list) in <code>.env</code> — or the legacy
+        <code>SLOWLY_OLLAMA_HOST</code> / <code>SLOWLY_OLLAMA_MODEL</code> pair —
+        and are selectable per chat from the header machine picker, each with
+        its own model dropdown. Untoggle to hide them from the picker without
+        restarting — existing chats using them fall back to the primary host.
       </p>
       <form class="settings__remote-ollama"
             hx-post="/settings/remote-ollama-enabled"
@@ -214,19 +214,23 @@
         <label class="settings__toggle">
           <input type="checkbox" name="enabled" value="1"
                  {% if remote_enabled %}checked{% endif %}>
-          Enable the "host2" host
+          Enable the non-primary hosts
         </label>
+        {% for host in extra_hosts %}
         <p class="settings__field-note">
-          <strong>Host:</strong> <code>{{ remote_host }}</code><br>
-          <strong>Model:</strong> <code>{{ remote_model }}</code>
+          <strong>{{ host.label }}:</strong> <code>{{ host.url }}</code>
+          (default model <code>{{ host.default_model }}</code>)
         </p>
+        {% endfor %}
       </form>
     {% else %}
       <p class="settings__section-help">
-        Set <code>SLOWLY_OLLAMA_HOST</code> and
-        <code>SLOWLY_OLLAMA_MODEL</code> in <code>.env</code> and restart
-        the server to add a second Ollama instance (e.g. a
-        VPN-reachable machine) as the "host2" host.
+        Set <code>OLLAMA_EXTRA_HOSTS</code> (a JSON list of
+        <code>{"name", "url", "default_model"}</code> objects) in
+        <code>.env</code> and restart the server to add Ollama machines (e.g.
+        VPN-reachable hosts) to the per-chat machine picker. The legacy
+        <code>SLOWLY_OLLAMA_HOST</code> / <code>SLOWLY_OLLAMA_MODEL</code> pair
+        still works as a single-host fallback.
       </p>
     {% endif %}
   </section>

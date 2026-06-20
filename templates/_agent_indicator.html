@@ -19,8 +19,11 @@
    render leaves it off.
 
    Context: ``conversation``, ``active_agent_spec`` (an AgentSpec or None),
-   ``model_loaded`` (bool, defaults to True if the caller forgot — better to
-   render the chip in its normal colour than to lie about residency). #}
+   ``effective_model`` (the model the chat will actually run on, resolved by
+   ``_effective_model`` — the chat's per-host model on the selected host, or the
+   primary model), ``model_loaded`` (bool, defaults to True if the caller forgot
+   — better to render the chip in its normal colour than to lie about
+   residency). #}
 <button id="agent-indicator-{{ conversation.id }}"
         type="button"
         class="chat-panel__model{% if active_agent_spec %} chat-panel__model--agent{% endif %}"
@@ -33,10 +36,8 @@
         {% if oob %}hx-swap-oob="true" {% endif %}>
   <span class="material-symbols-outlined">dns</span>
   {%- if active_agent_spec -%}
-    {# The second host uses the chat's per-host model (slowly_model) when set,
-       else the host spec's default. #}
-    {{ active_agent_spec.label }} · {{ conversation.slowly_model or active_agent_spec.model }}
+    {{ active_agent_spec.label }} · {{ effective_model }}
   {%- else -%}
-    {{ primary_host_label() }} · {{ conversation.model }}
+    {{ primary_host_label() }} · {{ effective_model }}
   {%- endif -%}
 </button>
