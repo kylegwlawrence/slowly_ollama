@@ -14,7 +14,17 @@
 
 {% block content %}
 <div class="layout">
+  {# Mobile-only drawer affordances. Hidden on desktop via CSS; on narrow
+     viewports the hamburger toggles `.layout--sidebar-open` (which slides the
+     fixed-position sidebar in) and the scrim dims #main + closes on tap. Both
+     live as siblings of #main so they persist across its HTMX innerHTML swaps.
+     Wiring is in app.js (delegated click handlers). #}
+  <button class="layout__menu-toggle" type="button"
+          aria-label="Open menu" aria-controls="sidebar" aria-expanded="false">
+    <span class="material-symbols-outlined" aria-hidden="true">menu</span>
+  </button>
   {% include "_sidebar.html" %}
+  <div class="layout__scrim" hidden></div>
   {% if layout|default(none) == "projects" %}
     <main id="main">{% include "_projects_index.html" %}</main>
   {% elif layout|default(none) == "project" %}

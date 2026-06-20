@@ -71,6 +71,9 @@ document.addEventListener('click', (e) => {
     '#chats-list .chat-item a, #projects-list .chat-item a'
   );
   if (sidebarLink) {
+    // On mobile the sidebar is an overlay drawer; navigating should close it
+    // so the freshly-swapped #main isn't hidden behind it.
+    closeSidebarDrawer();
     clearSidebarAriaCurrent();
     sidebarLink.closest('.chat-item').setAttribute('aria-current', 'page');
     // When clicking a chat from the project body (not the sidebar), keep the
@@ -87,8 +90,65 @@ document.addEventListener('click', (e) => {
     return;
   }
   if (e.target.closest('.sidebar__new-chat, .sidebar__settings')) {
+    closeSidebarDrawer();
     clearSidebarAriaCurrent();
   }
+});
+
+// ---------------------------------------------------------------------
+// Mobile sidebar drawer
+// ---------------------------------------------------------------------
+// On viewports <= 768px the sidebar is hidden off-canvas (see the
+// @media block in style.css). The fixed hamburger button toggles
+// `.layout--sidebar-open`, which slides it in; a full-screen scrim dims
+// #main and closes the drawer on tap. These handlers are inert on
+// desktop because the toggle button + scrim are display:none there, so
+// they're never clicked and the open class is never applied.
+//
+// The toggle/scrim/sidebar elements live in index.html as siblings of
+// #main, so they survive its HTMX innerHTML swaps and these delegated
+// listeners keep working without a re-bind.
+
+function setSidebarDrawer(open) {
+  const layout = document.querySelector('.layout');
+  if (!layout) return;
+  layout.classList.toggle('layout--sidebar-open', open);
+  const scrim = layout.querySelector('.layout__scrim');
+  if (scrim) scrim.hidden = !open;
+  const toggle = layout.querySelector('.layout__menu-toggle');
+  if (toggle) toggle.setAttribute('aria-expanded', String(open));
+}
+
+function closeSidebarDrawer() {
+  setSidebarDrawer(false);
+}
+
+document.addEventListener('click', (e) => {
+  if (e.target.closest('.layout__menu-toggle')) {
+    const layout = document.querySelector('.layout');
+    setSidebarDrawer(!layout?.classList.contains('layout--sidebar-open'));
+    return;
+  }
+  if (e.target.closest('.layout__scrim')) {
+    closeSidebarDrawer();
+    return;
+  }
+  // The header gear (mobile) reveals/hides the per-chat controls panel.
+  const gear = e.target.closest('.chat-panel__controls-toggle');
+  if (gear) {
+    const panel = document.getElementById(
+      gear.getAttribute('aria-controls')
+    );
+    if (panel) {
+      const open = panel.classList.toggle('chat-panel__controls--open');
+      gear.setAttribute('aria-expanded', String(open));
+    }
+  }
+});
+
+// Escape closes the drawer (mirrors the scrim tap on touch).
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeSidebarDrawer();
 });
 
 // ---------------------------------------------------------------------

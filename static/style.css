@@ -2130,3 +2130,150 @@ body {
   opacity: 0.7;
 }
 
+/* ===== Responsive / mobile ===============================================
+   Everything above is authored desktop-first; this section is the only
+   place that reacts to viewport width. Two new affordances — the fixed
+   hamburger (.layout__menu-toggle) that opens the sidebar drawer, and the
+   chat-header gear (.chat-panel__controls-toggle) that reveals the per-chat
+   controls — are HIDDEN on desktop here and REVEALED inside the
+   max-width:768px block. `.chat-panel__controls` is display:contents on
+   desktop so its children flow into the header flex row exactly as they did
+   before the wrapper existed (zero desktop visual change). */
+
+/* --- Desktop defaults for the mobile-only affordances --- */
+.layout__menu-toggle { display: none; }
+
+.layout__scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  border: 0;
+  z-index: 90;
+}
+
+.chat-panel__controls { display: contents; }
+.chat-panel__controls-toggle { display: none; }
+
+/* Defensive: if the window is resized from a mobile-open state back up to
+   desktop, never leave the scrim covering the page or the sidebar slid
+   off-screen (the JS open-state class may still be on .layout). */
+@media (min-width: 769px) {
+  .layout__scrim { display: none !important; }
+  .sidebar { transform: none !important; }
+}
+
+@media (max-width: 768px) {
+  /* The dynamic viewport unit keeps the composer above iOS Safari's
+     collapsing URL bar; falls back to the base 100vh where unsupported. */
+  .layout { height: 100dvh; }
+
+  /* --- Sidebar off-canvas drawer --- */
+  .layout__menu-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    position: fixed;
+    top: var(--space-sm);
+    left: var(--space-sm);
+    z-index: 80;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg);
+    color: var(--text-primary);
+    cursor: pointer;
+  }
+
+  .sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    width: min(82vw, 300px);
+    z-index: 100;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+    overflow-y: auto;
+  }
+
+  .layout--sidebar-open .sidebar { transform: translateX(0); }
+
+  /* --- Chat header: collapse the controls behind the gear --- */
+  .chat-panel__controls-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-left: auto;
+    padding: var(--space-xs);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg);
+    color: var(--text-secondary);
+    cursor: pointer;
+  }
+
+  /* Collapsed by default; flex-basis:100% drops the panel onto its own row
+     under the name/badge/gear (the header is already flex-wrap:wrap). */
+  .chat-panel__controls {
+    display: none;
+    flex-basis: 100%;
+  }
+
+  .chat-panel__controls--open {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-sm);
+    padding-top: var(--space-sm);
+  }
+
+  /* The desktop margin-left:auto would shove the backup controls to the far
+     edge of the wrapped panel; let them sit inline with the other chips. */
+  .chat-panel__backup-controls { margin-left: 0; }
+
+  /* Make room for the fixed hamburger on the in-flow page headers. The
+     centered columns (settings, projects index, empty-state composer) have
+     empty top-left margin, so the hamburger floats over whitespace there. */
+  .chat-panel__header,
+  .project-page__header {
+    padding-left: calc(40px + var(--space-md));
+  }
+
+  /* --- Roomier message column --- */
+  .message { max-width: 85%; }
+  .tool-card,
+  .message--summary { max-width: 90%; }
+
+  .messages { padding: var(--space-md); }
+  .message-form { padding: var(--space-sm) var(--space-md) var(--space-md); }
+
+  /* --- Centered content columns: tighter gutters --- */
+  .settings,
+  .projects-index,
+  .project-files { padding: var(--space-md); }
+
+  /* --- Composer + grid forms: stack instead of overflowing --- */
+  .composer__toolbar { flex-wrap: wrap; }
+
+  .rag-server-form,
+  .rag-server,
+  .projects-index__create { grid-template-columns: 1fr; }
+
+  /* --- Prevent iOS Safari auto-zoom on focus (triggers below 16px). The
+     .temp-chip selector is two-class to beat the existing
+     `.temp-chip .temp-chip__input { font-size: inherit }` rule. --- */
+  .input-pill textarea,
+  .agent-select,
+  .composer__toolbar select,
+  .temp-chip .temp-chip__input,
+  .rag-server-form input,
+  .rag-server-form textarea,
+  .rag-server__edit input[type="text"],
+  .rag-server__edit textarea,
+  .project-settings__form select,
+  .project-settings__form textarea,
+  .chat-item__edit-form input {
+    font-size: 16px;
+  }
+}
+

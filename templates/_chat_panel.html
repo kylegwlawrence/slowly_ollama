@@ -6,6 +6,19 @@
   <header class="chat-panel__header">
     <h2 class="chat-panel__name">{{ conversation.name }}</h2>
     {% include "_agent_indicator.html" %}
+    {# Mobile-only toggle. On desktop .chat-panel__controls is display:contents
+       (its children flow into the header as today) and this button is hidden;
+       on narrow viewports the button shows and toggles
+       .chat-panel__controls--open to reveal the collapsed controls panel. #}
+    <button class="chat-panel__controls-toggle" type="button"
+            aria-label="Chat controls" aria-expanded="false"
+            aria-controls="chat-controls-{{ conversation.id }}">
+      <span class="material-symbols-outlined" aria-hidden="true">tune</span>
+    </button>
+    {# Collapsible controls: host picker, Temp, Tool cap, tool chips, backup
+       controls. OOB-safe — #agent-indicator/#chat-tool-chips/#backup-chip are
+       swapped by id regardless of this wrapper. #}
+    <div class="chat-panel__controls" id="chat-controls-{{ conversation.id }}">
     {# Phase 16: agent picker. Its OWN form, NOT nested inside .message-form —
        if it were, the message form's hx-post + hx-target would inherit onto
        the <select> via HTMX attribute inheritance. On change it posts the
@@ -65,6 +78,7 @@
       {% include "_push_chip.html" %}
     </div>
     {% endif %}
+    </div>{# /.chat-panel__controls #}
   </header>
 
   {# app.js keeps the bottom of the conversation in view via a
