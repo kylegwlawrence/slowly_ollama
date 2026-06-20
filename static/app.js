@@ -169,6 +169,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const themeBtn = document.querySelector('.theme-toggle');
   if (themeBtn) themeBtn.addEventListener('click', toggleTheme);
   scrollMessagesToBottom();
+  // Typeset math in the server-rendered chat panel present on first paint.
+  typesetMath(document.body);
 });
 
 // One delegated htmx:afterSwap handler with two responsibilities:
@@ -192,6 +194,11 @@ document.body.addEventListener('htmx:afterSwap', (e) => {
     target.closest('#messages')
   ) {
     scrollMessagesToBottom();
+    // Typeset math in whatever just landed: the mounted chat panel (#main),
+    // a re-rendered #messages (compact), or the persisted assistant bubble
+    // the `done` event OOB-swaps in over the streaming placeholder. A no-op
+    // on plain token swaps (marked already rendered their math).
+    typesetMath(target);
   }
 
   if (target instanceof HTMLSelectElement && target.dataset.default) {
@@ -391,6 +398,98 @@ document.body.addEventListener('change', function (e) {
 
 // (data-default re-selection lives inside the single htmx:afterSwap
 // handler above — see responsibility #2.)
+
+// ---------------------------------------------------------------------
+// LaTeX math typesetting (KaTeX)
+// ---------------------------------------------------------------------
+// Assistant text reaches the DOM by two routes, and the LaTeX is in a
+// different shape on each:
+//
+//   1. Persisted bubbles (full page load + the `done` OOB swap) are rendered
+//      server-side by pymdownx.arithmatex, which normalises every delimiter
+//      style ($...$, $$...$$, \(...\), \[...\]) to \(...\) / \[...\] wrapped in
+//      `.arithmatex` elements. We typeset those in the browser with KaTeX
+//      auto-render (`renderMathInElement`) — see typesetMath() + its calls in
+//      the afterSwap / DOMContentLoaded handlers.
+//   2. The streaming buffer is rendered client-side by `marked`. We teach
+//      marked about math (below) so the LaTeX survives its tokenizer — without
+//      this, `$x_i$` becomes `$x<em>i</em>$` — and renders straight to KaTeX
+//      HTML on every token.
+//
+// Both routes call into the SAME vendored katex.min.js, so a given expression
+// looks identical whether it's mid-stream or reloaded from the DB.
+
+const KATEX_OPTS = { throwOnError: false };
+
+// Only the backslash forms: arithmatex has already normalised dollar math to
+// these for persisted bubbles, so leaving `$`/`$$` out of auto-render means a
+// stray dollar in prose ("it costs $5") is never mistaken for an equation.
+const KATEX_DELIMITERS = [
+  { left: '\\(', right: '\\)', display: false },
+  { left: '\\[', right: '\\]', display: true },
+];
+
+// Typeset any \(...\)/\[...\] left as raw text inside `el` (the arithmatex
+// span output). A no-op on already-rendered KaTeX (its HTML contains no raw
+// delimiters) and on the streaming buffer (marked rendered its math already),
+// so it's safe to call on every swap.
+function typesetMath(el) {
+  if (!(el instanceof Element)) return;
+  if (typeof renderMathInElement === 'undefined') return;
+  try {
+    renderMathInElement(el, { delimiters: KATEX_DELIMITERS, ...KATEX_OPTS });
+  } catch {
+    // A malformed expression shouldn't throw out of a swap handler and blank
+    // the message; leave the raw \(...\) text visible instead.
+  }
+}
+
+// marked-katex-extension handles `$...$` / `$$...$$`. It does NOT cover the
+// backslash delimiters, so this small companion extension tokenizes \(...\)
+// (inline) and \[...\] (display) and renders them with KaTeX too. Inline-level
+// is enough: a standalone \[ ... \] block is a single paragraph to marked, so
+// the inline tokenizer still sees and consumes it. marked runs extension
+// tokenizers before its built-in `escape` rule, so `\(` isn't pre-eaten into
+// a literal `(`.
+const backslashKatex = {
+  extensions: [
+    {
+      name: 'inlineParenKatex',
+      level: 'inline',
+      start(src) {
+        const i = src.indexOf('\\(');
+        return i < 0 ? undefined : i;
+      },
+      tokenizer(src) {
+        const m = /^\\\(([\s\S]+?)\\\)/.exec(src);
+        if (m) return { type: 'inlineParenKatex', raw: m[0], text: m[1].trim() };
+      },
+      renderer(token) {
+        return katex.renderToString(token.text, { ...KATEX_OPTS, displayMode: false });
+      },
+    },
+    {
+      name: 'inlineBracketKatex',
+      level: 'inline',
+      start(src) {
+        const i = src.indexOf('\\[');
+        return i < 0 ? undefined : i;
+      },
+      tokenizer(src) {
+        const m = /^\\\[([\s\S]+?)\\\]/.exec(src);
+        if (m) return { type: 'inlineBracketKatex', raw: m[0], text: m[1].trim() };
+      },
+      renderer(token) {
+        return katex.renderToString(token.text, { ...KATEX_OPTS, displayMode: true });
+      },
+    },
+  ],
+};
+
+if (typeof marked !== 'undefined') {
+  if (typeof markedKatex !== 'undefined') marked.use(markedKatex(KATEX_OPTS));
+  if (typeof katex !== 'undefined') marked.use(backslashKatex);
+}
 
 // ---------------------------------------------------------------------
 // Incremental markdown rendering for streaming assistant tokens

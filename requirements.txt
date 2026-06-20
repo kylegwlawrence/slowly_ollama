@@ -18,6 +18,11 @@ jinja2==3.1.6
 # Markdown → HTML for rendering assistant responses in the chat UI.
 markdown==3.8.2
 
+# Markdown extensions — `pymdownx.arithmatex` protects LaTeX math from the
+# markdown parser and normalises every delimiter style to \(...\) / \[...\]
+# inside .arithmatex spans, which static/app.js typesets client-side with KaTeX.
+pymdown-extensions==10.16.1
+
 # Form parsing — required by FastAPI when endpoints accept `Form(...)`
 # parameters. HTMX sends form-encoded bodies by default.
 python-multipart==0.0.29

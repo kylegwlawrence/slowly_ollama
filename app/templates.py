@@ -33,7 +33,16 @@ _TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=_TEMPLATE_DIR)
 
 # fenced_code: ```lang ... ``` blocks; tables: GFM-style tables.
-_md_converter = _md.Markdown(extensions=["fenced_code", "tables"])
+# arithmatex: protect LaTeX math from the markdown parser (otherwise `$x_i$`
+# becomes `$x<em>i</em>$`) and normalise every delimiter style — $...$,
+# $$...$$, \(...\), \[...\] — to \(...\) / \[...\] wrapped in .arithmatex
+# spans/divs. `generic=True` selects the renderer-agnostic span output (vs the
+# MathJax-script output); static/app.js typesets those spans with KaTeX in the
+# browser. Code fences and bare currency ("$5") are left untouched.
+_md_converter = _md.Markdown(
+    extensions=["fenced_code", "tables", "pymdownx.arithmatex"],
+    extension_configs={"pymdownx.arithmatex": {"generic": True}},
+)
 
 # Matches any line that starts a list item (ordered or unordered).
 _LIST_ITEM_RE = re.compile(r"^[ \t]*(\d+[.)]\s+|[-*+]\s+)")

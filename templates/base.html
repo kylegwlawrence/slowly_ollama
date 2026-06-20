@@ -23,6 +23,11 @@
   <link rel="stylesheet" href="/static/pico.classless.min.css">
   <link rel="stylesheet" href="/static/material-symbols.css">
   <link rel="stylesheet" href="/static/style.css">
+  {# KaTeX math typesetting. Self-contained under static/katex/ (CSS + JS +
+     woff2 fonts), vendored like the other libs so the app stays local-only.
+     The CSS styles the rendered .katex output; colours use currentColor so it
+     inherits the theme (works in dark mode). #}
+  <link rel="stylesheet" href="/static/katex/katex.min.css">
   {# htmx.min.js must load before htmx-ext-sse.js — the extension
      registers itself against the global `htmx` set up by core. app.js
      comes last so its delegated listeners see a fully-initialised HTMX
@@ -39,6 +44,14 @@
      once the `done` event lands. Classic `defer` (not module) so it
      drops `marked` onto `window`, where app.js can read it. #}
   <script src="/static/marked.min.js" defer></script>
+  {# KaTeX scripts. katex.min.js MUST come first — auto-render (persisted
+     bubbles) and marked-katex (streaming buffer) both read the global `katex`
+     it sets. All classic `defer` so they expose window globals app.js reads
+     (`katex`, `renderMathInElement`, `markedKatex`) and execute in document
+     order before app.js (the last script). #}
+  <script src="/static/katex/katex.min.js" defer></script>
+  <script src="/static/katex/auto-render.min.js" defer></script>
+  <script src="/static/katex/marked-katex.umd.js" defer></script>
   <script src="/static/app.js" type="module"></script>
 
   {# These two rules MUST stay inline — tests substring-match them in
