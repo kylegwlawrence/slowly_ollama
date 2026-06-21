@@ -421,12 +421,18 @@ document.body.addEventListener('change', function (e) {
 
 const KATEX_OPTS = { throwOnError: false };
 
-// Only the backslash forms: arithmatex has already normalised dollar math to
-// these for persisted bubbles, so leaving `$`/`$$` out of auto-render means a
-// stray dollar in prose ("it costs $5") is never mistaken for an equation.
+// Backslash forms first: arithmatex normalises every WELL-FORMED math span to
+// these for persisted bubbles. We add `$$...$$` (display only) as a fallback so
+// display blocks arithmatex's BLOCK processor skips — `$$` that doesn't start
+// its own block (no blank line before it, or indented inside a list item) — get
+// typeset in place rather than leaking raw `$$` onto the page. Single `$` stays
+// OUT so a stray dollar in prose ("it costs $5") is never mistaken for math;
+// double `$$` is far less likely to occur literally. renderMathInElement skips
+// <code>/<pre> by default, so fenced math is untouched either way.
 const KATEX_DELIMITERS = [
   { left: '\\(', right: '\\)', display: false },
   { left: '\\[', right: '\\]', display: true },
+  { left: '$$', right: '$$', display: true },
 ];
 
 // Typeset any \(...\)/\[...\] left as raw text inside `el` (the arithmatex
