@@ -244,13 +244,13 @@ def test_update_project_clears_system_prompt_with_empty_string(conn) -> None:
     assert cleared.system_prompt == ""
 
 
-def test_update_project_clamps_system_prompt_at_200_chars(conn) -> None:
-    """An overlong prompt is truncated to 200 chars."""
+def test_update_project_clamps_system_prompt_at_2000_chars(conn) -> None:
+    """An overlong prompt is truncated to 2000 chars."""
     p = create_project(conn, name="Pspl")
-    long_text = "x" * 500
+    long_text = "x" * 2500
     updated = update_project(conn, p.id, system_prompt=long_text)
-    assert len(updated.system_prompt) == 200
-    assert updated.system_prompt == "x" * 200
+    assert len(updated.system_prompt) == 2000
+    assert updated.system_prompt == "x" * 2000
 
 
 def test_update_project_leaves_system_prompt_alone_when_unpassed(conn) -> None:

@@ -90,7 +90,7 @@ class Project:
             so changing it takes effect on the next message in any chat
             belonging to this project.
         system_prompt: Per-project system prompt prepended to Normal-chat
-            turns. Empty string = none. Capped at 200 chars at the route
+            turns. Empty string = none. Capped at 2000 chars at the route
             layer. Ignored on invoked-agent turns (the agent's own prompt
             wins).
         created_at, updated_at: ISO 8601 UTC timestamps.

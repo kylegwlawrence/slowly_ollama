@@ -223,7 +223,7 @@ def update_project(
             sentinel ``_UNSET`` (default) to leave alone. Values are
             clamped to [NUM_CTX_MIN, NUM_CTX_MAX].
         system_prompt: New per-project system prompt (``""`` to clear),
-            or ``None`` (default) to leave alone. Clamped to 200 chars.
+            or ``None`` (default) to leave alone. Clamped to 2000 chars.
 
     Returns:
         The updated Project (or unchanged Project when no kwargs were passed).
@@ -250,11 +250,11 @@ def update_project(
         sets.append("num_ctx = ?")
         args.append(None if num_ctx is None else clamp_num_ctx(num_ctx))
     if system_prompt is not None:
-        # Clamp at 200 chars defensively — the route also enforces this,
+        # Clamp at 2000 chars defensively — the route also enforces this,
         # but a direct programmatic caller should not be able to insert
         # an unbounded prompt and surprise the model with a giant system.
         sets.append("system_prompt = ?")
-        args.append(system_prompt[:200])
+        args.append(system_prompt[:2000])
     if not sets:
         # No-op update — return the current row rather than performing a
         # bare ``UPDATE ... SET updated_at = ?`` which would falsely bump

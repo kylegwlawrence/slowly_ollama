@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS projects (
     -- tokens). NULL = inherit the global default from app_settings.
     num_ctx           INTEGER,
     -- Per-project system prompt prepended to Normal-chat turns in this
-    -- project. Capped at 200 chars at the route layer. Empty string =
+    -- project. Capped at 2000 chars at the route layer. Empty string =
     -- no project prompt. Ignored on invoked-agent turns (the agent's
     -- own system prompt wins).
     system_prompt     TEXT NOT NULL DEFAULT '',

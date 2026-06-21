@@ -641,13 +641,13 @@ def test_patch_project_clears_num_ctx_with_blank(
 def test_project_settings_renders_system_prompt_textarea(
     make_client: ClientFactory,
 ) -> None:
-    """The settings tab shows a 200-char system_prompt textarea."""
+    """The settings tab shows a 2000-char system_prompt textarea."""
     with make_client(_ollama_unreachable) as client:
         pid = _default_project_id()
         response = client.get(f"/projects/{pid}/settings")
     assert response.status_code == 200
     assert 'name="system_prompt"' in response.text
-    assert 'maxlength="200"' in response.text
+    assert 'maxlength="2000"' in response.text
 
 
 def test_patch_project_persists_system_prompt(
@@ -672,11 +672,11 @@ def test_patch_project_persists_system_prompt(
     assert project.system_prompt == "Speak like a pirate."
 
 
-def test_patch_project_clamps_system_prompt_at_200_chars(
+def test_patch_project_clamps_system_prompt_at_2000_chars(
     make_client: ClientFactory,
 ) -> None:
-    """An overlong system_prompt is truncated to 200 chars by the route."""
-    long_text = "z" * 500
+    """An overlong system_prompt is truncated to 2000 chars by the route."""
+    long_text = "z" * 2500
     with make_client(_ollama_unreachable) as client:
         pid = _default_project_id()
         client.patch(
@@ -689,7 +689,7 @@ def test_patch_project_clamps_system_prompt_at_200_chars(
         )
         with open_connection(os.environ["DB_PATH"]) as conn:
             project = queries.get_project(conn, pid)
-    assert len(project.system_prompt) == 200
+    assert len(project.system_prompt) == 2000
 
 
 def test_patch_project_clears_system_prompt_with_blank(

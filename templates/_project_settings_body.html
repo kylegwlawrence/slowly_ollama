@@ -32,10 +32,10 @@
         <textarea name="description" maxlength="400" rows="3">{{ project.description }}</textarea>
       </label>
       {# Per-project system prompt prepended to every plain-chat turn in this
-         project, on EITHER host. Capped at 200 chars (enforced server-side). #}
+         project, on EITHER host. Capped at 2000 chars (enforced server-side). #}
       <label class="project-settings__field--full">
-        System prompt (max 200 chars)
-        <textarea name="system_prompt" maxlength="200" rows="3"
+        System prompt (max 2000 chars)
+        <textarea name="system_prompt" maxlength="2000" rows="3"
                   placeholder="Optional. Prepended to every turn in this project, on either host.">{{ project.system_prompt }}</textarea>
       </label>
       <label class="project-settings__field--full">

@@ -203,7 +203,7 @@ async def update_project_endpoint(
             return queries._UNSET
 
     # Per-project system prompt. The form always submits the field, even
-    # when blank. Trim + cap at 200 chars (the textarea enforces the cap
+    # when blank. Trim + cap at 2000 chars (the textarea enforces the cap
     # client-side too, but a hand-rolled POST would bypass that). When
     # the field is absent entirely (e.g. legacy form), pass None so
     # update_project leaves the existing value alone.
@@ -212,7 +212,7 @@ async def update_project_endpoint(
         system_prompt_arg: str | None = None
     else:
         s = raw_prompt.strip() if isinstance(raw_prompt, str) else ""
-        system_prompt_arg = s[:200]
+        system_prompt_arg = s[:2000]
 
     project = queries.update_project(
         db,
