@@ -62,10 +62,13 @@ def _default_tool_capable(monkeypatch: pytest.MonkeyPatch) -> None:
     needed.
     """
 
-    async def _capable(_client: object, _name: str) -> bool:
+    async def _capable(*args, **kwargs) -> bool:
         return True
 
     monkeypatch.setattr(ollama, "model_supports_tools", _capable)
+    # Phase 25: same default for the thinking probe so panels render the
+    # Think chip. Accept *args/**kwargs since the render now passes host=.
+    monkeypatch.setattr(ollama, "model_supports_thinking", _capable)
 
 
 def _default_project_id() -> int:
@@ -422,6 +425,52 @@ def test_post_project_chats_coerces_unknown_think_mode(
             "SELECT think_mode FROM conversations ORDER BY id DESC LIMIT 1;"
         ).fetchone()
     assert row[0] == "default"
+
+
+def test_chat_panel_probes_thinking_on_effective_host(
+    make_client: ClientFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Think-chip capability probe must target the chat's EFFECTIVE host,
+    not the primary one — a model that only exists on a non-primary host (e.g.
+    qwen3.5 on "host2") would otherwise 404 on the local /api/show and the
+    chip would wrongly hide."""
+    from app.hosts import HOSTS, HostSpec
+
+    saved = HOSTS.get("host2")
+    HOSTS["host2"] = HostSpec(
+        name="host2", label="host2", description="d",
+        model="qwen3.5:9b", ollama_host="http://host1:11434",
+    )
+    seen_hosts: list = []
+
+    async def _probe(_client, name, host=None):
+        seen_hosts.append(host)
+        # Only "thinking-capable" when asked about the remote host.
+        return host == "http://host1:11434"
+
+    monkeypatch.setattr(ollama, "model_supports_thinking", _probe)
+    try:
+        with make_client(_ollama_unreachable) as client:
+            pid = _default_project_id()
+            with open_connection(os.environ["DB_PATH"]) as conn:
+                chat = queries.create_conversation(
+                    conn, "remote chat", "qwen3.5:9b",
+                    project_id=pid, active_host="host2",
+                )
+                queries.set_chat_host_model(conn, chat.id, "host2", "qwen3.5:9b")
+            panel = client.get(
+                f"/projects/{pid}/chats/{chat.id}",
+                headers={"HX-Request": "true"},
+            )
+    finally:
+        if saved is None:
+            HOSTS.pop("host2", None)
+        else:
+            HOSTS["host2"] = saved
+
+    # The probe was called against the remote host, and the chip rendered.
+    assert "http://host1:11434" in seen_hosts
+    assert f'id="think-mode-{chat.id}"' in panel.text
 
 
 # ---------------------------------------------------------------------------

@@ -448,15 +448,6 @@ async def project_chat_panel_endpoint(
             blocks = blocks[:-1]
         pending_stream_url = f"/chats/{conversation_id}/stream"
 
-    supports_tools = await ollama.model_supports_tools(
-        client, conversation.model
-    )
-    # Phase 25: gate the per-chat thinking toggle on the model's capability,
-    # the same way supports_tools gates the tool-cap chip.
-    supports_thinking = await ollama.model_supports_thinking(
-        client, conversation.model
-    )
-
     # Resolve through the toggle so a disabled remote host renders as the
     # primary (matches the indicator + generation path).
     active_host_spec = _resolve_active_host(conversation, db)
@@ -468,6 +459,19 @@ async def project_chat_panel_endpoint(
     effective_host = (
         active_host_spec.ollama_host if active_host_spec else None
     )
+
+    # Gate the header chips on the EFFECTIVE model + host — i.e. what actually
+    # runs this turn. A chat pinned to a model that only exists on a non-primary
+    # host (e.g. qwen3.5 on "host2") must be probed against THAT host, or the
+    # local /api/show 404s and the chip wrongly hides.
+    supports_tools = await ollama.model_supports_tools(
+        client, effective_model, host=effective_host
+    )
+    # Phase 25: gate the per-chat thinking toggle the same way.
+    supports_thinking = await ollama.model_supports_thinking(
+        client, effective_model, host=effective_host
+    )
+
     model_loaded = await ollama.is_model_loaded(
         client, effective_model, host=effective_host
     )
@@ -575,13 +579,22 @@ async def create_project_chat_endpoint(
         **_host_overrides(chat, db),
     )
 
-    supports_tools = await ollama.model_supports_tools(client, chat.model)
-    # Phase 25: gate the per-chat thinking toggle on the model's capability.
-    supports_thinking = await ollama.model_supports_thinking(client, chat.model)
-
     # Toggle-aware host spec for the header chip (a disabled remote host
     # renders as the primary), matching the generation path's resolution.
     active_spec = _resolve_active_host(chat, db)
+
+    # Gate the header chips on the EFFECTIVE model + host (what actually runs).
+    # A model that only exists on a non-primary host must be probed against
+    # that host, or the local /api/show 404s and the chip wrongly hides.
+    effective_model = _effective_model(chat, active_spec, db)
+    effective_host = active_spec.ollama_host if active_spec else None
+    supports_tools = await ollama.model_supports_tools(
+        client, effective_model, host=effective_host
+    )
+    # Phase 25: gate the per-chat thinking toggle the same way.
+    supports_thinking = await ollama.model_supports_thinking(
+        client, effective_model, host=effective_host
+    )
 
     panel_html = templates.get_template("_chat_panel.html").render(
         conversation=chat,
@@ -597,7 +610,7 @@ async def create_project_chat_endpoint(
         supports_thinking=supports_thinking,
         hosts=list_hosts(),
         active_host_spec=active_spec,
-        effective_model=_effective_model(chat, active_spec, db),
+        effective_model=effective_model,
         # Brand-new chat: we just kicked off start_generation, which is
         # (re)loading the effective model right now. Skip the /api/ps
         # round trip and render the chip in its loaded colour.
