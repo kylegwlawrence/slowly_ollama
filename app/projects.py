@@ -456,9 +456,14 @@ def read_workspace_file(project: Project, path: str) -> WorkspaceFileView:
     is_md = target.suffix.lower() in (".md", ".markdown")
     rendered = None
     if is_md:
-        import markdown as _md
+        # Reuse the chat renderer so workspace .md files typeset LaTeX exactly
+        # like assistant messages: it emits .arithmatex spans/divs (which
+        # static/app.js typesets with KaTeX on the #main swap) and shields math
+        # from the markdown parser. A bare markdown.markdown(... fenced_code,
+        # tables) skipped both, leaving raw \(...\) on the page.
+        from app.templates import _render_markdown
 
-        rendered = _md.markdown(text, extensions=["fenced_code", "tables"])
+        rendered = _render_markdown(text)
     return WorkspaceFileView(
         available=True,
         path=path,
