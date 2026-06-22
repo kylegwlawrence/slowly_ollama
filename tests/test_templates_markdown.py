@@ -60,6 +60,48 @@ def test_math_inside_code_fence_stays_literal() -> None:
     assert "$x_i$ is literal here" in html
 
 
+def test_display_math_indented_in_list_item_renders() -> None:
+    """The bug we're fixing: `\\[...\\]` indented inside a numbered list item.
+
+    arithmatex's block processor only fires for a delimiter that starts its own
+    block; an indented `\\[` is skipped, and markdown then backslash-unescapes it
+    to a bare `[`. Protecting math before the markdown pass keeps the span intact
+    as a `.arithmatex` div with delimiters and content untouched.
+    """
+    md = "1. Step:\n   \\[\n   x_1 = 86^\\circ - 60^\\circ\n   \\]\n"
+    html = _render_markdown(md)
+    assert '<div class="arithmatex">' in html
+    assert r"\[" in html and r"\]" in html
+    assert r"x_1 = 86^\circ - 60^\circ" in html
+    assert "<em>" not in html  # the `_` must not be read as emphasis
+
+
+def test_dollar_display_math_in_list_item_not_mangled() -> None:
+    """`$$...$$` indented in a list keeps its content (no emphasis mangling).
+
+    `$` is never backslash-escaped, so the delimiters always survived — but the
+    inner `_` still became `<em>` when arithmatex skipped the block. Protecting
+    the span first shields the content too.
+    """
+    html = _render_markdown("- def:\n  $$ a_i = b_i $$\n")
+    assert '<div class="arithmatex">' in html
+    assert "a_i = b_i" in html
+    assert "<em>" not in html
+
+
+def test_standalone_display_math_is_not_wrapped_in_paragraph() -> None:
+    """A solo display span is a clean block, not an invalid `<div>` inside `<p>`."""
+    html = _render_markdown(r"\[ x^2 \]")
+    assert "<p><div" not in html
+    assert '<div class="arithmatex">' in html
+
+
+def test_backslash_bracket_inside_code_fence_stays_literal() -> None:
+    """`\\[...\\]` inside a fenced code block is left literal, never typeset."""
+    html = _render_markdown("```\n\\[ x \\]\n```")
+    assert "arithmatex" not in html
+
+
 def test_bare_currency_is_not_treated_as_math() -> None:
     """Two bare dollar amounts in prose must not be parsed as one math span."""
     html = _render_markdown("It costs $5 and $10 total.")
