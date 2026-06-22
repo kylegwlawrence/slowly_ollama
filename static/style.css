@@ -1440,14 +1440,12 @@ body {
   margin: 0;
 }
 
-/* ===== Phase 15: per-chat tool chips ==================================== */
-
-.tool-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-sm);
-  align-items: center;
-}
+/* ===== Chip pill styles ================================================
+   Phase 15 introduced .tool-chip for per-chat tool chips; phase 23 removed
+   those chips, but the base + --on / --off / --unavailable / __label
+   modifiers live on as the shared pill style reused by the composer's Temp /
+   Tool-cap controls, the backup / push / pull status chips, and the sidebar
+   RAG sources. */
 
 .tool-chip {
   display: inline-flex;
@@ -1494,20 +1492,6 @@ body {
 
 .tool-chip__label {
   white-space: nowrap;
-}
-
-/* Composer chips: the checkbox carries the value; visually hidden. */
-.tool-chip__checkbox {
-  position: absolute;
-  opacity: 0;
-  width: 0;
-  height: 0;
-  pointer-events: none;
-}
-
-/* Chip row in the composer sits between the input pill and the model toolbar */
-.composer__form .tool-chips {
-  padding: var(--space-xs) 0;
 }
 
 /* ===== Phase 19: per-chat RAG-source chips in the sidebar ===============

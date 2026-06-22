@@ -393,27 +393,6 @@ document.body.addEventListener('change', (e) => {
   });
 });
 
-// Phase 15: composer tool chips — keep the visual --on/--off class in
-// sync with the underlying checkbox state. The chip's <label> wraps a
-// visually hidden <input type="checkbox">, so the browser handles the
-// toggle natively when the user clicks anywhere in the label; we just
-// listen for the resulting `change` event and refresh the chip's class
-// + check glyph. The checkbox carries the value to POST /chats as
-// `enabled_tools` (data-tool) or `enabled_rag_servers` (data-rag-server).
-// Chat-panel chips render as buttons that hx-post instead — no
-// checkbox, so the guard below skips them.
-document.body.addEventListener('change', function (e) {
-  const cb = e.target;
-  if (!(cb instanceof HTMLInputElement)) return;
-  if (!cb.matches('.tool-chip__checkbox')) return;
-  const chip = cb.closest('.tool-chip');
-  if (!chip) return;
-  chip.classList.toggle('tool-chip--on', cb.checked);
-  chip.classList.toggle('tool-chip--off', !cb.checked);
-  const check = chip.querySelector('.tool-chip__check');
-  if (check) check.textContent = cb.checked ? '✓' : '✕';
-});
-
 // (data-default re-selection lives inside the single htmx:afterSwap
 // handler above — see responsibility #2.)
 
