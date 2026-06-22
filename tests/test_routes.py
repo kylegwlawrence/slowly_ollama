@@ -2259,6 +2259,29 @@ def test_settings_add_server_returns_row(
     assert 'hx-delete="/settings/servers/' in response.text
 
 
+def test_settings_add_server_oob_refreshes_sidebar(
+    make_client: ClientFactory,
+) -> None:
+    """POST /settings/servers also OOB-refreshes the sidebar Sources list.
+
+    Without this the newly-added server only appears after a full browser
+    reload; the OOB fragment makes it show up in the always-visible sidebar
+    immediately. The chip label drops the legacy `_rag` suffix.
+    """
+    with make_client(_ollama_unreachable) as client:
+        response = client.post(
+            "/settings/servers",
+            data={"name": "pubmed_rag", "url": "http://x/pubmed"},
+        )
+
+    assert response.status_code == 200
+    # The OOB sidebar section rides along, matched by id with bare "true".
+    assert 'id="sidebar-reference"' in response.text
+    assert 'hx-swap-oob="true"' in response.text
+    # The server shows up in the refreshed sidebar (suffix stripped).
+    assert ">pubmed<" in response.text
+
+
 def test_settings_add_server_duplicate_name_returns_409(
     make_client: ClientFactory,
 ) -> None:
@@ -2524,7 +2547,13 @@ def test_settings_renders_health_check_icon_slot(
 def test_settings_delete_server_empty_200(
     make_client: ClientFactory,
 ) -> None:
-    """DELETE /settings/servers/{id} returns empty 200 for hx-swap="delete"."""
+    """DELETE /settings/servers/{id} returns the OOB sidebar refresh, 200.
+
+    The row itself vanishes via hx-swap="delete" (target removal ignores
+    the body); the body carries an OOB re-render of #sidebar-reference so
+    the deleted server drops out of the always-visible sidebar list in the
+    same response.
+    """
     with make_client(_ollama_unreachable) as client:
         add_response = client.post(
             "/settings/servers",
@@ -2539,7 +2568,10 @@ def test_settings_delete_server_empty_200(
         response = client.delete(f"/settings/servers/{server_id}")
 
     assert response.status_code == 200
-    assert response.text == ""
+    # No row markup — only the OOB sidebar fragment, matched by id.
+    assert 'id="rag-server-' not in response.text
+    assert 'id="sidebar-reference"' in response.text
+    assert 'hx-swap-oob="true"' in response.text
 
 
 def test_settings_delete_server_idempotent(

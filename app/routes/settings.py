@@ -25,7 +25,7 @@ from app.hosts import list_hosts
 from app.config import extra_ollama_hosts
 from app.dependencies import DB
 from app.rag_health import probe_rag_health
-from app.routes._helpers import _sidebar_reference_context
+from app.routes._helpers import _sidebar_reference_context, _sidebar_reference_oob
 from app.templates import templates
 from app.tools.rag import refresh_query_rag_registration
 
@@ -146,11 +146,12 @@ async def add_server_endpoint(
             status_code=status.HTTP_409_CONFLICT,
         )
     refresh_query_rag_registration()
-    return templates.TemplateResponse(
-        request=request,
-        name="_rag_server_row.html",
-        context={"server": server},
+    # Append an OOB re-render of the sidebar "Sources" list so the new
+    # server shows up there immediately, not just in the settings list.
+    row_html = templates.get_template("_rag_server_row.html").render(
+        request=request, server=server
     )
+    return HTMLResponse(row_html + _sidebar_reference_oob(db))
 
 
 @router.delete(
@@ -168,7 +169,10 @@ def delete_server_endpoint(server_id: int, db: DB) -> Response:
     """
     _rag_servers.delete_server(db, server_id)
     refresh_query_rag_registration()
-    return Response(content="", status_code=status.HTTP_200_OK)
+    # The row vanishes via hx-swap="delete" (target removal ignores the
+    # body); the OOB fragment in the body still applies, dropping the
+    # server from the sidebar "Sources" list in the same response.
+    return HTMLResponse(_sidebar_reference_oob(db))
 
 
 @router.get("/settings/servers/{server_id}", response_class=HTMLResponse)
@@ -249,11 +253,12 @@ async def update_server_endpoint(
     if server is None:
         return Response(content="", status_code=status.HTTP_404_NOT_FOUND)
     refresh_query_rag_registration()
-    return templates.TemplateResponse(
-        request=request,
-        name="_rag_server_row.html",
-        context={"server": server, "editing": False},
+    # OOB-refresh the sidebar too: a renamed server changes the chip
+    # label, an edited description changes its hover title.
+    row_html = templates.get_template("_rag_server_row.html").render(
+        request=request, server=server, editing=False
     )
+    return HTMLResponse(row_html + _sidebar_reference_oob(db))
 
 
 @router.patch(

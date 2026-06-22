@@ -10,6 +10,28 @@ import sqlite3
 from app import queries, tools
 from app import rag_servers as _rag_servers
 from app.hosts import enabled_hosts, get_host
+from app.templates import templates
+
+
+def _sidebar_reference_oob(db: sqlite3.Connection) -> str:
+    """Render the sidebar reference section as an OOB-swappable fragment.
+
+    Used by the settings-page RAG server CRUD routes so a freshly
+    added/edited/deleted server appears in the always-visible sidebar
+    "Sources" list immediately, without a full browser reload. The
+    rendered ``<section id="sidebar-reference">`` carries
+    ``hx-swap-oob="true"`` so HTMX matches it by id and replaces it in
+    place, regardless of the response's primary swap target.
+
+    Args:
+        db: Open SQLite connection — feeds the current server/tool lists.
+
+    Returns:
+        The rendered HTML fragment, ready to append to a route response.
+    """
+    return templates.get_template("_sidebar_reference.html").render(
+        oob=True, **_sidebar_reference_context(db)
+    )
 
 
 def _sidebar_reference_context(db: sqlite3.Connection) -> dict:

@@ -9,12 +9,17 @@
    Context (via _sidebar_reference_context in app/routes/_helpers.py):
      sidebar_rag_servers: list[RagServer] — every configured RAG server.
      sidebar_tools: list[ToolSpec]        — every registered tool, name-sorted.
+     oob: when truthy, carry `hx-swap-oob="true"` so a settings-page RAG
+          CRUD response re-renders this whole section in place (matched by
+          id) without a full reload. The root <section> already has an id,
+          so bare "true" (match-by-id, outerHTML) is enough — no wrapper.
 
    Chips reuse .tool-chip + the neutral, non-interactive .sidebar__ref-chip
    modifier (these are labels, not buttons). Server labels drop the `_rag`
    suffix to match the old panel; tool chips carry the tool description as a
    hover title. #}
-<section id="sidebar-reference" class="sidebar__reference">
+<section id="sidebar-reference" class="sidebar__reference"
+         {%- if oob|default(false) %} hx-swap-oob="true"{% endif %}>
   <div class="sidebar__ref-group">
     <header class="sidebar__ref-header">
       <span class="sidebar__ref-title">Sources</span>
