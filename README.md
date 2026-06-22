@@ -47,11 +47,12 @@ DB_PATH=~/Library/Application Support/ollama_slowly/chats.db
 
 - **`OLLAMA_HOST`** — base URL of the local Ollama HTTP API. Change this if you run Ollama on a non-standard port or host.
 - **`DB_PATH`** — path to the SQLite database file. The `~` expands to your home directory. The directory is created automatically on first run.
-- **`FILE_TOOL_ROOT`** — (optional) absolute path to a directory agents may read, write, and search. When unset, the file tools (`read_file`, `write_file`, `list_directory`, `search_files`) are removed from the registry and agents fall back to tool-less mode.
+- **`FILE_TOOL_ROOT`** — (optional) absolute path to a directory the assistant may read, write, and search via the file tools. When unset, those tools (`read_file`, `write_file`, `list_directory`, `search_files`) are removed from the registry. Each project gets its own subdirectory underneath this root.
+- **`OLLAMA_EXTRA_HOSTS`** — (optional) JSON array of additional Ollama machines the in-app host picker can route a chat to, e.g. `[{"name":"studio","url":"http://studio:11434","default_model":"llama3.1:70b"}]`. The primary `OLLAMA_HOST` is always the default; see `.env.example` for the full format.
 
-### 4. Set up the agent workspace (optional)
+### 4. Enable the file tools (optional)
 
-The Content Generator agent can read, write, and search files — but only inside a sandboxed directory you choose. To enable it:
+A tool-capable model can read, write, and search files — but only inside a sandboxed directory you choose. To enable it:
 
 ```bash
 mkdir -p ~/olliellama_workspace
@@ -63,7 +64,7 @@ Then add the path to your `.env`:
 FILE_TOOL_ROOT=~/olliellama_workspace
 ```
 
-Any path works — use an existing project folder, a notes directory, whatever you want the agent to have access to. Restart the app after changing this setting.
+Any path works — use an existing project folder, a notes directory, whatever you want the model to have access to. Each project is scoped to its own subdirectory under this root (browsable from the project's Files tab). Restart the app after changing this setting.
 
 ---
 
@@ -131,7 +132,7 @@ app/
   dependencies.py    # FastAPI dependency functions (db, ollama client)
   queries/           # SQL queries, dataclasses, Role literal
   routes/            # HTTP routes split by concern (chats, projects, settings)
-  agents/            # Named agents (Research, Content Generator)
+  hosts/             # Ollama host registry for the per-chat host picker
   tools/             # Tool-calling system
     builtins.py      # Built-in tools (current_time, read_file, write_file, list_directory, search_files)
     rag.py           # RAG query tool (query_rag)
@@ -149,12 +150,12 @@ docs/code_reviews/   # Dated code reviews
 ## Features
 
 - **Persistent conversations** — chats and messages stored in SQLite, survive restarts
-- **Projects** — organize chats into named projects; each project has its own workspace directory, default model/agent, optional system prompt (≤200 chars, injected on Normal turns), and a read-only Files tab to browse workspace files
+- **Projects** — organize chats into named projects; each project has its own workspace directory, a default model and Ollama host, an optional system prompt (≤2000 chars, injected on each turn), and a read-only Files tab to browse workspace files
 - **Per-chat model selection** — pick any tool-capable model from your local Ollama instance; click the model chip in the chat header to unload it from Ollama memory
 - **Streaming responses** — assistant replies stream token-by-token via SSE
 - **Reload-safe generation** — a page reload during a reply attaches a new consumer to the in-flight stream instead of cancelling it
 - **Manual chat compaction** — summarize the older portion of a chat to shrink the Ollama prompt; originals are soft-archived and viewable through a disclosure in the summary bubble
-- **Tool calling** — extensible tool system; built-in tools: `current_time`, `fetch_github_file`, `query_rag` (RAG retrieval), and a workspace file suite (`read_file`, `write_file`, `list_directory`, `search_files`) gated on `FILE_TOOL_ROOT`
-- **RAG support** — register external retrieval servers from `/settings`; per-chat source chips appear in the sidebar with health state (green/grey/red), refreshed in the background on each send
-- **User-invoked agents** — pick a named agent (Research, Content Generator) from the chat header; each agent has its own model, system prompt, and tool allowlist
+- **Tool calling** — extensible tool system; a tool-capable model is offered the full registry every turn. Built-in tools: `current_time`, `fetch_github_file`, `query_rag` (RAG retrieval), and a workspace file suite (`read_file`, `write_file`, `list_directory`, `search_files`) gated on `FILE_TOOL_ROOT`
+- **RAG support** — register external retrieval servers from `/settings`; `query_rag` searches every configured server, and the sidebar shows each server's read-only health state (green/grey/red), refreshed in the background on each send
+- **Multi-machine Ollama hosts** — pick which Ollama machine runs a chat from the header host picker; configure extra machines via `OLLAMA_EXTRA_HOSTS` (the primary `OLLAMA_HOST` is always the default). Each chat remembers its model per machine
 - **Fully local** — no telemetry, no cloud API calls, works offline
