@@ -194,10 +194,11 @@ document.body.addEventListener('htmx:afterSwap', (e) => {
     target.closest('#messages')
   ) {
     scrollMessagesToBottom();
-    // Typeset math in whatever just landed: the mounted chat panel (#main),
-    // a re-rendered #messages (compact), or the persisted assistant bubble
-    // the `done` event OOB-swaps in over the streaming placeholder. A no-op
-    // on plain token swaps (marked already rendered their math).
+    // Typeset math in whatever just landed: the mounted chat panel (#main)
+    // or a re-rendered #messages (compact). A no-op on plain token swaps
+    // (marked already rendered their math). The persisted bubble the `done`
+    // event swaps in arrives out-of-band (hx-swap-oob), which fires
+    // htmx:oobAfterSwap, not this event — handled separately below.
     typesetMath(target);
   }
 
@@ -209,6 +210,23 @@ document.body.addEventListener('htmx:afterSwap', (e) => {
         break;
       }
     }
+  }
+});
+
+// The `done` SSE event (and the synthetic done on reload-mid-generation)
+// delivers the persisted, server-rendered assistant bubble as an out-of-band
+// swap (hx-swap-oob="outerHTML", see templates/_message.html) that replaces the
+// streaming placeholder. htmx fires htmx:oobAfterSwap — NOT htmx:afterSwap — for
+// OOB swaps, firing it on the swapped-IN element, so the handler above never
+// sees the new bubble. Without this, the server bubble's raw \(...\)/\[...\]
+// (in .arithmatex elements) replaces the marked-typeset stream and reverts to
+// literal text until a reload. Re-typeset the element that just landed. Safe on
+// the tool-card OOB swaps that share this event: no math, and renderMathInElement
+// is a no-op on already-rendered KaTeX.
+document.body.addEventListener('htmx:oobAfterSwap', (e) => {
+  const swapped = e.target;
+  if (swapped instanceof Element && swapped.closest('#messages')) {
+    typesetMath(swapped);
   }
 });
 
