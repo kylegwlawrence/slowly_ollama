@@ -164,6 +164,11 @@ def _default_tool_capable(
         return True
 
     monkeypatch.setattr(ollama, "model_supports_tools", _capable)
+    # Phase 25: same rationale for the thinking-capability probe — default
+    # every route test's chat model to thinking-capable so the chat panel
+    # renders the Think chip. Tests asserting the chip is hidden re-patch
+    # ``model_supports_thinking`` to return False themselves.
+    monkeypatch.setattr(ollama, "model_supports_thinking", _capable)
 
 
 # ---------------------------------------------------------------------------
@@ -3293,6 +3298,98 @@ def test_set_chat_tool_iteration_cap_404_for_missing_chat(
             data={"tool_iteration_cap": "5"},
         )
     assert response.status_code == 404
+
+
+def test_set_chat_think_mode_persists(make_client: ClientFactory) -> None:
+    """PATCH /chats/{id}/think-mode returns 204 and stores the value."""
+    with make_client(_ollama_unreachable) as client:
+        chat_id = _create_chat_db_only("think chat")
+        response = client.patch(
+            f"/chats/{chat_id}/think-mode", data={"think_mode": "off"}
+        )
+    assert response.status_code == 204
+
+    db_path = os.environ["DB_PATH"]
+    with open_connection(db_path) as conn:
+        assert queries.get_conversation(conn, chat_id).think_mode == "off"
+
+
+def test_set_chat_think_mode_coerces_unknown_value(
+    make_client: ClientFactory,
+) -> None:
+    """A value outside {'default','off'} is coerced to 'default' so it can't
+    later resolve to think=true and 400 a non-thinking model."""
+    db_path = os.environ["DB_PATH"]
+    with make_client(_ollama_unreachable) as client:
+        chat_id = _create_chat_db_only("think chat")
+        # First persist a real value, then send garbage and confirm reset.
+        client.patch(f"/chats/{chat_id}/think-mode", data={"think_mode": "off"})
+        client.patch(
+            f"/chats/{chat_id}/think-mode", data={"think_mode": "on"}
+        )
+    with open_connection(db_path) as conn:
+        assert queries.get_conversation(conn, chat_id).think_mode == "default"
+
+
+def test_set_chat_think_mode_404_for_missing_chat(
+    make_client: ClientFactory,
+) -> None:
+    """PATCHing an unknown conversation id returns 404."""
+    with make_client(_ollama_unreachable) as client:
+        response = client.patch(
+            "/chats/999999/think-mode", data={"think_mode": "off"}
+        )
+    assert response.status_code == 404
+
+
+def test_chat_panel_renders_think_chip_for_thinking_model(
+    make_client: ClientFactory,
+) -> None:
+    """A thinking-capable chat shows the Think chip seeded with the chat's
+    stored think_mode."""
+    db_path = os.environ["DB_PATH"]
+    with make_client(_ollama_unreachable) as client:
+        chat_id = _create_chat_db_only("think panel")
+        with open_connection(db_path) as conn:
+            queries.set_conversation_think_mode(conn, chat_id, "off")
+        panel = client.get(f"/chats/{chat_id}", headers={"HX-Request": "true"})
+    assert f'hx-patch="/chats/{chat_id}/think-mode"' in panel.text
+    assert f'id="think-mode-{chat_id}"' in panel.text
+    # The stored 'off' value is pre-selected in the dropdown — `selected`
+    # appears within the <option value="off"> tag, not the default option.
+    off_idx = panel.text.index('value="off"')
+    assert "selected" in panel.text[off_idx:off_idx + 60]
+
+
+def test_chat_panel_hides_think_chip_for_non_thinking_model(
+    make_client: ClientFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the model can't think, the Think chip is hidden entirely."""
+    async def _not_capable(*args, **kwargs):
+        return False
+
+    monkeypatch.setattr(ollama, "model_supports_thinking", _not_capable)
+    with make_client(_ollama_unreachable) as client:
+        chat_id = _create_chat_db_only("no think")
+        panel = client.get(f"/chats/{chat_id}", headers={"HX-Request": "true"})
+    assert "/think-mode" not in panel.text
+
+
+def test_host_overrides_carries_think_off(tmp_path: Path) -> None:
+    """`_host_overrides` resolves a chat's think_mode='off' to think=False on
+    the primary host (and omits it as None for 'default')."""
+    from app.routes._helpers import _host_overrides
+
+    db_path = tmp_path / "chats.db"
+    initialize_database(db_path)
+    with open_connection(db_path) as conn:
+        chat = queries.create_conversation(conn, "t", "local-model")
+        # Default → think omitted.
+        assert _host_overrides(chat, conn)["think"] is None
+        # Off → think=False.
+        queries.set_conversation_think_mode(conn, chat.id, "off")
+        chat = queries.get_conversation(conn, chat.id)
+        assert _host_overrides(chat, conn)["think"] is False
 
 
 @pytest.mark.asyncio

@@ -55,6 +55,9 @@ class Conversation:
         project_id: The project this chat belongs to (phase 17). NOT NULL on
             the schema side: the migration assigns every legacy chat to the
             Default project before enforcing the FK.
+        think_mode: Per-chat thinking lever (phase 25). 'default' omits
+            Ollama's ``think`` key (the model decides); 'off' sends
+            ``think=false`` to suppress a reasoning model's <think> phase.
     """
 
     id: int
@@ -67,6 +70,9 @@ class Conversation:
     created_at: datetime
     updated_at: datetime
     active_host: str | None = None
+    # Phase 25: per-chat thinking lever. 'default' omits Ollama's `think`
+    # key (model decides); 'off' sends think=false to suppress reasoning.
+    think_mode: str = "default"
 
 
 @dataclass(frozen=True)

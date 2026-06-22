@@ -74,6 +74,13 @@ CREATE TABLE IF NOT EXISTS conversations (
     temperature  REAL NOT NULL DEFAULT 0.8,
     -- Per-chat cap on tool-call iterations per turn (1–10).
     tool_iteration_cap INTEGER NOT NULL DEFAULT 5,
+    -- Phase 25: per-chat thinking mode. 'default' omits Ollama's `think`
+    -- key (the model decides); 'off' sends think=false to suppress a
+    -- reasoning model's <think> phase. TEXT (not bool) so a later phase can
+    -- add 'on' or graduated levels ('low'/'medium'/'high') without a
+    -- migration. The chat header only surfaces the control for models whose
+    -- /api/show capabilities include "thinking".
+    think_mode   TEXT NOT NULL DEFAULT 'default',
     -- Name of the selected Ollama host for this chat (a key in
     -- app.hosts.HOSTS, e.g. "host2"), or NULL for the primary host.
     active_host TEXT,
@@ -225,6 +232,26 @@ def _ensure_conversations_tool_iteration_cap_column(conn: sqlite3.Connection) ->
         conn.execute(
             "ALTER TABLE conversations"
             " ADD COLUMN tool_iteration_cap INTEGER NOT NULL DEFAULT 5;"
+        )
+
+
+def _ensure_conversations_think_mode_column(conn: sqlite3.Connection) -> None:
+    """Backfill the ``think_mode`` column on pre-phase-25 conversations tables.
+
+    Idempotent: checks ``PRAGMA table_info`` and only adds the column when
+    absent. New and back-filled rows default to ``'default'`` (Ollama's
+    ``think`` key omitted), preserving today's behaviour for existing chats.
+
+    Args:
+        conn: Open SQLite connection.
+    """
+    columns = {row[1] for row in conn.execute(
+        "PRAGMA table_info(conversations);"
+    )}
+    if "think_mode" not in columns:
+        conn.execute(
+            "ALTER TABLE conversations"
+            " ADD COLUMN think_mode TEXT NOT NULL DEFAULT 'default';"
         )
 
 
@@ -640,6 +667,11 @@ def initialize_database(path: Path | None = None) -> Path:
         # legacy chat to point at Default.
         default_project_id = _ensure_default_project(conn)
         _ensure_conversations_project_id_column(conn, default_project_id)
+        # Phase 25: per-chat thinking mode. MUST run AFTER the project_id
+        # rebuild — that step recreates the conversations table from a fixed
+        # column list (legacy DBs) and would otherwise drop a think_mode added
+        # before it.
+        _ensure_conversations_think_mode_column(conn)
         # Per-chat host model store: create chat_host_models and migrate any
         # legacy conversations.slowly_model column into it. MUST run AFTER the
         # project_id migration — that step rebuilds the conversations table

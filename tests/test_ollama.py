@@ -24,6 +24,7 @@ from app.ollama import (
     list_models,
     list_tool_capable_models,
     maybe_tool_call,
+    model_supports_thinking,
     model_supports_tools,
     stream_chat,
     summarize_conversation,
@@ -782,6 +783,39 @@ async def test_model_supports_tools_reflects_capability_membership() -> None:
         # A name Ollama doesn't even know about behaves like "not capable"
         # — same outcome as embed-only above.
         assert await model_supports_tools(client, "no-such-model") is False
+
+
+@pytest.mark.asyncio
+async def test_model_supports_thinking_reflects_capability_membership() -> None:
+    """True when /api/show lists 'thinking' for the model, False otherwise."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/show":
+            body = json.loads(request.content)
+            caps = (
+                ["completion", "tools", "thinking"]
+                if body["model"] == "qwen3.5:9b"
+                else ["completion", "tools"]
+            )
+            return httpx.Response(200, json={"capabilities": caps})
+        return httpx.Response(404)
+
+    async with _client_with(handler) as client:
+        assert await model_supports_thinking(client, "qwen3.5:9b") is True
+        assert await model_supports_thinking(client, "llama3.2:3b") is False
+
+
+@pytest.mark.asyncio
+async def test_model_supports_thinking_returns_false_on_failure() -> None:
+    """A /api/show failure resolves to False, not an exception.
+
+    The chat-panel render calls this synchronously; raising would break
+    the page render. False simply hides the Think chip — the safe default.
+    """
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("Connection refused")
+
+    async with _client_with(handler) as client:
+        assert await model_supports_thinking(client, "qwen3.5:9b") is False
 
 
 @pytest.mark.asyncio

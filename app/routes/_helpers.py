@@ -161,6 +161,22 @@ def _effective_model(
     )
 
 
+def _resolve_think(conversation: queries.Conversation) -> bool | None:
+    """Map a chat's ``think_mode`` to Ollama's ``think`` flag (phase 25).
+
+    Args:
+        conversation: The chat whose ``think_mode`` to resolve.
+
+    Returns:
+        ``False`` when ``think_mode == 'off'`` (suppress the reasoning phase;
+        safe on any model). ``None`` otherwise (``'default'`` — omit the key
+        so the model decides). Never returns ``True``: the v1 toggle only
+        suppresses thinking, so we never risk a ``think=true`` 400 on a
+        non-thinking model.
+    """
+    return False if conversation.think_mode == "off" else None
+
+
 def _host_overrides(
     conversation: queries.Conversation, db: sqlite3.Connection
 ) -> dict:
@@ -171,13 +187,14 @@ def _host_overrides(
     means the primary host ("host1"); a known name (e.g. ``"host2"``) means
     that registered second host.
 
-    The primary host returns the chat's pinned model with ``think=None`` (omit
-    the flag) and ``ollama_host=None`` (local). A selected second host returns
+    The primary host returns the chat's pinned model with ``ollama_host=None``
+    (local); a selected second host returns
     its ``ollama_host`` and the chat's per-host model (the ``chat_host_models``
     row for that host, falling back to the host spec's ``default_model``), but
     is otherwise IDENTICAL — both run the plain generation path, so the project
     system prompt and the full tool registry apply on either host; only the
-    machine and the model differ.
+    machine and the model differ. Both branches carry the chat's resolved
+    ``think`` flag (phase 25, via :func:`_resolve_think`).
 
     Phase 20b gating still applies: when a selected host's spec has a non-None
     ``ollama_host`` AND the app-wide ``remote_ollama_enabled`` toggle is off,
@@ -189,14 +206,14 @@ def _host_overrides(
     if spec is None:
         return {
             "model": conversation.model,
-            "think": None,
+            "think": _resolve_think(conversation),
             "ollama_host": None,
         }
     # A selected non-primary host uses the chat's per-host model when set,
     # falling back to the host spec's default_model.
     return {
         "model": _effective_model(conversation, spec, db),
-        "think": None,
+        "think": _resolve_think(conversation),
         "ollama_host": spec.ollama_host,
     }
 

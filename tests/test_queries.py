@@ -36,6 +36,7 @@ from app.queries import (
     set_active_host,
     set_chat_host_model,
     set_conversation_temperature,
+    set_conversation_think_mode,
     set_conversation_tool_iteration_cap,
     set_default_model,
     set_default_num_ctx,
@@ -143,6 +144,42 @@ def test_set_conversation_tool_iteration_cap_raises_for_unknown_id(
     """Updating a non-existent conversation raises LookupError."""
     with pytest.raises(LookupError):
         set_conversation_tool_iteration_cap(conn, 999999, 5)
+
+
+def test_create_conversation_defaults_think_mode(
+    conn: sqlite3.Connection,
+) -> None:
+    """A new chat starts at think_mode 'default' (Ollama decides)."""
+    c = create_conversation(conn, "X", "llama3")
+    assert c.think_mode == "default"
+
+
+def test_set_conversation_think_mode_round_trips(
+    conn: sqlite3.Connection,
+) -> None:
+    """The setter updates think_mode and the change is readable afterwards."""
+    c = create_conversation(conn, "X", "llama3")
+    updated = set_conversation_think_mode(conn, c.id, "off")
+    assert updated.think_mode == "off"
+    assert get_conversation(conn, c.id).think_mode == "off"
+
+
+def test_set_conversation_think_mode_does_not_bump_updated_at(
+    conn: sqlite3.Connection,
+) -> None:
+    """Toggling thinking shouldn't reorder the sidebar (no updated_at bump)."""
+    c = create_conversation(conn, "X", "llama3")
+    original = get_conversation(conn, c.id).updated_at
+    set_conversation_think_mode(conn, c.id, "off")
+    assert get_conversation(conn, c.id).updated_at == original
+
+
+def test_set_conversation_think_mode_raises_for_unknown_id(
+    conn: sqlite3.Connection,
+) -> None:
+    """Updating a non-existent conversation raises LookupError."""
+    with pytest.raises(LookupError):
+        set_conversation_think_mode(conn, 999999, "off")
 
 
 def test_get_conversation_returns_the_row(conn: sqlite3.Connection) -> None:

@@ -345,6 +345,46 @@ async def model_supports_tools(
         return False
 
 
+async def model_supports_thinking(
+    client: httpx.AsyncClient, name: str, host: str | None = None
+) -> bool:
+    """Best-effort check: does ``name`` advertise the 'thinking' capability?
+
+    Phase 25 uses this to gate the per-chat thinking toggle in the chat
+    header — the control only renders for reasoning models. A single
+    ``/api/show`` round-trip, mirroring :func:`model_supports_tools` but
+    without the process cache: thinking-gating happens once per chat-panel
+    render, the same cost (and on the same path) as the ``is_model_loaded``
+    probe already there.
+
+    Args:
+        client: An ``httpx.AsyncClient`` pointed at the Ollama host.
+        name: The model identifier to check (e.g. ``"qwen3.5:9b"``).
+        host: Optional override base URL. ``None`` probes the client's
+            ``base_url`` (the primary host); set it to probe a non-primary
+            host (the chat's selected host).
+
+    Returns:
+        True if ``/api/show`` lists ``"thinking"`` in the model's
+        capabilities. False on any failure (transport, status, or an
+        unexpected body) — we'd rather hide the toggle than render it on a
+        model that can't think.
+    """
+    try:
+        resp = await client.post(_url("/api/show", host), json={"model": name})
+        resp.raise_for_status()
+        caps = resp.json().get("capabilities") or []
+        return "thinking" in caps
+    except (
+        httpx.HTTPError,
+        httpx.InvalidURL,
+        ValueError,
+        KeyError,
+        TypeError,
+    ):
+        return False
+
+
 def reset_capability_cache() -> None:
     """Drop the per-process capability cache.
 

@@ -44,6 +44,29 @@
                class="temp-chip__input">
       </div>
     </form>
+    {# Phase 25: per-chat thinking mode. Shown only for thinking-capable
+       models (gated like the tool-cap chip). 'default' lets the model think
+       as usual; 'off' sends think=false to suppress the reasoning phase. #}
+    {% if supports_thinking %}
+    <form class="chat-panel__chip-form"
+          hx-patch="/chats/{{ conversation.id }}/think-mode"
+          hx-trigger="change"
+          hx-swap="none">
+      <div class="tool-chip tool-chip--on temp-chip">
+        <span class="tool-chip__label">Think</span>
+        <select id="think-mode-{{ conversation.id }}"
+                name="think_mode"
+                class="temp-chip__input">
+          <option value="default"
+            {% if conversation.think_mode != 'off' %}selected{% endif %}>
+            Default</option>
+          <option value="off"
+            {% if conversation.think_mode == 'off' %}selected{% endif %}>
+            Off</option>
+        </select>
+      </div>
+    </form>
+    {% endif %}
     {# Per-chat tool-iteration cap. Only meaningful for tool-capable
        models, so it's hidden entirely otherwise (the temperature chip
        above always applies). #}

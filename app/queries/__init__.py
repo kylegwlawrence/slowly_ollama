@@ -45,6 +45,7 @@ from app.queries.conversations import (
     rename_conversation,
     set_active_host,
     set_conversation_temperature,
+    set_conversation_think_mode,
     set_conversation_tool_iteration_cap,
     set_name_auto,
 )
@@ -102,6 +103,7 @@ __all__ = [
     "rename_conversation",
     "set_active_host",
     "set_conversation_temperature",
+    "set_conversation_think_mode",
     "set_conversation_tool_iteration_cap",
     "set_name_auto",
     # Messages

@@ -71,8 +71,20 @@ Highlights since:
   `request_backup("manual")` for state changed outside a chat turn (e.g. a
   hand-added workspace file) and OOB-re-arms the backup chip's status poll; no
   confirm (non-destructive). Both hidden when backups off. `app/backup.py`.
+- **Phases 23–24 (off-PLAN).** Per-chat tool/RAG chips removed (tool-capable
+  models get the full registry every turn; `query_rag` searches all servers);
+  sidebar "Sources" became a read-only reference panel; the host picker was
+  generalized to a multi-host registry (`app/hosts/`, `chat_host_models`).
+  NOTE: the `app/agents/` directory referenced elsewhere in this file is GONE.
+- **Phase 25 (per-chat thinking toggle).** `conversations.think_mode`
+  (`'default'`/`'off'`) + `set_conversation_think_mode`. `_resolve_think`
+  maps it to Ollama's `think` flag (`off`→`False`, else `None`; never `True`,
+  so it can't 400 a non-thinking model) inside `_host_overrides`, covering
+  send + regenerate. Header **Think** chip (`_chat_panel.html`), gated on
+  `ollama.model_supports_thinking` (a `/api/show` `"thinking"`-capability
+  probe) so it only shows for reasoning models. `PATCH /chats/{id}/think-mode`.
 
-**785 tests passing**, 0 failing; coverage 100% on `app/backup.py` (note:
+**797 tests passing**, 0 failing; coverage 100% on `app/backup.py` (note:
 `app/copy_agent_workspace.py`, a standalone pull script, is uncovered by design).
 
 ## Working rules (override Claude defaults where they conflict)

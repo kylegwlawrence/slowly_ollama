@@ -17,6 +17,7 @@ Routes:
     GET    /chats/{id}/archived               — archived rows for disclosure
     PATCH  /chats/{id}/temperature           — set per-chat temperature
     PATCH  /chats/{id}/tool-iteration-cap    — set per-chat tool cap
+    PATCH  /chats/{id}/think-mode            — set per-chat thinking mode (phase 25)
     GET    /backup/status                    — remote-backup status chip (phase 21)
     POST   /backup/pull                      — restore DB + workspaces from mirror (phase 22)
     POST   /backup/push                      — trigger an immediate mirror push (phase 22)
@@ -867,6 +868,38 @@ async def set_chat_tool_iteration_cap_endpoint(
         queries.set_conversation_tool_iteration_cap(
             db, conversation_id, tool_iteration_cap
         )
+    except LookupError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.patch(
+    "/chats/{conversation_id}/think-mode",
+    response_class=Response,
+)
+async def set_chat_think_mode_endpoint(
+    conversation_id: int,
+    db: DB,
+    think_mode: Annotated[str, Form()],
+) -> Response:
+    """Persist the per-chat thinking mode (phase 25).
+
+    Called by the thinking ``<select>`` in ``_chat_panel.html`` via
+    ``hx-patch`` on ``change``. Values outside ``{'default', 'off'}`` are
+    coerced to ``'default'`` server-side so a hand-crafted request can't
+    persist a value that would later resolve to ``think=true`` and 400 a
+    non-thinking model.
+
+    Returns 204 No Content — the select already shows the chosen value, so
+    no swap is needed.
+
+    Raises:
+        HTTPException 404: When the conversation doesn't exist.
+    """
+    if think_mode not in {"default", "off"}:
+        think_mode = "default"
+    try:
+        queries.set_conversation_think_mode(db, conversation_id, think_mode)
     except LookupError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
     return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -451,6 +451,11 @@ async def project_chat_panel_endpoint(
     supports_tools = await ollama.model_supports_tools(
         client, conversation.model
     )
+    # Phase 25: gate the per-chat thinking toggle on the model's capability,
+    # the same way supports_tools gates the tool-cap chip.
+    supports_thinking = await ollama.model_supports_thinking(
+        client, conversation.model
+    )
 
     # Resolve through the toggle so a disabled remote host renders as the
     # primary (matches the indicator + generation path).
@@ -479,6 +484,7 @@ async def project_chat_panel_endpoint(
             "archived_count": archived_count,
             "pending_stream_url": pending_stream_url,
             "supports_tools": supports_tools,
+            "supports_thinking": supports_thinking,
             "active_host_spec": active_host_spec,
             "effective_model": effective_model,
             "model_loaded": model_loaded,
@@ -564,6 +570,8 @@ async def create_project_chat_endpoint(
     )
 
     supports_tools = await ollama.model_supports_tools(client, chat.model)
+    # Phase 25: gate the per-chat thinking toggle on the model's capability.
+    supports_thinking = await ollama.model_supports_thinking(client, chat.model)
 
     # Toggle-aware host spec for the header chip (a disabled remote host
     # renders as the primary), matching the generation path's resolution.
@@ -580,6 +588,7 @@ async def create_project_chat_endpoint(
         pending_stream_url=f"/chats/{chat.id}/stream",
         active_chat_id=chat.id,
         supports_tools=supports_tools,
+        supports_thinking=supports_thinking,
         hosts=list_hosts(),
         active_host_spec=active_spec,
         effective_model=_effective_model(chat, active_spec, db),
