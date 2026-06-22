@@ -1490,59 +1490,9 @@ body {
   color: var(--text-primary);
 }
 
-.tool-chip__label {
-  white-space: nowrap;
-}
-
-/* ===== Phase 19: per-chat RAG-source chips in the sidebar ===============
-   The Sources section sits above .sidebar__footer. Heading + chip-row
-   layout mirrors the existing sidebar rhythm (border-top separator,
-   var(--space-md) padding). The new --unavailable chip variant slots
-   alongside --on / --off above; sidebar wraps it in a list, but the
-   styling is reusable wherever a chip needs to flag a degraded source. */
-
-.sidebar__rag-section {
-  border-top: 1px solid var(--border);
-  padding: var(--space-sm) var(--space-sm);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-sm);
-}
-
-.sidebar__rag-header {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-xs);
-}
-
-.sidebar__rag-title {
-  font-weight: 600;
-  font-size: 13px;
-  color: var(--text-primary);
-}
-
-.sidebar__rag-subtitle {
-  font-size: 11px;
-  color: var(--text-secondary);
-}
-
-.sidebar__rag-chips {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-xs);
-}
-
-.sidebar__rag-chips li {
-  padding: 0;
-  margin: 0;
-}
-
-/* Red / unavailable variant. Border + glyph carry the signal; background
-   stays subtle so a row of red chips doesn't look alarming — it's
-   informational, not blocking. */
+/* Red / unavailable variant — shared by the backup + pull status chips
+   (a degraded/failed state). Border + colour carry the signal; background
+   stays subtle so it reads as informational, not alarming. */
 .tool-chip--unavailable {
   background: transparent;
   color: var(--danger);
@@ -1551,6 +1501,79 @@ body {
 
 .tool-chip--unavailable:hover {
   background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
+.tool-chip__label {
+  white-space: nowrap;
+}
+
+/* ===== Phase 24: always-visible sidebar reference lists =================
+   The #sidebar-reference section sits above .sidebar__footer and lists the
+   configured RAG servers + registered tools as two groups. Heading + chip-row
+   layout mirrors the existing sidebar rhythm (border-top separator,
+   var(--space-sm) padding). Chips here are labels, not buttons, so
+   .sidebar__ref-chip overrides the .tool-chip cursor + palette to a neutral,
+   non-interactive resting state. */
+
+.sidebar__reference {
+  border-top: 1px solid var(--border);
+  padding: var(--space-sm) var(--space-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.sidebar__ref-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.sidebar__ref-header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-xs);
+}
+
+.sidebar__ref-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.sidebar__ref-subtitle {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.sidebar__ref-chips {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+}
+
+.sidebar__ref-chips li {
+  padding: 0;
+  margin: 0;
+}
+
+/* Non-interactive label chip: neutral surface, default cursor. Compound
+   selector (0,2,0) beats base .tool-chip (0,1,0) so border/cursor win. */
+.tool-chip.sidebar__ref-chip {
+  background: var(--surface);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  cursor: default;
+}
+
+.sidebar__ref-empty {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-style: italic;
 }
 
 

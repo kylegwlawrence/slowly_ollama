@@ -5,84 +5,31 @@ context and the host-overrides resolver from
 one place rather than reaching across to a sibling sub-module.
 """
 
-import asyncio
 import sqlite3
 
-from app import ollama, queries, rag_health
+from app import queries, tools
 from app import rag_servers as _rag_servers
 from app.hosts import enabled_hosts, get_host
 
 
-def _spawn_health_refresh(db: sqlite3.Connection) -> None:
-    """Fire-and-forget RAG-server health refresh (phase 19).
+def _sidebar_reference_context(db: sqlite3.Connection) -> dict:
+    """Build the context for the always-visible sidebar reference lists (phase 24).
 
-    Called from send / regenerate / create-chat endpoints right after
-    ``start_generation`` so the cache is freshly populated by the time
-    the next sidebar render asks for it. Doesn't block the response —
-    the user shouldn't pay probe latency on every send.
+    The sidebar shows two chat-independent reference lists below the projects
+    list: every configured RAG server and every registered tool. This replaced
+    the chat-gated Sources health panel, so there is no active-chat gating and
+    no health probing — just "what the app has".
 
-    A server that went down between chat-open and send-time will show
-    red on the next sidebar render (chat switch, page reload, chip
-    toggle response). Within the current request the user already
-    pressed Send, so a "warn before send" UI isn't possible here
-    anyway; ``query_rag`` will surface the actual failure mid-stream.
+    Returns the keys consumed by ``_sidebar_reference.html``:
+      ``sidebar_rag_servers``: list[RagServer] — every configured server.
+      ``sidebar_tools``: list[ToolSpec]        — every tool, name-sorted.
+
+    Both are cheap to gather (one SQL query + an in-memory dict), so this runs
+    on every full-page render without a cache.
     """
-    servers = _rag_servers.list_servers(db)
-    if servers:
-        asyncio.create_task(rag_health.get_health_map(servers, force=True))
-
-
-async def _sidebar_rag_context(
-    db: sqlite3.Connection,
-    conversation: queries.Conversation | None,
-    *,
-    supports_tools: bool,
-    servers: list | None = None,
-) -> dict:
-    """Build the context for the sidebar's read-only RAG health panel.
-
-    Phase 23 removed per-server gating — ``query_rag`` now searches every
-    configured RAG server — so this section is purely informational: it lists
-    all configured servers with their cached health. Returns keys consumed by
-    ``_sidebar.html`` / ``_sidebar_rag_section.html``:
-      ``active_conversation``
-      ``active_chat_supports_tools``
-      ``servers``
-      ``rag_health``
-
-    When ``conversation`` is None (no active chat) or the model doesn't
-    support tools, returns the minimal empty shape — the template guard shorts
-    the section to a hidden wrapper. When no servers are configured, also
-    returns empty ``rag_health`` (no need to probe).
-
-    Probes server health in parallel via the cache; render-time cost is one
-    ``asyncio.gather`` per chat-panel render (cache-hit fast path:
-    sub-millisecond).
-    """
-    if conversation is None or not supports_tools:
-        return {
-            "active_conversation": conversation,
-            "active_chat_supports_tools": supports_tools,
-            "servers": [],
-            "rag_health": {},
-        }
-
-    if servers is None:
-        servers = _rag_servers.list_servers(db)
-    if not servers:
-        return {
-            "active_conversation": conversation,
-            "active_chat_supports_tools": supports_tools,
-            "servers": [],
-            "rag_health": {},
-        }
-
-    health_map = await rag_health.get_health_map(servers)
     return {
-        "active_conversation": conversation,
-        "active_chat_supports_tools": supports_tools,
-        "servers": servers,
-        "rag_health": health_map,
+        "sidebar_rag_servers": _rag_servers.list_servers(db),
+        "sidebar_tools": sorted(tools.TOOLS.values(), key=lambda s: s.name),
     }
 
 

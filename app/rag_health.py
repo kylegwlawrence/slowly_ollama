@@ -1,24 +1,16 @@
-"""RAG server liveness probing with a TTL cache.
+"""RAG server liveness probing.
 
-The single-shot probe (``probe_rag_health``) moved here verbatim from
-``app/rag_servers.py`` so that module stays CRUD-only. New here: an in-memory
-TTL cache keyed by base URL, plus a parallel orchestrator
-(``get_health_map``) that the sidebar render and the on-send refresh both use.
+The single-shot probe (``probe_rag_health``) moved here from
+``app/rag_servers.py`` so that module stays CRUD-only. The settings route uses
+it to validate a server before insert/edit — it surfaces the failure reason in
+the form so the user knows why a server was rejected.
 
-Cache shape:
-    ``{ base_url: _CacheEntry(healthy: bool, expires_at: float) }``
-
-``expires_at`` is a ``time.monotonic()`` deadline so wall-clock skew doesn't
-poison entries. Lifetime: ``HEALTH_TTL_SECONDS`` (60s).
-
-Process-local, not on ``app.state`` — same pattern as
-``app/generation.py``'s ``live_generations`` dict (one piece of cross-request
-in-memory state per concern). Tests clear via ``clear_cache``.
+Phase 24 removed the TTL cache + parallel orchestrator (``get_health_map``)
+that only ever fed the sidebar's chat-gated Sources health panel; that panel was
+replaced by an always-visible, health-free reference list. Health is now a
+validate-on-write concern, not a render-time one.
 """
 
-import asyncio
-import time
-from dataclasses import dataclass
 from urllib.parse import urlparse, urlunparse
 
 import httpx
@@ -27,31 +19,6 @@ import httpx
 # connect, five total. Same values as the original implementation.
 _HEALTH_TIMEOUT = httpx.Timeout(5.0, connect=2.0)
 _HEALTHY_STATUS = "ok"
-
-HEALTH_TTL_SECONDS = 60.0
-
-
-@dataclass(frozen=True)
-class _CacheEntry:
-    """One cache row: probe result + monotonic-clock expiry."""
-
-    healthy: bool
-    expires_at: float
-
-
-# Module-level cache. Key = base URL (NOT name — multiple chats may share a
-# server, and a single server name maps to exactly one URL).
-_cache: dict[str, _CacheEntry] = {}
-
-
-def _now() -> float:
-    """Wrapped so tests can monkeypatch the clock without touching time itself."""
-    return time.monotonic()
-
-
-def clear_cache() -> None:
-    """Drop every cached entry. Called by tests via autouse fixture."""
-    _cache.clear()
 
 
 def _health_url(base_url: str) -> str | None:
@@ -146,66 +113,3 @@ async def probe_rag_health(name: str, base_url: str) -> tuple[bool, str]:
         )
 
     return (True, "")
-
-
-async def get_health(
-    name: str, base_url: str, *, force: bool = False
-) -> bool | None:
-    """Return cached or freshly-probed health for one server.
-
-    On cache miss (or ``force=True``) probes ``/health`` and caches the
-    boolean result for ``HEALTH_TTL_SECONDS``. The reason string is
-    intentionally discarded — sidebar chips only need on/off/unknown.
-
-    Args:
-        name: Database name as registered in ``rag_servers.name``.
-        base_url: Full RAG base URL (the value stored in ``rag_servers.url``).
-        force: When True, bypass the cache and always probe. Used by the
-            on-send refresh path.
-
-    Returns:
-        ``True`` if healthy, ``False`` if known-unhealthy, ``None`` if the
-        URL is malformed (chip renders as unknown / grey, never red —
-        don't blame the user's typing).
-    """
-    if _health_url(base_url) is None:
-        return None
-    if not force:
-        entry = _cache.get(base_url)
-        if entry is not None and entry.expires_at > _now():
-            return entry.healthy
-    healthy, _reason = await probe_rag_health(name, base_url)
-    _cache[base_url] = _CacheEntry(
-        healthy=healthy,
-        expires_at=_now() + HEALTH_TTL_SECONDS,
-    )
-    return healthy
-
-
-async def get_health_map(
-    servers: list,
-    *,
-    force: bool = False,
-) -> dict[str, bool | None]:
-    """Probe every server in parallel; return ``{server_name: status}``.
-
-    Cache hits return synchronously; misses dispatch in one
-    ``asyncio.gather`` so render-time latency is bounded by the slowest
-    miss (5s tops). The sidebar render calls this once per chat-panel
-    render.
-
-    Args:
-        servers: Iterable of objects with ``.name`` and ``.url`` attributes
-            (typically ``list[RagServer]``; loose typing avoids an import
-            cycle with ``app.rag_servers``).
-        force: When True, every probe bypasses the cache.
-
-    Returns:
-        Mapping of server name → ``True``/``False``/``None`` per
-        ``get_health``.
-    """
-    async def _one(server) -> tuple[str, bool | None]:
-        return server.name, await get_health(server.name, server.url, force=force)
-
-    results = await asyncio.gather(*(_one(s) for s in servers))
-    return dict(results)

@@ -23,7 +23,6 @@ from fastapi import APIRouter, Form, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app import generation, ollama, queries, render
-from app import rag_servers as _rag_servers
 from app.hosts import get_host, list_hosts
 from app.dependencies import DB, OllamaClient
 from app.projects import ensure_project_workspace
@@ -34,8 +33,7 @@ from app.routes._helpers import (
     _placeholder_name,
     _project_context,
     _resolve_active_host,
-    _sidebar_rag_context,
-    _spawn_health_refresh,
+    _sidebar_reference_context,
 )
 from app.templates import templates
 
@@ -71,6 +69,8 @@ def list_projects_endpoint(request: Request, db: DB) -> Response:
             "project": None,
             "conversation": None,
             "active_chat_id": None,
+            # Phase 24: always-visible sidebar reference lists.
+            **_sidebar_reference_context(db),
         },
     )
 
@@ -311,15 +311,6 @@ def _render_project_page(
         # highlight correctly. Default None for the empty-state /
         # Files / Settings tabs.
         "active_chat_id": None,
-        # Sidebar Sources health-panel defaults — overridden via `extra` on
-        # chat-panel routes that compute the real values. Always present so
-        # templates can read them without |default gymnastics, and so the
-        # partial renders an empty (invisible) wrapper as a stable OOB target
-        # on chat-less pages.
-        "active_conversation": None,
-        "active_chat_supports_tools": False,
-        "servers": [],
-        "rag_health": {},
         # Most tabs need hosts + defaults available; include them so
         # included partials don't have to re-fetch.
         **_project_context(db, composer=active_tab == "chats"),
@@ -341,6 +332,8 @@ def _render_project_page(
             "layout": "project",
             "projects": queries.list_projects(db),
             "active_project_id": project.id,
+            # Phase 24: always-visible sidebar reference lists.
+            **_sidebar_reference_context(db),
             **base,
         },
     )
@@ -474,10 +467,6 @@ async def project_chat_panel_endpoint(
         client, effective_model, host=effective_host
     )
 
-    sidebar_ctx = await _sidebar_rag_context(
-        db, conversation, supports_tools=supports_tools
-    )
-
     return _render_project_page(
         request,
         db=db,
@@ -493,7 +482,6 @@ async def project_chat_panel_endpoint(
             "active_host_spec": active_host_spec,
             "effective_model": effective_model,
             "model_loaded": model_loaded,
-            **sidebar_ctx,
         },
     )
 
@@ -560,10 +548,6 @@ async def create_project_chat_endpoint(
         queries.set_chat_host_model(db, chat.id, host_spec.name, model)
     queries.append_message(db, chat.id, "user", content)
 
-    # All configured RAG servers feed the sidebar health panel below; fetch
-    # once and reuse.
-    rag_servers_list = _rag_servers.list_servers(db)
-
     messages = queries.list_messages(db, chat.id)
     blocks = render.group_messages_for_render(messages)
 
@@ -578,9 +562,6 @@ async def create_project_chat_endpoint(
         on_complete="append",
         **_host_overrides(chat, db),
     )
-    # Phase 19: warm the RAG health cache so a freshly-created chat's
-    # sidebar Sources section reflects current server health.
-    _spawn_health_refresh(db)
 
     supports_tools = await ollama.model_supports_tools(client, chat.model)
 
@@ -621,23 +602,9 @@ async def create_project_chat_endpoint(
         f'<ul hx-swap-oob="afterbegin:#chats-list">{item_html}</ul>'
     )
 
-    # Phase 19: OOB-swap the sidebar Sources section so it reflects the new
-    # active chat. The pre-existing sidebar in DOM has an empty
-    # #sidebar-rag-section wrapper (always-rendered in _sidebar.html);
-    # OOB outerHTML-swap with `oob=true` replaces it with the populated
-    # section for the new chat.
-    sidebar_ctx = await _sidebar_rag_context(
-        db, chat, supports_tools=supports_tools, servers=rag_servers_list
-    )
-    oob_sidebar_rag = templates.get_template(
-        "_sidebar_rag_section.html"
-    ).render(
-        conversation=chat,
-        oob=True,
-        **sidebar_ctx,
-    )
-
-    body = panel_html + oob_sidebar_row + oob_sidebar_rag
+    # Phase 24: the sidebar reference lists (RAG servers + tools) are
+    # chat-independent, so a new chat needs no sidebar OOB beyond its row.
+    body = panel_html + oob_sidebar_row
     response = HTMLResponse(
         content=body, status_code=status.HTTP_201_CREATED
     )

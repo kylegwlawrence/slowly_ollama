@@ -91,8 +91,8 @@ _task: asyncio.Task | None = None
 # ---------------------------------------------------------------------------
 
 # Process-local backup status, surfaced to the chat-header chip. Same pattern
-# as `generation.live_generations` / `rag_health._cache`: one piece of
-# cross-request in-memory state per concern, deliberately NOT on `app.state`.
+# as `generation.live_generations`: one piece of cross-request in-memory state
+# per concern, deliberately NOT on `app.state`.
 # Reflects the single global backup task, so every chat sees the same value.
 #
 #   idle     no push has run yet this process (neutral resting state)

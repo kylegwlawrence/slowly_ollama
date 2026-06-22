@@ -1,0 +1,54 @@
+{# Phase 24: always-visible sidebar reference lists.
+
+   Sits below #projects-list, above the footer, on every page (projects
+   index, settings, inside a chat). Unlike the phase-19/23 Sources health
+   panel it replaced, this is chat-independent and purely informational —
+   it lists what the app HAS, not what a given chat is using, so there is
+   no active-chat gating, no health probing, and no per-chat OOB re-render.
+
+   Context (via _sidebar_reference_context in app/routes/_helpers.py):
+     sidebar_rag_servers: list[RagServer] — every configured RAG server.
+     sidebar_tools: list[ToolSpec]        — every registered tool, name-sorted.
+
+   Chips reuse .tool-chip + the neutral, non-interactive .sidebar__ref-chip
+   modifier (these are labels, not buttons). Server labels drop the `_rag`
+   suffix to match the old panel; tool chips carry the tool description as a
+   hover title. #}
+<section id="sidebar-reference" class="sidebar__reference">
+  <div class="sidebar__ref-group">
+    <header class="sidebar__ref-header">
+      <span class="sidebar__ref-title">Sources</span>
+      <span class="sidebar__ref-subtitle">{{ sidebar_rag_servers|length }}</span>
+    </header>
+    {% if sidebar_rag_servers %}
+    <ul class="sidebar__ref-chips">
+      {% for server in sidebar_rag_servers %}
+        <li>
+          <span class="tool-chip sidebar__ref-chip"
+                title="{{ server.description or server.url }}">
+            <span class="tool-chip__label">{{ server.name.removesuffix('_rag') }}</span>
+          </span>
+        </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="sidebar__ref-empty">None configured</p>
+    {% endif %}
+  </div>
+  <div class="sidebar__ref-group">
+    <header class="sidebar__ref-header">
+      <span class="sidebar__ref-title">Tools</span>
+      <span class="sidebar__ref-subtitle">{{ sidebar_tools|length }}</span>
+    </header>
+    <ul class="sidebar__ref-chips">
+      {% for spec in sidebar_tools %}
+        <li>
+          <span class="tool-chip sidebar__ref-chip"
+                title="{{ spec.description }}">
+            <span class="tool-chip__label">{{ spec.name }}</span>
+          </span>
+        </li>
+      {% endfor %}
+    </ul>
+  </div>
+</section>

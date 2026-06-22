@@ -21,7 +21,7 @@ from collections.abc import Iterator
 
 import pytest
 
-from app import generation, ollama, rag_health
+from app import generation, ollama
 from app.tools import TOOLS
 from app.tools import builtins as _builtins  # noqa: F401 — registers file tools
 
@@ -64,14 +64,10 @@ def _isolate_module_state() -> Iterator[None]:
     saved_file_tools = {n: TOOLS.get(n) for n in _FILE_TOOL_NAMES}
     for name in _FILE_TOOL_NAMES:
         TOOLS.pop(name, None)
-    # Phase 19: clear the RAG health cache between tests so a probe in
-    # one test doesn't leak a stale entry into the next.
-    rag_health.clear_cache()
     yield
     generation.live_generations.clear()
     generation.live_generations.update(saved_gens)
     ollama.reset_capability_cache()
-    rag_health.clear_cache()
     if saved_query_rag is not None:
         TOOLS["query_rag"] = saved_query_rag
     else:
@@ -81,21 +77,3 @@ def _isolate_module_state() -> Iterator[None]:
             TOOLS[name] = spec
         else:
             TOOLS.pop(name, None)
-
-
-@pytest.fixture(autouse=True)
-def _no_rag_probes(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Phase 19: stub ``rag_health.get_health_map`` so chat-panel renders
-    don't fire real network probes during tests.
-
-    Returns an empty dict, which the sidebar partial reads as "unknown
-    status" for every server — chips render in their plain on/off state,
-    no red. Tests that need to exercise unavailable / healthy states
-    should override this by re-patching ``get_health_map`` after this
-    fixture runs (pytest applies same-priority autouse fixtures in
-    definition order; per-test monkeypatching wins on the last setattr).
-    """
-    async def _noop_map(servers, *, force=False):
-        return {}
-
-    monkeypatch.setattr(rag_health, "get_health_map", _noop_map)

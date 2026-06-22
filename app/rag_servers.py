@@ -7,8 +7,7 @@ UI; the ``query_rag`` tool reads this table to validate the model's chosen
 ``source`` argument and to look up the corresponding base URL.
 
 Liveness probing lives in :mod:`app.rag_health` — the settings route imports
-``probe_rag_health`` from there to validate a server before insert, and the
-sidebar render imports ``get_health_map`` to render per-chip availability.
+``probe_rag_health`` from there to validate a server before insert/edit.
 """
 
 import sqlite3

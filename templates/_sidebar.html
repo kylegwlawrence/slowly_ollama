@@ -32,15 +32,11 @@
       {% include "_project_sidebar_row.html" %}
     {% endfor %}
   </ul>
-  {# Phase 19: per-chat RAG-source chips. Always render the wrapper —
-     even on pages with no active chat — so #sidebar-rag-section is a
-     stable OOB target for chat-switch / host-pick endpoints.
-     The partial emits an empty (invisible) <section> when the show
-     conditions aren't met. Routes feed context via
-     _sidebar_rag_context in app/routes/_helpers.py. #}
-  {% set conversation = active_conversation|default(none) %}
-  {% set oob = false %}
-  {% include "_sidebar_rag_section.html" %}
+  {# Phase 24: always-visible reference lists (RAG servers + tools) below
+     the projects list. Chat-independent — rendered fresh on every full-page
+     load. Routes feed context via _sidebar_reference_context in
+     app/routes/_helpers.py. #}
+  {% include "_sidebar_reference.html" %}
   <div class="sidebar__footer">
     <a class="sidebar__settings" href="/settings"
        hx-get="/settings"

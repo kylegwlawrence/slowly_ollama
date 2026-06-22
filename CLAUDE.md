@@ -72,7 +72,7 @@ Highlights since:
   hand-added workspace file) and OOB-re-arms the backup chip's status poll; no
   confirm (non-destructive). Both hidden when backups off. `app/backup.py`.
 
-**795 tests passing**, 0 failing; coverage 100% on `app/backup.py` (note:
+**785 tests passing**, 0 failing; coverage 100% on `app/backup.py` (note:
 `app/copy_agent_workspace.py`, a standalone pull script, is uncovered by design).
 
 ## Working rules (override Claude defaults where they conflict)

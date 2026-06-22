@@ -38,8 +38,6 @@ from app.routes._helpers import (
     _effective_model,
     _resolve_active_host,
     _resolve_num_ctx,
-    _sidebar_rag_context,
-    _spawn_health_refresh,
 )
 from app.templates import templates
 
@@ -350,10 +348,6 @@ async def send_message_endpoint(
             '<div class="error">A reply is already streaming for this chat.</div>',
             status_code=status.HTTP_409_CONFLICT,
         )
-    # Phase 19: warm the RAG health cache so the next sidebar render
-    # reflects current reality. Background task — adds no latency here.
-    _spawn_health_refresh(db)
-
     # Phase 20: the user message is now persisted — push state to the
     # remote mirror. Fire-and-forget + debounced; no-ops when unconfigured.
     backup.request_backup("send")
@@ -474,9 +468,6 @@ async def regenerate_endpoint(
             '<div class="error">A reply is already streaming for this chat.</div>',
             status_code=status.HTTP_409_CONFLICT,
         )
-    # Phase 19: warm the RAG health cache (see send_message_endpoint).
-    _spawn_health_refresh(db)
-
     placeholder_html = templates.get_template(
         "_assistant_placeholder.html"
     ).render(
@@ -513,9 +504,6 @@ async def set_chat_host_endpoint(
     OOB swaps returned:
       - ``#host-indicator-{id}``: the header indicator, updated to the
         host label + model (or the chat's pinned model for the primary host).
-      - ``#sidebar-rag-section``: refreshed because switching host changes the
-        effective model, which can flip whether the model supports tools and
-        thus whether the read-only Sources health panel shows.
 
     Raises:
         HTTPException 404: When the conversation is unknown.
@@ -550,22 +538,7 @@ async def set_chat_host_endpoint(
         oob=True,
     )
 
-    # Switching host can change the effective model → whether the model
-    # supports tools → whether the sidebar Sources health panel shows. OOB-swap
-    # the section so it reflects the newly-selected host.
-    supports_tools = await ollama.model_supports_tools(client, effective_model)
-    sidebar_ctx = await _sidebar_rag_context(
-        db, conversation, supports_tools=supports_tools
-    )
-    sidebar_rag_oob = templates.get_template(
-        "_sidebar_rag_section.html"
-    ).render(
-        conversation=conversation,
-        oob=True,
-        **sidebar_ctx,
-    )
-
-    return HTMLResponse(content=indicator_html + sidebar_rag_oob)
+    return HTMLResponse(content=indicator_html)
 
 
 @router.post(

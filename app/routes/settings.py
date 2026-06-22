@@ -25,6 +25,7 @@ from app.hosts import list_hosts
 from app.config import extra_ollama_hosts
 from app.dependencies import DB
 from app.rag_health import probe_rag_health
+from app.routes._helpers import _sidebar_reference_context
 from app.templates import templates
 from app.tools.rag import refresh_query_rag_registration
 
@@ -85,6 +86,8 @@ def settings_endpoint(request: Request, db: DB) -> Response:
             # Phase 17b: unified sidebar needs the projects list.
             "projects": queries.list_projects(db),
             "active_project_id": None,
+            # Phase 24: always-visible sidebar reference lists.
+            **_sidebar_reference_context(db),
             # Passed under `rag_servers` so the index template's
             # `{% set servers = rag_servers %}` adapter resolves it for
             # the included _settings.html fragment.
