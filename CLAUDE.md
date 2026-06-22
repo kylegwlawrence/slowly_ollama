@@ -162,10 +162,18 @@ docs/
 
 `source .venv/bin/activate` → `pip install -r requirements.txt` →
 `cp .env.example .env` (defaults work if Ollama is on `:11434`) →
-`uvicorn main:app --reload`. Tests: `pytest` (~2s, hermetic, no real Ollama).
-Coverage: `pytest --cov=app --cov=main --cov-report=term-missing`. DB lives at
-`~/Library/Application Support/ollama_slowly/chats.db` by default (created on
-first run); configurable via `DB_PATH` in `.env`.
+`uvicorn main:app --reload` for local dev. Tests: `pytest` (~2s, hermetic, no
+real Ollama). Coverage: `pytest --cov=app --cov=main --cov-report=term-missing`.
+DB lives at `~/Library/Application Support/ollama_slowly/chats.db` by default
+(created on first run); configurable via `DB_PATH` in `.env`.
+
+**Deployment.** This box runs the app as a systemd **system** service,
+`olliellama.service` (`/etc/systemd/system/olliellama.service`, enabled), via
+`.venv/bin/uvicorn main:app --host <host-ip> --port 8070`. Manage it with
+`sudo systemctl {restart,stop,status} olliellama.service` and read logs with
+`journalctl -u olliellama.service`. **`.env` changes require a service restart**
+— `config.load_dotenv()` runs once at process start and does not override
+already-set env vars, and `--host`-style reloads don't apply to the service.
 
 ## Architecture in one paragraph
 
