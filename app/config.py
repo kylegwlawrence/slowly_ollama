@@ -99,7 +99,7 @@ def github_token() -> str | None:
 def remote_ollama_host() -> str | None:
     """Return the base URL of the remote Ollama instance, or ``None`` if unset.
 
-    Optional second Ollama host (e.g. a VPN-reachable machine).
+    Optional second Ollama host (e.g. a machine on your private network).
     Paired with :func:`remote_ollama_model`: both must be set for the
     remote agent to register — when either is missing the agent is
     dropped from the registry rather than registered with a degenerate

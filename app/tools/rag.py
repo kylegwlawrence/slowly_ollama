@@ -39,7 +39,7 @@ _TOTAL_OUTPUT_CAP = 4000
 
 # Retrieval should be fast (sparse FTS5 + dense ANN over local SQLite on
 # the RAG server side). 30s total / 5s connect leaves headroom for slow
-# VPN routes between the chat app and the RAG box, while still
+# private-network routes between the chat app and the RAG box, while still
 # failing fast on a truly down server.
 _RAG_TIMEOUT = httpx.Timeout(30.0, connect=5.0)
 

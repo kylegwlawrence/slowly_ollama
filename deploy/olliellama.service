@@ -20,9 +20,10 @@
 
 [Unit]
 Description=olliellama webserver (FastAPI + uvicorn)
-# Ollama is remote, but VPN must be up before we bind/serve so the
-# first chat turn can reach <gpu-host> over the private network.
-After=network-online.target network-online.target
+# Ollama is remote; the private network must be up before we bind/serve so
+# the first chat turn can reach <gpu-host>. If a VPN provides that network,
+# add its unit here too (e.g. `After=... wg-quick@wg0.service`).
+After=network-online.target
 Wants=network-online.target
 
 [Service]
@@ -32,8 +33,9 @@ User=<pi-user>
 # loads .env by walking up from the process CWD, so .env is found only
 # when uvicorn starts from here.
 WorkingDirectory=<repo>
-# Bind localhost only — `reverse proxy` fronts it with HTTPS on the
-# private network (see the plan doc). Never add --reload in production.
+# Bind localhost only — front it with HTTPS reachable only on your private
+# network (reverse proxy or VPN; see the plan doc). Never add --reload in
+# production.
 ExecStart=<repo>/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000
 Restart=on-failure
 RestartSec=3

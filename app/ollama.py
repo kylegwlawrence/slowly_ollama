@@ -126,10 +126,10 @@ def create_client() -> httpx.AsyncClient:
     seconds (10 minutes) — long enough for any reasonable cold-start
     and large context processing — and set CONNECT to 10 seconds. A
     localhost connect is sub-second, but ``OLLAMA_HOST`` can point at a
-    remote machine over VPN (the split deployment in
+    remote machine over a private network (the split deployment in
     ``docs/plans/phase23-split-deployment.md``), where the first connect
-    to an idle peer may be relayed through relay or wait for the peer to
-    wake — 10s absorbs that without masking a genuinely wedged server.
+    to an idle peer may be relayed or wait for the peer to wake — 10s
+    absorbs that without masking a genuinely wedged server.
     Per-call overrides still win, e.g. ``generate_title`` passes
     ``timeout=10`` to bound how long the SSE connection stays open after
     the user-visible reply.

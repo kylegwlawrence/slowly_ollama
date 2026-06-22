@@ -83,15 +83,15 @@ Open `http://localhost:8000` in your browser.
 
 ---
 
-## Deploying split across two machines (VPN)
+## Deploying split across two machines
 
-You can run the **web tier** (FastAPI + uvicorn) on one machine — e.g. a Raspberry Pi named `web-host` — and offload **inference** to a second machine (`<gpu-host>`) over a [VPN](https://VPN.com) private network. The full runbook lives in `docs/plans/phase23-split-deployment.md`; the short version:
+You can run the **web tier** (FastAPI + uvicorn) on one machine — e.g. a small Linux box named `web-host` — and offload **inference** to a second machine (`<gpu-host>`) over a private network (VPN). The full runbook lives in `docs/plans/phase23-split-deployment.md`; the short version:
 
 - **Ollama is network-native; SQLite is not.** Point `OLLAMA_HOST` at the other machine and inference moves there with no code change. The live SQLite database, by contrast, must stay **local to the web tier** (SQLite is an embedded file DB, not a client/server one). Durability instead comes from the built-in remote mirror (`REMOTE_DB_PATH` / `REMOTE_PATH`), which pushes a consistent copy of the DB + workspaces to the other machine on every change.
 - **On `<gpu-host>`:** make Ollama listen beyond localhost (`Environment="OLLAMA_HOST=0.0.0.0:11434"` in its systemd override; default `127.0.0.1` is unreachable over the private network), and allow non-interactive SSH key auth from the web tier (`ssh <gpu-host> true` must succeed with no prompt — the backup uses `ssh -o BatchMode=yes`).
-- **On the web tier:** `cp deploy/web-host.env.example .env` (Linux paths + remote Ollama + mirror), install `deploy/olliellama.service` as a systemd unit (binds uvicorn to `127.0.0.1:8000`), then expose it with `reverse proxy --bg https / http://127.0.0.1:8000`. The UI lands at `https://web-host.<private network>.example`.
+- **On the web tier:** `cp deploy/web-host.env.example .env` (Linux paths + remote Ollama + mirror), install `deploy/olliellama.service` as a systemd unit (binds uvicorn to `127.0.0.1:8000`), then front it with HTTPS reachable only on your private network (e.g. a reverse proxy or your VPN's built-in HTTPS serving). The UI lands at `https://web-host.<your-private-domain>`.
 
-> **No authentication.** Use `reverse proxy` (private network-only), **not `public proxy`** (public internet). The private network is the security boundary.
+> **No authentication.** Keep the app reachable **only on your private network**, never exposed to the public internet. The private network is the security boundary.
 
 After deploying, smoke-test in a real browser through the proxy — confirm chat tokens **stream** in rather than arriving all at once, and that new-chat titling / redirects work.
 

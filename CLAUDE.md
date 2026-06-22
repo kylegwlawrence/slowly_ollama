@@ -4,7 +4,7 @@ Guidance for Claude Code when working in this repo.
 
 ## Project
 
-**olliellama** — a local-only chat app for Mac (M3) that talks to a locally-running
+**olliellama** — a local-only chat app that talks to a locally-running
 Ollama instance. No cloud calls; everything runs on-device. FastAPI + HTMX + Jinja
 + SQLite, served via uvicorn at `http://localhost:8000`. See `README.md` for
 end-user setup and `docs/plans/PLAN.md` for the build-time roadmap.
