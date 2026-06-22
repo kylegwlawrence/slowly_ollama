@@ -602,18 +602,26 @@ body {
 
 /* ===== Markdown output inside assistant bubbles ========================== */
 
+/* These rules style rendered-markdown output in two places: assistant chat
+   bubbles (.message--assistant .message__content) and the workspace file
+   viewer (.project-files__markdown). They share one source of truth so the
+   file view always matches the chat rendering. */
+
 /* Pico sets `color: var(--pico-color)` directly on p, ol, ul, etc., which
    beats inherited color. Override it explicitly on all descendants. */
-.message--assistant .message__content * {
+.message--assistant .message__content *,
+.project-files__markdown * {
   color: var(--text-primary);
 }
 
 /* Strip paragraph margins that Pico/browser defaults would add inside a
    bubble — use the bubble's own padding for breathing room instead. */
-.message--assistant .message__content p {
+.message--assistant .message__content p,
+.project-files__markdown p {
   margin: 0 0 var(--space-sm) 0;
 }
-.message--assistant .message__content p:last-child {
+.message--assistant .message__content p:last-child,
+.project-files__markdown p:last-child {
   margin-bottom: 0;
 }
 
@@ -622,29 +630,45 @@ body {
 .message--assistant .message__content h3,
 .message--assistant .message__content h4,
 .message--assistant .message__content h5,
-.message--assistant .message__content h6 {
+.message--assistant .message__content h6,
+.project-files__markdown h1,
+.project-files__markdown h2,
+.project-files__markdown h3,
+.project-files__markdown h4,
+.project-files__markdown h5,
+.project-files__markdown h6 {
   margin: var(--space-md) 0 var(--space-xs) 0;
   font-weight: 600;
   line-height: 1.3;
 }
-.message--assistant .message__content h1 { font-size: 1.25em; }
-.message--assistant .message__content h2 { font-size: 1.1em; }
+.message--assistant .message__content h1,
+.project-files__markdown h1 { font-size: 1.25em; }
+.message--assistant .message__content h2,
+.project-files__markdown h2 { font-size: 1.1em; }
 .message--assistant .message__content h3,
 .message--assistant .message__content h4,
 .message--assistant .message__content h5,
-.message--assistant .message__content h6 { font-size: 1em; }
+.message--assistant .message__content h6,
+.project-files__markdown h3,
+.project-files__markdown h4,
+.project-files__markdown h5,
+.project-files__markdown h6 { font-size: 1em; }
 
 .message--assistant .message__content ul,
-.message--assistant .message__content ol {
+.message--assistant .message__content ol,
+.project-files__markdown ul,
+.project-files__markdown ol {
   padding-left: var(--space-xl);
   margin: var(--space-xs) 0 var(--space-sm) 0;
 }
-.message--assistant .message__content li {
+.message--assistant .message__content li,
+.project-files__markdown li {
   margin-bottom: var(--space-xs);
 }
 
 /* Inline code */
-.message--assistant .message__content code {
+.message--assistant .message__content code,
+.project-files__markdown code {
   font-family: 'SF Mono', 'Fira Code', 'Menlo', monospace;
   font-size: 0.88em;
   background: var(--surface-hover);
@@ -653,7 +677,8 @@ body {
 }
 
 /* Fenced code blocks — reset the inline code style applied above */
-.message--assistant .message__content pre {
+.message--assistant .message__content pre,
+.project-files__markdown pre {
   background: var(--surface-hover);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -661,7 +686,8 @@ body {
   overflow-x: auto;
   margin: var(--space-sm) 0;
 }
-.message--assistant .message__content pre code {
+.message--assistant .message__content pre code,
+.project-files__markdown pre code {
   background: none;
   padding: 0;
   font-size: 0.88em;
@@ -669,7 +695,8 @@ body {
 }
 
 /* Blockquote */
-.message--assistant .message__content blockquote {
+.message--assistant .message__content blockquote,
+.project-files__markdown blockquote {
   border-left: 3px solid var(--border);
   margin: var(--space-sm) 0;
   padding-left: var(--space-md);
@@ -677,17 +704,21 @@ body {
 }
 
 /* Tables (tables extension) */
-.message--assistant .message__content table {
+.message--assistant .message__content table,
+.project-files__markdown table {
   border-collapse: collapse;
   margin: var(--space-sm) 0;
   font-size: 0.93em;
 }
 .message--assistant .message__content th,
-.message--assistant .message__content td {
+.message--assistant .message__content td,
+.project-files__markdown th,
+.project-files__markdown td {
   border: 1px solid var(--border);
   padding: var(--space-xs) var(--space-sm);
 }
-.message--assistant .message__content th {
+.message--assistant .message__content th,
+.project-files__markdown th {
   background: var(--surface-hover);
   font-weight: 600;
 }
