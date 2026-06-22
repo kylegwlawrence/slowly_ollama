@@ -102,6 +102,11 @@ async def list_models_endpoint(
         models = sorted(
             await ollama.list_tool_capable_models(client, host=target_host)
         )
+        # Phase 25: which of those models can think? Used to tag each option
+        # so the composer's Think select shows/hides as the model changes.
+        thinking_models = set(
+            await ollama.list_thinking_capable_models(client, host=target_host)
+        )
     except OllamaUnavailable:
         return templates.TemplateResponse(
             request=request,
@@ -127,6 +132,7 @@ async def list_models_endpoint(
         name="_model_options.html",
         context={
             "models": models,
+            "thinking_models": thinking_models,
             "error": None,
             "prepend_blank": prepend_blank,
         },

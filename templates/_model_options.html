@@ -17,7 +17,13 @@
   {% if prepend_blank|default(false) %}
     <option value="">(no default — use global)</option>
   {% endif %}
+  {# Phase 25: data-thinking lets app.js show/hide the composer Think select
+     for the selected model without a round trip. `thinking_models` is a set
+     of capable model names (absent on the project-settings picker → treated
+     as empty, so the attribute is simply "false" there). #}
   {% for model_name in models %}
-    <option value="{{ model_name }}">{{ model_name }}</option>
+    <option value="{{ model_name }}"
+      data-thinking="{{ 'true' if model_name in (thinking_models | default([])) else 'false' }}"
+      >{{ model_name }}</option>
   {% endfor %}
 {% endif %}

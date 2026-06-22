@@ -211,6 +211,12 @@ document.body.addEventListener('htmx:afterSwap', (e) => {
       }
     }
   }
+
+  // Phase 25: once the composer model options land (initial load or host
+  // switch), show/hide the Think chip for whatever model is now selected.
+  if (target instanceof HTMLSelectElement && target.id === 'composer-model') {
+    syncComposerThink();
+  }
 });
 
 // The `done` SSE event (and the synthetic done on reload-mid-generation)
@@ -391,6 +397,31 @@ document.body.addEventListener('change', (e) => {
     target: modelSelect,
     swap: 'innerHTML',
   });
+});
+
+// Phase 25: gate the composer Think chip on the selected model's capability.
+// The /models options carry data-thinking (see _model_options.html); when the
+// user picks a model whose option says data-thinking="true" we reveal the
+// Think select, otherwise we hide it and reset it to 'default' so a stale
+// 'off' from a previous model can't ride along on submit. Delegated on
+// document.body so it survives the composer being HTMX-swapped in.
+function syncComposerThink() {
+  const modelSelect = document.getElementById('composer-model');
+  const chip = document.getElementById('composer-think-chip');
+  if (!modelSelect || !chip) return;
+  const opt = modelSelect.selectedOptions[0];
+  const canThink = !!(opt && opt.dataset.thinking === 'true');
+  chip.hidden = !canThink;
+  if (!canThink) {
+    const thinkSelect = document.getElementById('composer-think-mode');
+    if (thinkSelect) thinkSelect.value = 'default';
+  }
+}
+
+document.body.addEventListener('change', (e) => {
+  if (e.target instanceof HTMLSelectElement && e.target.id === 'composer-model') {
+    syncComposerThink();
+  }
 });
 
 // (data-default re-selection lives inside the single htmx:afterSwap

@@ -71,6 +71,18 @@
                min="0" max="2" step="0.1"
                class="temp-chip__input">
       </div>
+      {# Phase 25: per-chat thinking mode for the chat-to-be. Hidden until
+         app.js confirms the selected model is thinking-capable (it reads the
+         model option's data-thinking and toggles `hidden` here). Starts at
+         'default'; submits as the `think_mode` form field. #}
+      <div class="tool-chip tool-chip--on temp-chip" id="composer-think-chip" hidden>
+        <span class="tool-chip__label">Think</span>
+        <select id="composer-think-mode" name="think_mode"
+                class="temp-chip__input">
+          <option value="default" selected>Default</option>
+          <option value="off">Off</option>
+        </select>
+      </div>
       <div class="tool-chip tool-chip--on temp-chip">
         <span class="tool-chip__label">Tool cap</span>
         <input id="composer-tool-iteration-cap" type="number"

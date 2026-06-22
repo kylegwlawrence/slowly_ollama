@@ -215,6 +215,12 @@ _CAPABILITY_TTL_SECONDS = 60.0
 # when populated: {"expires_at": float (monotonic), "names": list[str]}.
 _capability_cache: dict | None = None
 
+# Phase 25: a sibling cache for the "thinking"-capable model set, used to mark
+# composer model options so the Think select can show/hide as the model changes.
+# Same shape + TTL as ``_capability_cache``; kept separate so the two probes
+# don't invalidate each other.
+_thinking_cache: dict | None = None
+
 
 async def list_tool_capable_models(
     client: httpx.AsyncClient, host: str | None = None
@@ -288,6 +294,64 @@ async def list_tool_capable_models(
         # Only the primary host is cached; a second host's list bypasses the
         # host-agnostic cache (see the docstring).
         _capability_cache = {
+            "expires_at": now + _CAPABILITY_TTL_SECONDS,
+            "names": names,
+        }
+    return list(names)
+
+
+async def list_thinking_capable_models(
+    client: httpx.AsyncClient, host: str | None = None
+) -> list[str]:
+    """Return installed models whose /api/show capabilities include 'thinking'.
+
+    Phase 25 sibling to :func:`list_tool_capable_models`. The composer marks
+    each model option with this set so the Think select can show/hide as the
+    user changes models without a round trip. Same /api/show fan-out, TTL
+    cache, and host semantics — ``host=None`` is cached (primary host); a
+    non-primary ``host`` bypasses the cache (it's host-agnostic).
+
+    Args:
+        client: An ``httpx.AsyncClient`` pointed at the Ollama host.
+        host: Optional override base URL. ``None`` lists the primary host
+            (cached); when set, the probe targets that host and is NOT cached.
+
+    Returns:
+        Thinking-capable model names in /api/tags order. Models whose
+        /api/show probe fails are silently dropped (same policy as the
+        tool-capable list).
+
+    Raises:
+        OllamaUnavailable: /api/tags itself was unreachable or non-2xx.
+        OllamaProtocolError: /api/tags returned a body we couldn't parse.
+    """
+    global _thinking_cache
+    now = time.monotonic()
+    if host is None and _thinking_cache and _thinking_cache["expires_at"] > now:
+        return list(_thinking_cache["names"])
+
+    all_models = await list_models(client, host=host)
+
+    async def _supports(name: str) -> str | None:
+        """Probe one model; return its name if thinking-capable, else None."""
+        try:
+            resp = await client.post(_url("/api/show", host), json={"model": name})
+            resp.raise_for_status()
+            caps = resp.json().get("capabilities") or []
+            return name if "thinking" in caps else None
+        except (
+            httpx.HTTPError,
+            httpx.InvalidURL,
+            ValueError,
+            KeyError,
+            TypeError,
+        ):
+            return None
+
+    results = await asyncio.gather(*(_supports(n) for n in all_models))
+    names = [n for n in results if n is not None]
+    if host is None:
+        _thinking_cache = {
             "expires_at": now + _CAPABILITY_TTL_SECONDS,
             "names": names,
         }
@@ -386,13 +450,14 @@ async def model_supports_thinking(
 
 
 def reset_capability_cache() -> None:
-    """Drop the per-process capability cache.
+    """Drop the per-process capability caches (tools + thinking).
 
     Test helper — production never calls this; the TTL handles refresh.
     Tests poke it between cases so module-level state doesn't leak.
     """
-    global _capability_cache
+    global _capability_cache, _thinking_cache
     _capability_cache = None
+    _thinking_cache = None
 
 
 # ---------------------------------------------------------------------------

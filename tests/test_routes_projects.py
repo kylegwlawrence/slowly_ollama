@@ -389,6 +389,41 @@ def test_post_project_chats_creates_chat_in_project(
     assert row[0] == pid
 
 
+def test_post_project_chats_persists_think_mode(
+    make_client: ClientFactory,
+) -> None:
+    """The composer's think_mode field is persisted on the new chat."""
+    with make_client(_ollama_unreachable) as client:
+        pid = _default_project_id()
+        client.post(
+            f"/projects/{pid}/chats",
+            data={"model": "qwen3.5", "content": "hi", "think_mode": "off"},
+        )
+    with open_connection(os.environ["DB_PATH"]) as conn:
+        row = conn.execute(
+            "SELECT think_mode FROM conversations ORDER BY id DESC LIMIT 1;"
+        ).fetchone()
+    assert row[0] == "off"
+
+
+def test_post_project_chats_coerces_unknown_think_mode(
+    make_client: ClientFactory,
+) -> None:
+    """An unknown think_mode is coerced to 'default' so it can't later resolve
+    to think=true and 400 a non-thinking model. Omitting it also → 'default'."""
+    with make_client(_ollama_unreachable) as client:
+        pid = _default_project_id()
+        client.post(
+            f"/projects/{pid}/chats",
+            data={"model": "llama3", "content": "hi", "think_mode": "on"},
+        )
+    with open_connection(os.environ["DB_PATH"]) as conn:
+        row = conn.execute(
+            "SELECT think_mode FROM conversations ORDER BY id DESC LIMIT 1;"
+        ).fetchone()
+    assert row[0] == "default"
+
+
 # ---------------------------------------------------------------------------
 # Files tab
 # ---------------------------------------------------------------------------

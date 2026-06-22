@@ -506,6 +506,7 @@ async def create_project_chat_endpoint(
     content: Annotated[str, Form()],
     temperature: Annotated[float | None, Form()] = None,
     tool_iteration_cap: Annotated[int | None, Form()] = None,
+    think_mode: Annotated[str | None, Form()] = None,
     host: Annotated[str | None, Form()] = None,
 ) -> Response:
     """Create a chat inside a project AND save its first message.
@@ -528,6 +529,10 @@ async def create_project_chat_endpoint(
     if tool_iteration_cap is None:
         tool_iteration_cap = queries.get_default_tool_iteration_cap(db)
     tool_iteration_cap = max(1, min(10, tool_iteration_cap))
+    # Phase 25: coerce unknown values to 'default' so a stale/hand-crafted
+    # think_mode can't resolve to think=true and 400 a non-thinking model.
+    if think_mode not in {"default", "off"}:
+        think_mode = "default"
     host_spec = get_host(host)
     # The single `model` field is the model for the SELECTED host. On the
     # primary host it IS conversations.model. On a non-primary host it belongs
@@ -546,6 +551,7 @@ async def create_project_chat_endpoint(
         project_id=project_id,
         temperature=temperature,
         tool_iteration_cap=tool_iteration_cap,
+        think_mode=think_mode,
         active_host=host_spec.name if host_spec else None,
     )
     # Remember the picked model for the non-primary host. Empty ("" before

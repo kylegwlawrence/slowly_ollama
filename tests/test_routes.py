@@ -208,6 +208,38 @@ def test_models_returns_option_tags(make_client: ClientFactory) -> None:
     assert response.text.index("llama3") < response.text.index("qwen2.5")
 
 
+def test_models_options_carry_data_thinking(
+    make_client: ClientFactory,
+) -> None:
+    """Each model option is tagged data-thinking so the composer can gate the
+    Think select: 'true' for a thinking-capable model, 'false' otherwise."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(
+                200,
+                json={"models": [{"name": "qwen3.5"}, {"name": "llama3.2"}]},
+            )
+        assert request.url.path == "/api/show", request.url.path
+        body = json.loads(request.content)
+        caps = (
+            ["completion", "tools", "thinking"]
+            if body["model"] == "qwen3.5"
+            else ["completion", "tools"]
+        )
+        return httpx.Response(200, json={"capabilities": caps})
+
+    with make_client(handler) as client:
+        response = client.get("/models")
+
+    assert response.status_code == 200
+    # qwen3.5 is thinking-capable; llama3.2 is not.
+    qwen_idx = response.text.index('value="qwen3.5"')
+    llama_idx = response.text.index('value="llama3.2"')
+    assert 'data-thinking="true"' in response.text[qwen_idx:qwen_idx + 80]
+    assert 'data-thinking="false"' in response.text[llama_idx:llama_idx + 80]
+
+
 def test_models_excludes_non_tool_capable_models(
     make_client: ClientFactory,
 ) -> None:

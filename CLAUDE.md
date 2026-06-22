@@ -83,8 +83,12 @@ Highlights since:
   send + regenerate. Header **Think** chip (`_chat_panel.html`), gated on
   `ollama.model_supports_thinking` (a `/api/show` `"thinking"`-capability
   probe) so it only shows for reasoning models. `PATCH /chats/{id}/think-mode`.
+  The composer has a matching gated Think select: `/models` options carry
+  `data-thinking` (from `ollama.list_thinking_capable_models`, cached like the
+  tool list), and `app.js` (`syncComposerThink`) shows/hides the chip as the
+  model changes. `create_project_chat` accepts a `think_mode` form field.
 
-**797 tests passing**, 0 failing; coverage 100% on `app/backup.py` (note:
+**803 tests passing**, 0 failing; coverage 100% on `app/backup.py` (note:
 `app/copy_agent_workspace.py`, a standalone pull script, is uncovered by design).
 
 ## Working rules (override Claude defaults where they conflict)

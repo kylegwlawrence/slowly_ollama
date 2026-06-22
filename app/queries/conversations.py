@@ -38,6 +38,7 @@ def create_conversation(
     project_id: int | None = None,
     temperature: float = 0.8,
     tool_iteration_cap: int = 5,
+    think_mode: str = "default",
     active_host: str | None = None,
 ) -> Conversation:
     """Insert a new conversation row.
@@ -54,6 +55,9 @@ def create_conversation(
         temperature: Sampling temperature passed to Ollama (0.0–2.0).
         tool_iteration_cap: Per-turn cap on single-agent tool-call
             iterations (caller should clamp to 1–10).
+        think_mode: Per-chat thinking lever (phase 25). 'default' omits
+            Ollama's ``think`` key; 'off' suppresses the reasoning phase.
+            Caller validates; unknown values should be coerced to 'default'.
         active_host: Name of the Ollama host to start the chat on (a key in
             `app.hosts.HOSTS`, e.g. "host2"), or None for the primary host.
             A non-primary host's per-chat model is stored separately via
@@ -88,13 +92,13 @@ def create_conversation(
         row = conn.execute(
             "INSERT INTO conversations"
             " (name, model, name_locked, temperature, tool_iteration_cap,"
-            "  active_host, project_id, created_at, updated_at)"
-            " VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?)"
+            "  think_mode, active_host, project_id, created_at, updated_at)"
+            " VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?)"
             " RETURNING id, name, model, name_locked, temperature, tool_iteration_cap,"
             "          active_host, project_id, created_at, updated_at, think_mode;",
             (
-                name, model, temperature, tool_iteration_cap, active_host,
-                project_id, now, now,
+                name, model, temperature, tool_iteration_cap, think_mode,
+                active_host, project_id, now, now,
             ),
         ).fetchone()
     return _row_to_conversation(row)

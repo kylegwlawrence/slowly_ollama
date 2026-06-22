@@ -154,6 +154,15 @@ def test_create_conversation_defaults_think_mode(
     assert c.think_mode == "default"
 
 
+def test_create_conversation_accepts_think_mode(
+    conn: sqlite3.Connection,
+) -> None:
+    """create_conversation can seed think_mode (composer pre-disable path)."""
+    c = create_conversation(conn, "X", "qwen3.5", think_mode="off")
+    assert c.think_mode == "off"
+    assert get_conversation(conn, c.id).think_mode == "off"
+
+
 def test_set_conversation_think_mode_round_trips(
     conn: sqlite3.Connection,
 ) -> None:

@@ -23,6 +23,7 @@ from app.ollama import (
     list_loaded_models,
     list_models,
     list_tool_capable_models,
+    list_thinking_capable_models,
     maybe_tool_call,
     model_supports_thinking,
     model_supports_tools,
@@ -783,6 +784,53 @@ async def test_model_supports_tools_reflects_capability_membership() -> None:
         # A name Ollama doesn't even know about behaves like "not capable"
         # — same outcome as embed-only above.
         assert await model_supports_tools(client, "no-such-model") is False
+
+
+@pytest.mark.asyncio
+async def test_list_thinking_capable_models_filters_to_thinking() -> None:
+    """Only models whose /api/show capabilities include 'thinking' come back."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(
+                200,
+                json={"models": [{"name": "qwen3.5"}, {"name": "llama3.2"}]},
+            )
+        if request.url.path == "/api/show":
+            body = json.loads(request.content)
+            caps = (
+                ["completion", "tools", "thinking"]
+                if body["model"] == "qwen3.5"
+                else ["completion", "tools"]
+            )
+            return httpx.Response(200, json={"capabilities": caps})
+        return httpx.Response(404)
+
+    async with _client_with(handler) as client:
+        names = await list_thinking_capable_models(client)
+    assert names == ["qwen3.5"]
+
+
+@pytest.mark.asyncio
+async def test_list_thinking_capable_models_drops_models_where_show_errors() -> None:
+    """A /api/show failure on one model drops it, not the whole list."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(
+                200,
+                json={"models": [{"name": "qwen3.5"}, {"name": "broken"}]},
+            )
+        if request.url.path == "/api/show":
+            body = json.loads(request.content)
+            if body["model"] == "broken":
+                return httpx.Response(500)
+            return httpx.Response(
+                200, json={"capabilities": ["completion", "thinking"]}
+            )
+        return httpx.Response(404)
+
+    async with _client_with(handler) as client:
+        names = await list_thinking_capable_models(client)
+    assert names == ["qwen3.5"]
 
 
 @pytest.mark.asyncio
