@@ -64,7 +64,7 @@ def test_chat_panel_collapses_controls_behind_gear(
     assert 'class="chat-panel__controls"' in response.text
     # Name + model badge remain outside the collapsible wrapper.
     assert 'class="chat-panel__name"' in response.text
-    assert f'id="agent-indicator-{chat_id}"' in response.text
+    assert f'id="host-indicator-{chat_id}"' in response.text
 
 
 def test_stylesheet_ships_mobile_breakpoint() -> None:

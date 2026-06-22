@@ -297,7 +297,7 @@ def test_models_endpoint_targets_configured_host(
     passes it to list_tool_capable_models, so the composer's single model
     dropdown shows the selected machine's models rather than the primary's.
     """
-    from app.agents import AGENTS, AgentSpec
+    from app.hosts import HOSTS, HostSpec
 
     captured: dict = {}
 
@@ -310,11 +310,10 @@ def test_models_endpoint_targets_configured_host(
     )
     # Inject a configured host into the registry (independent of env state).
     monkeypatch.setitem(
-        AGENTS,
+        HOSTS,
         "host2",
-        AgentSpec(
+        HostSpec(
             name="host2", label="host2", description="d", model="m",
-            system_prompt="", tools=frozenset(),
             ollama_host="http://host1:11434",
         ),
     )
@@ -1895,21 +1894,21 @@ def test_set_remote_ollama_enabled_persists_on(
     assert "checked" in settings.text
 
 
-def test_agent_overrides_respects_remote_toggle(tmp_path: Path) -> None:
-    """`_agent_overrides` routes a chat on the "host2" host to that host with
+def test_host_overrides_respects_remote_toggle(tmp_path: Path) -> None:
+    """`_host_overrides` routes a chat on the "host2" host to that host with
     its pinned model when the toggle is on, and falls back to the primary host
     (chat's pinned model, no host) when the toggle is off — without erroring or
     trying to reach the second host."""
-    from app.agents import AGENTS, AgentSpec
-    from app.routes._helpers import _agent_overrides
+    from app.hosts import HOSTS, HostSpec
+    from app.routes._helpers import _host_overrides
 
     db_path = tmp_path / "chats.db"
     initialize_database(db_path)
     # Inject a fake "host2" host so the test doesn't depend on env state.
-    saved = AGENTS.get("host2")
-    AGENTS["host2"] = AgentSpec(
+    saved = HOSTS.get("host2")
+    HOSTS["host2"] = HostSpec(
         name="host2", label="host2", description="d",
-        model="host2-model", system_prompt="", tools=frozenset(),
+        model="host2-model",
         ollama_host="http://host1:11434",
     )
     try:
@@ -1917,80 +1916,80 @@ def test_agent_overrides_respects_remote_toggle(tmp_path: Path) -> None:
             chat = queries.create_conversation(
                 conn, "test", "local-model"
             )
-            queries.set_active_agent(conn, chat.id, "host2")
+            queries.set_active_host(conn, chat.id, "host2")
             chat = queries.get_conversation(conn, chat.id)
 
             # Toggle ON (default): route to the host2 host on its pinned
             # model. A host is not an agent — no prompt/allowlist override.
-            ov = _agent_overrides(chat, conn)
+            ov = _host_overrides(chat, conn)
             assert ov["model"] == "host2-model"
             assert ov["ollama_host"] == "http://host1:11434"
 
             # Toggle OFF: fall back to the primary host — chat's pinned model,
             # no host, no overrides.
             queries.set_remote_ollama_enabled(conn, False)
-            ov = _agent_overrides(chat, conn)
+            ov = _host_overrides(chat, conn)
             assert ov["model"] == "local-model"
             assert ov["ollama_host"] is None
             assert ov["think"] is None
     finally:
         if saved is None:
-            AGENTS.pop("host2", None)
+            HOSTS.pop("host2", None)
         else:
-            AGENTS["host2"] = saved
+            HOSTS["host2"] = saved
 
 
-def test_agent_overrides_uses_per_chat_host_model(tmp_path: Path) -> None:
-    """On a non-primary host, `_agent_overrides` uses the chat's per-host model
+def test_host_overrides_uses_per_chat_host_model(tmp_path: Path) -> None:
+    """On a non-primary host, `_host_overrides` uses the chat's per-host model
     (chat_host_models), falling back to the host spec's default_model when
     it's unset."""
-    from app.agents import AGENTS, AgentSpec
-    from app.routes._helpers import _agent_overrides
+    from app.hosts import HOSTS, HostSpec
+    from app.routes._helpers import _host_overrides
 
     db_path = tmp_path / "chats.db"
     initialize_database(db_path)
-    saved = AGENTS.get("host2")
-    AGENTS["host2"] = AgentSpec(
+    saved = HOSTS.get("host2")
+    HOSTS["host2"] = HostSpec(
         name="host2", label="host2", description="d",
-        model="default-model", system_prompt="", tools=frozenset(),
+        model="default-model",
         ollama_host="http://host1:11434",
     )
     try:
         with open_connection(db_path) as conn:
             # Per-chat host model set → used verbatim on the host2 host.
             picked = queries.create_conversation(
-                conn, "t", "local-model", active_agent="host2",
+                conn, "t", "local-model", active_host="host2",
             )
             queries.set_chat_host_model(conn, picked.id, "host2", "picked-model")
-            ov = _agent_overrides(picked, conn)
+            ov = _host_overrides(picked, conn)
             assert ov["model"] == "picked-model"
             assert ov["ollama_host"] == "http://host1:11434"
 
             # No per-chat model → falls back to the host spec's default_model.
             default = queries.create_conversation(
-                conn, "t2", "local-model", active_agent="host2",
+                conn, "t2", "local-model", active_host="host2",
             )
-            ov2 = _agent_overrides(default, conn)
+            ov2 = _host_overrides(default, conn)
             assert ov2["model"] == "default-model"
     finally:
         if saved is None:
-            AGENTS.pop("host2", None)
+            HOSTS.pop("host2", None)
         else:
-            AGENTS["host2"] = saved
+            HOSTS["host2"] = saved
 
 
 def test_composer_host_context_uses_project_default_host(tmp_path: Path) -> None:
     """`_composer_host_context` pre-selects the project's default host and that
     host's default model when the host is still configured."""
-    from app.agents import AGENTS, AgentSpec
+    from app.hosts import HOSTS, HostSpec
     from app.routes._helpers import _composer_host_context
 
     db_path = tmp_path / "chats.db"
     initialize_database(db_path)
-    saved = AGENTS.get("host2")
-    AGENTS["host2"] = AgentSpec(
+    saved = HOSTS.get("host2")
+    HOSTS["host2"] = HostSpec(
         name="host2", label="host2", description="d",
-        model="host2-default", system_prompt="", tools=frozenset(),
+        model="host2-default",
         ollama_host="http://host1:11434",
     )
     try:
@@ -2007,9 +2006,9 @@ def test_composer_host_context_uses_project_default_host(tmp_path: Path) -> None
             assert ctx["primary_default_model"] == "proj-model"
     finally:
         if saved is None:
-            AGENTS.pop("host2", None)
+            HOSTS.pop("host2", None)
         else:
-            AGENTS["host2"] = saved
+            HOSTS["host2"] = saved
 
 
 def test_composer_host_context_falls_back_when_host_removed(
@@ -2017,13 +2016,13 @@ def test_composer_host_context_falls_back_when_host_removed(
 ) -> None:
     """A project pinned to a host that's since left the registry falls back to
     the primary host (empty initial host + the primary default model)."""
-    from app.agents import AGENTS
+    from app.hosts import HOSTS
     from app.routes._helpers import _composer_host_context
 
     db_path = tmp_path / "chats.db"
     initialize_database(db_path)
     # Ensure the pinned host name is NOT in the registry.
-    saved = AGENTS.pop("gone", None)
+    saved = HOSTS.pop("gone", None)
     try:
         with open_connection(db_path) as conn:
             project = queries.create_project(
@@ -2035,7 +2034,7 @@ def test_composer_host_context_falls_back_when_host_removed(
             assert ctx["primary_default_model"] == "proj-model"
     finally:
         if saved is not None:
-            AGENTS["gone"] = saved
+            HOSTS["gone"] = saved
 
 
 def test_settings_renders_default_tool_cap_input(
@@ -2778,7 +2777,7 @@ def _tool_capable_handler(
 ) -> httpx.Response:
     """Stub that advertises ``"tools"`` capability for every model.
 
-    Used by tests that need GET /chats/{id} (or a chip/agent endpoint) to
+    Used by tests that need GET /chats/{id} (or a chip/host endpoint) to
     complete its ``model_supports_tools`` lookup without hitting the default
     ``_ollama_unreachable`` handler (which would return False and hide the
     tool chips).
@@ -2798,50 +2797,50 @@ def _tool_capable_handler(
 
 
 # ---------------------------------------------------------------------------
-# Phase 16: agent picker — POST /chats/{id}/agent + create-with-agent
+# Phase 16: host picker — POST /chats/{id}/host + create-with-agent
 # ---------------------------------------------------------------------------
 
 
-def test_set_chat_agent_persists_and_returns_indicator(
+def test_set_chat_host_persists_and_returns_indicator(
     make_client: ClientFactory,
 ) -> None:
-    """POST /chats/{id}/agent stores the host and OOB-swaps the indicator."""
-    from app.agents import AGENTS, AgentSpec
+    """POST /chats/{id}/host stores the host and OOB-swaps the indicator."""
+    from app.hosts import HOSTS, HostSpec
 
     db_path = Path(os.environ["DB_PATH"])
     initialize_database(db_path)
     with open_connection(db_path) as conn:
         chat = queries.create_conversation(conn, name="t", model="llama3")
 
-    saved = AGENTS.get("host2")
-    AGENTS["host2"] = AgentSpec(
+    saved = HOSTS.get("host2")
+    HOSTS["host2"] = HostSpec(
         name="host2", label="host2", description="d",
-        model="host2-model", system_prompt="", tools=frozenset(),
+        model="host2-model",
         ollama_host="http://host1:11434",
     )
     try:
         with make_client(_tool_capable_handler) as client:
             response = client.post(
-                f"/chats/{chat.id}/agent",
-                data={"agent": "host2"},
+                f"/chats/{chat.id}/host",
+                data={"host": "host2"},
                 headers={"HX-Request": "true"},
             )
 
         assert response.status_code == 200
-        assert f'id="agent-indicator-{chat.id}"' in response.text
+        assert f'id="host-indicator-{chat.id}"' in response.text
         assert "hx-swap-oob" in response.text
         # Indicator names the selected host's pinned model.
         assert "host2-model" in response.text
         with open_connection(db_path) as conn:
-            assert queries.get_conversation(conn, chat.id).active_agent == "host2"
+            assert queries.get_conversation(conn, chat.id).active_host == "host2"
     finally:
         if saved is None:
-            AGENTS.pop("host2", None)
+            HOSTS.pop("host2", None)
         else:
-            AGENTS["host2"] = saved
+            HOSTS["host2"] = saved
 
 
-def test_set_chat_agent_normal_clears_active_agent(
+def test_set_chat_host_normal_clears_active_host(
     make_client: ClientFactory,
 ) -> None:
     """Posting the empty (Normal) value clears the chat's active agent."""
@@ -2849,25 +2848,25 @@ def test_set_chat_agent_normal_clears_active_agent(
     initialize_database(db_path)
     with open_connection(db_path) as conn:
         chat = queries.create_conversation(
-            conn, name="t", model="llama3", active_agent="research"
+            conn, name="t", model="llama3", active_host="research"
         )
 
     with make_client(_tool_capable_handler) as client:
         response = client.post(
-            f"/chats/{chat.id}/agent",
-            data={"agent": ""},
+            f"/chats/{chat.id}/host",
+            data={"host": ""},
             headers={"HX-Request": "true"},
         )
 
     assert response.status_code == 200
     with open_connection(db_path) as conn:
-        assert queries.get_conversation(conn, chat.id).active_agent is None
+        assert queries.get_conversation(conn, chat.id).active_host is None
 
 
-def test_set_chat_agent_unknown_name_falls_back_to_normal(
+def test_set_chat_host_unknown_name_falls_back_to_normal(
     make_client: ClientFactory,
 ) -> None:
-    """An unknown agent name resolves to Normal (active_agent NULL)."""
+    """An unknown agent name resolves to Normal (active_host NULL)."""
     db_path = Path(os.environ["DB_PATH"])
     initialize_database(db_path)
     with open_connection(db_path) as conn:
@@ -2875,46 +2874,46 @@ def test_set_chat_agent_unknown_name_falls_back_to_normal(
 
     with make_client(_tool_capable_handler) as client:
         response = client.post(
-            f"/chats/{chat.id}/agent",
-            data={"agent": "does_not_exist"},
+            f"/chats/{chat.id}/host",
+            data={"host": "does_not_exist"},
         )
 
     assert response.status_code == 200
     with open_connection(db_path) as conn:
-        assert queries.get_conversation(conn, chat.id).active_agent is None
+        assert queries.get_conversation(conn, chat.id).active_host is None
 
 
-def test_set_chat_agent_404_unknown_conversation(
+def test_set_chat_host_404_unknown_conversation(
     make_client: ClientFactory,
 ) -> None:
-    """POST /chats/999/agent → 404 when the conversation is missing."""
+    """POST /chats/999/host → 404 when the conversation is missing."""
     db_path = Path(os.environ["DB_PATH"])
     initialize_database(db_path)
     with make_client(_tool_capable_handler) as client:
-        response = client.post("/chats/999/agent", data={"agent": "research"})
+        response = client.post("/chats/999/host", data={"host": "research"})
     assert response.status_code == 404
 
 
-def test_create_chat_with_agent_persists_active_agent(
+def test_create_chat_with_host_persists_active_host(
     make_client: ClientFactory,
 ) -> None:
     """POST /chats with an `agent` field starts the chat on that host."""
-    from app.agents import AGENTS, AgentSpec
+    from app.hosts import HOSTS, HostSpec
 
     db_path = Path(os.environ["DB_PATH"])
     initialize_database(db_path)
 
-    saved = AGENTS.get("host2")
-    AGENTS["host2"] = AgentSpec(
+    saved = HOSTS.get("host2")
+    HOSTS["host2"] = HostSpec(
         name="host2", label="host2", description="d",
-        model="host2-model", system_prompt="", tools=frozenset(),
+        model="host2-model",
         ollama_host="http://host1:11434",
     )
     try:
         with make_client(_tool_capable_handler) as client:
             response = client.post(
                 f"/projects/{_default_project_id()}/chats",
-                data={"model": "llama3", "content": "hi", "agent": "host2"},
+                data={"model": "llama3", "content": "hi", "host": "host2"},
             )
 
         assert response.status_code == 201
@@ -2923,13 +2922,13 @@ def test_create_chat_with_agent_persists_active_agent(
         chat_id = int(_re.search(r'data-chat-id="(\d+)"', response.text).group(1))
         with open_connection(db_path) as conn:
             assert (
-                queries.get_conversation(conn, chat_id).active_agent == "host2"
+                queries.get_conversation(conn, chat_id).active_host == "host2"
             )
     finally:
         if saved is None:
-            AGENTS.pop("host2", None)
+            HOSTS.pop("host2", None)
         else:
-            AGENTS["host2"] = saved
+            HOSTS["host2"] = saved
 
 
 def test_create_chat_on_host_stores_model_in_side_table(
@@ -2938,7 +2937,7 @@ def test_create_chat_on_host_stores_model_in_side_table(
     """POST /chats on a non-primary host stores the picked `model` in
     chat_host_models for that host; conversations.model keeps the primary
     fallback (the global default) so a later switch to primary still works."""
-    from app.agents import AGENTS, AgentSpec
+    from app.hosts import HOSTS, HostSpec
 
     db_path = Path(os.environ["DB_PATH"])
     initialize_database(db_path)
@@ -2947,10 +2946,10 @@ def test_create_chat_on_host_stores_model_in_side_table(
     with open_connection(db_path) as conn:
         queries.set_default_model(conn, "primary-default")
 
-    saved = AGENTS.get("host2")
-    AGENTS["host2"] = AgentSpec(
+    saved = HOSTS.get("host2")
+    HOSTS["host2"] = HostSpec(
         name="host2", label="host2", description="d",
-        model="host2-default", system_prompt="", tools=frozenset(),
+        model="host2-default",
         ollama_host="http://host1:11434",
     )
     try:
@@ -2960,7 +2959,7 @@ def test_create_chat_on_host_stores_model_in_side_table(
                 data={
                     "model": "mac-model:1",
                     "content": "hi",
-                    "agent": "host2",
+                    "host": "host2",
                 },
             )
 
@@ -2977,12 +2976,12 @@ def test_create_chat_on_host_stores_model_in_side_table(
         assert host_model == "mac-model:1"
         # The primary column keeps the global default as a safe fallback.
         assert conv.model == "primary-default"
-        assert conv.active_agent == "host2"
+        assert conv.active_host == "host2"
     finally:
         if saved is None:
-            AGENTS.pop("host2", None)
+            HOSTS.pop("host2", None)
         else:
-            AGENTS["host2"] = saved
+            HOSTS["host2"] = saved
 
 
 # ---------------------------------------------------------------------------
@@ -4074,7 +4073,7 @@ def test_unload_model_endpoint_unloads_chat_pinned_model(
     # Ollama got the documented unload request.
     assert seen == [{"model": "llama3", "keep_alive": 0}]
     # Chip is returned in the unloaded state (so HTMX swaps it grey).
-    assert f'id="agent-indicator-{chat.id}"' in response.text
+    assert f'id="host-indicator-{chat.id}"' in response.text
     assert 'data-state="unloaded"' in response.text
     # No hx-swap-oob — this is a direct hx-target="this" swap, not OOB.
     assert "hx-swap-oob" not in response.text
@@ -4085,21 +4084,21 @@ def test_unload_model_endpoint_uses_agent_model_when_agent_active(
 ) -> None:
     """Second host selected → unload that host's pinned model, not the chat's
     pinned model (the chip shows the host's model)."""
-    from app.agents import AGENTS, AgentSpec
+    from app.hosts import HOSTS, HostSpec
 
     db_path = Path(os.environ["DB_PATH"])
     initialize_database(db_path)
 
-    saved = AGENTS.get("host2")
-    AGENTS["host2"] = AgentSpec(
+    saved = HOSTS.get("host2")
+    HOSTS["host2"] = HostSpec(
         name="host2", label="host2", description="d",
-        model="host2-model", system_prompt="", tools=frozenset(),
+        model="host2-model",
         ollama_host="http://host1:11434",
     )
     try:
         with open_connection(db_path) as conn:
             chat = queries.create_conversation(
-                conn, name="t", model="llama3", active_agent="host2"
+                conn, name="t", model="llama3", active_host="host2"
             )
 
         seen: list[dict] = []
@@ -4110,9 +4109,9 @@ def test_unload_model_endpoint_uses_agent_model_when_agent_active(
         assert seen == [{"model": "host2-model", "keep_alive": 0}]
     finally:
         if saved is None:
-            AGENTS.pop("host2", None)
+            HOSTS.pop("host2", None)
         else:
-            AGENTS["host2"] = saved
+            HOSTS["host2"] = saved
 
 
 def test_chat_header_indicator_shows_effective_model(
@@ -4121,15 +4120,15 @@ def test_chat_header_indicator_shows_effective_model(
     """The header chip reads '{host} · {effective_model}': the primary host's
     pinned model for a Normal chat, and a non-primary host's per-chat model
     (from chat_host_models, NOT the host default) when that host is selected."""
-    from app.agents import AGENTS, AgentSpec
+    from app.hosts import HOSTS, HostSpec
 
     db_path = Path(os.environ["DB_PATH"])
     initialize_database(db_path)
 
-    saved = AGENTS.get("host2")
-    AGENTS["host2"] = AgentSpec(
+    saved = HOSTS.get("host2")
+    HOSTS["host2"] = HostSpec(
         name="host2", label="host2", description="d",
-        model="host2-default", system_prompt="", tools=frozenset(),
+        model="host2-default",
         ollama_host="http://host1:11434",
     )
     try:
@@ -4140,7 +4139,7 @@ def test_chat_header_indicator_shows_effective_model(
             )
             on_host = queries.create_conversation(
                 conn, name="h", model="llama3", project_id=pid,
-                active_agent="host2",
+                active_host="host2",
             )
             queries.set_chat_host_model(
                 conn, on_host.id, "host2", "qwen2.5:14b"
@@ -4156,9 +4155,9 @@ def test_chat_header_indicator_shows_effective_model(
         assert "host2 · qwen2.5:14b" in r2.text
     finally:
         if saved is None:
-            AGENTS.pop("host2", None)
+            HOSTS.pop("host2", None)
         else:
-            AGENTS["host2"] = saved
+            HOSTS["host2"] = saved
 
 
 def test_unload_model_endpoint_404s_on_unknown_chat(
@@ -4213,6 +4212,6 @@ def test_send_message_oob_swaps_chip_back_to_loaded(
 
     assert response.status_code == 200
     # The OOB chip is appended after the user bubble + placeholder.
-    assert f'id="agent-indicator-{chat.id}"' in response.text
+    assert f'id="host-indicator-{chat.id}"' in response.text
     assert 'data-state="loaded"' in response.text
     assert 'hx-swap-oob="true"' in response.text

@@ -75,8 +75,8 @@ CREATE TABLE IF NOT EXISTS conversations (
     -- Per-chat cap on tool-call iterations per turn (1–10).
     tool_iteration_cap INTEGER NOT NULL DEFAULT 5,
     -- Name of the selected Ollama host for this chat (a key in
-    -- app.agents.AGENTS, e.g. "host2"), or NULL for the primary host.
-    active_agent TEXT,
+    -- app.hosts.HOSTS, e.g. "host2"), or NULL for the primary host.
+    active_host TEXT,
     -- Per-chat model for a non-primary host lives in `chat_host_models`
     -- (keyed by host name), not here. `model` above is the primary-host
     -- model, kept NOT NULL so a chat always has a valid model to fall back to.
@@ -159,7 +159,7 @@ CREATE TABLE IF NOT EXISTS app_settings (
 
 -- Per-chat model for each non-primary Ollama host the chat has picked a
 -- model for. One row per (conversation_id, host_name); host_name matches a
--- key in app.agents.AGENTS (e.g. "host2"). A missing row means "use that
+-- key in app.hosts.HOSTS (e.g. "host2"). A missing row means "use that
 -- host's default model" (the host's `default_model` from config). The
 -- primary host's model is NOT stored here — it lives in conversations.model.
 -- Recording the host name (rather than a single conversations column) lets a
@@ -302,7 +302,7 @@ def _ensure_conversations_project_id_column(
             name_locked  INTEGER NOT NULL DEFAULT 0,
             temperature  REAL NOT NULL DEFAULT 0.8,
             tool_iteration_cap INTEGER NOT NULL DEFAULT 5,
-            active_agent TEXT,
+            active_host TEXT,
             project_id   INTEGER NOT NULL
                 REFERENCES projects(id) ON DELETE CASCADE,
             created_at   TEXT NOT NULL,
@@ -310,9 +310,9 @@ def _ensure_conversations_project_id_column(
         );
         INSERT INTO conversations_new
             (id, name, model, name_locked, temperature, tool_iteration_cap,
-             active_agent, project_id, created_at, updated_at)
+             active_host, project_id, created_at, updated_at)
         SELECT id, name, model, name_locked, temperature, tool_iteration_cap,
-               active_agent, project_id, created_at, updated_at
+               active_host, project_id, created_at, updated_at
           FROM conversations;
         DROP TABLE conversations;
         ALTER TABLE conversations_new RENAME TO conversations;
@@ -364,13 +364,21 @@ def _ensure_projects_system_prompt_column(conn: sqlite3.Connection) -> None:
         )
 
 
-def _ensure_conversations_active_agent_column(conn: sqlite3.Connection) -> None:
-    """Backfill the ``active_agent`` column on conversations tables that pre-date phase 16.
+def _ensure_conversations_active_host_column(conn: sqlite3.Connection) -> None:
+    """Ensure ``conversations.active_host`` exists, migrating from ``active_agent``.
 
-    Nullable with no default — existing chats come back as NULL, i.e. the
-    Normal (plain-chat) agent. Mirrors the temperature / tool_iteration_cap
-    backfills: ``PRAGMA table_info`` check first so the ``ALTER TABLE`` is a
-    no-op on fresh DBs where ``_SCHEMA_SQL`` already created the column.
+    Three cases, all idempotent (``PRAGMA table_info`` check first):
+
+    1. Fresh / already-migrated DB — ``active_host`` present → no-op.
+    2. Phase 16–22 DB — has the misnamed ``active_agent`` column (the host
+       picker stored its selection there). Phase 23 renames it in place via
+       ``ALTER TABLE … RENAME COLUMN`` (SQLite ≥ 3.25; Python 3.13 ships much
+       newer), preserving every stored selection.
+    3. Pre-phase-16 DB — neither column exists. Add ``active_host`` as a
+       nullable column (NULL = the primary host).
+
+    Runs BEFORE the project_id rebuild, which references ``active_host`` — so on
+    a legacy DB the column is already renamed by the time that step copies rows.
 
     Args:
         conn: Open SQLite connection.
@@ -378,9 +386,16 @@ def _ensure_conversations_active_agent_column(conn: sqlite3.Connection) -> None:
     columns = {row[1] for row in conn.execute(
         "PRAGMA table_info(conversations);"
     )}
-    if "active_agent" not in columns:
+    if "active_host" in columns:
+        return
+    if "active_agent" in columns:
         conn.execute(
-            "ALTER TABLE conversations ADD COLUMN active_agent TEXT;"
+            "ALTER TABLE conversations"
+            " RENAME COLUMN active_agent TO active_host;"
+        )
+    else:
+        conn.execute(
+            "ALTER TABLE conversations ADD COLUMN active_host TEXT;"
         )
 
 
@@ -615,9 +630,11 @@ def initialize_database(path: Path | None = None) -> Path:
         # Per-chat tool-iteration cap: backfill the tool_iteration_cap
         # column on conversations tables created before this phase.
         _ensure_conversations_tool_iteration_cap_column(conn)
-        # Phase 16: backfill the active_agent column on conversations
-        # tables created before user-invoked agents existed.
-        _ensure_conversations_active_agent_column(conn)
+        # Phase 23: ensure conversations.active_host exists, renaming the
+        # legacy active_host column in place (phase 16's host-picker store).
+        # MUST run before the project_id rebuild below, which copies
+        # active_host.
+        _ensure_conversations_active_host_column(conn)
         # Phase 17: ensure a "Default" project exists, then add
         # conversations.project_id (NOT NULL FK) and backfill every
         # legacy chat to point at Default.

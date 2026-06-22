@@ -42,14 +42,14 @@
       {# Machine picker, to the LEFT of the model selector. It selects which
          host the chat runs on; the single model dropdown to its right
          re-fetches THAT host's models on change (app.js). Submits as the
-         `agent` form field with POST /chats. #}
-      <label class="composer__toolbar-label" for="composer-agent">Ollama host</label>
+         `host` form field with POST /chats. #}
+      <label class="composer__toolbar-label" for="composer-host">Ollama host</label>
       {# Pre-select the initial host (project default, or primary). The host
          options carry `data-default-model` (via primary_default_model) so
          app.js can pre-select the right default when the machine changes. #}
-      {% set selected_agent = composer_initial_host|default("") or "" %}
-      {% set select_id = "composer-agent" %}
-      {% include "_agent_select.html" %}
+      {% set selected_host = composer_initial_host|default("") or "" %}
+      {% set select_id = "composer-host" %}
+      {% include "_host_select.html" %}
       <label class="composer__toolbar-label" for="composer-model">Model</label>
       {# ONE model dropdown for every machine. It loads the initially-selected
          host's models on insert (hx-get below) and re-loads when the machine

@@ -225,7 +225,7 @@ def get_remote_ollama_enabled(conn: sqlite3.Connection) -> bool:
     Default (no row): ``True``. Storing the key explicitly with value
     ``"0"`` disables the Remote agent everywhere — it's filtered out of
     the chat-header dropdown and existing chats with
-    ``active_agent="remote"`` degrade to Normal on their next turn.
+    ``active_host="remote"`` degrade to Normal on their next turn.
     Defaulting to ``True`` preserves the post-phase-20a behavior on
     upgrade: if you've already set the env vars and used the agent, the
     DB row simply doesn't exist yet and everything keeps working.

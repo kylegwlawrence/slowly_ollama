@@ -1,6 +1,6 @@
 """Per-chat model for each non-primary Ollama host.
 
-A chat can be routed to any configured host (see ``app.agents``). The primary
+A chat can be routed to any configured host (see ``app.hosts``). The primary
 host's model lives in ``conversations.model``; a non-primary host's per-chat
 model lives here in ``chat_host_models``, keyed by host name. A missing row
 means "use that host's default model" (the host's ``default_model`` from
@@ -22,7 +22,7 @@ def set_chat_host_model(
     Args:
         conn: Open SQLite connection.
         conversation_id: Id of the conversation.
-        host_name: The host's name (a key in ``app.agents.AGENTS``, e.g.
+        host_name: The host's name (a key in ``app.hosts.HOSTS``, e.g.
             "host2"). The primary host is NOT stored here — its model lives
             in ``conversations.model``.
         model: The Ollama model tag to run on that host for this chat.
@@ -50,7 +50,7 @@ def get_chat_host_model(
     Args:
         conn: Open SQLite connection.
         conversation_id: Id of the conversation.
-        host_name: The host's name (a key in ``app.agents.AGENTS``).
+        host_name: The host's name (a key in ``app.hosts.HOSTS``).
 
     Returns:
         The stored model tag, or ``None`` when the chat has no remembered

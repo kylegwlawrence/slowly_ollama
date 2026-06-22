@@ -33,7 +33,7 @@ from app.queries import (
     list_messages,
     rename_conversation,
     replace_last_assistant_message,
-    set_active_agent,
+    set_active_host,
     set_chat_host_model,
     set_conversation_temperature,
     set_conversation_tool_iteration_cap,
@@ -715,43 +715,43 @@ def test_resolve_num_ctx_for_project_falls_back_to_global(
 # ---------------------------------------------------------------------------
 
 
-def test_create_conversation_defaults_active_agent_none(
+def test_create_conversation_defaults_active_host_none(
     conn: sqlite3.Connection,
 ) -> None:
-    """A new chat starts on the Normal agent (active_agent NULL)."""
+    """A new chat starts on the Normal agent (active_host NULL)."""
     chat = create_conversation(conn, name="t", model="m")
-    assert chat.active_agent is None
-    assert get_conversation(conn, chat.id).active_agent is None
+    assert chat.active_host is None
+    assert get_conversation(conn, chat.id).active_host is None
 
 
-def test_create_conversation_persists_active_agent(
+def test_create_conversation_persists_active_host(
     conn: sqlite3.Connection,
 ) -> None:
     """Starting a chat with an agent stores its name."""
     chat = create_conversation(
-        conn, name="t", model="m", active_agent="research"
+        conn, name="t", model="m", active_host="research"
     )
-    assert chat.active_agent == "research"
-    assert get_conversation(conn, chat.id).active_agent == "research"
+    assert chat.active_host == "research"
+    assert get_conversation(conn, chat.id).active_host == "research"
 
 
-def test_set_active_agent_sets_and_clears(conn: sqlite3.Connection) -> None:
-    """set_active_agent updates the row and round-trips through reads."""
+def test_set_active_host_sets_and_clears(conn: sqlite3.Connection) -> None:
+    """set_active_host updates the row and round-trips through reads."""
     chat = create_conversation(conn, name="t", model="m")
-    updated = set_active_agent(conn, chat.id, "content_generator")
-    assert updated.active_agent == "content_generator"
-    assert get_conversation(conn, chat.id).active_agent == "content_generator"
-    cleared = set_active_agent(conn, chat.id, None)
-    assert cleared.active_agent is None
-    assert get_conversation(conn, chat.id).active_agent is None
+    updated = set_active_host(conn, chat.id, "content_generator")
+    assert updated.active_host == "content_generator"
+    assert get_conversation(conn, chat.id).active_host == "content_generator"
+    cleared = set_active_host(conn, chat.id, None)
+    assert cleared.active_host is None
+    assert get_conversation(conn, chat.id).active_host is None
 
 
-def test_set_active_agent_unknown_conversation_raises(
+def test_set_active_host_unknown_conversation_raises(
     conn: sqlite3.Connection,
 ) -> None:
     """Setting the agent on a missing chat raises LookupError."""
     with pytest.raises(LookupError):
-        set_active_agent(conn, 9999, "research")
+        set_active_host(conn, 9999, "research")
 
 
 def test_set_conversation_temperature_round_trip(
@@ -772,13 +772,13 @@ def test_set_conversation_temperature_unknown_conversation_raises(
         set_conversation_temperature(conn, 9999, 1.0)
 
 
-def test_list_conversations_includes_active_agent(
+def test_list_conversations_includes_active_host(
     conn: sqlite3.Connection,
 ) -> None:
-    """The sidebar listing carries active_agent for each row."""
+    """The sidebar listing carries active_host for each row."""
     chat = create_conversation(
-        conn, name="t", model="m", active_agent="research"
+        conn, name="t", model="m", active_host="research"
     )
     rows = list_conversations(conn)
     match = next(c for c in rows if c.id == chat.id)
-    assert match.active_agent == "research"
+    assert match.active_host == "research"

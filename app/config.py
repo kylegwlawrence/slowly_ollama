@@ -134,7 +134,7 @@ def extra_ollama_hosts() -> list[dict[str, str]]:
     """Return the configured non-primary Ollama hosts (the host picker's options).
 
     The primary host (``OLLAMA_HOST``) is NOT in this list — it is the picker's
-    leading "no selection" option (``active_agent`` NULL). Each entry here is an
+    leading "no selection" option (``active_host`` NULL). Each entry here is an
     *additional* machine a chat can be routed to, so the user can add machines
     without a code change.
 

@@ -25,7 +25,7 @@ def _row_to_conversation(row: sqlite3.Row) -> Conversation:
         project_id=int(row["project_id"]),
         created_at=datetime.fromisoformat(row["created_at"]),
         updated_at=datetime.fromisoformat(row["updated_at"]),
-        active_agent=row["active_agent"],
+        active_host=row["active_host"],
     )
 
 
@@ -37,7 +37,7 @@ def create_conversation(
     project_id: int | None = None,
     temperature: float = 0.8,
     tool_iteration_cap: int = 5,
-    active_agent: str | None = None,
+    active_host: str | None = None,
 ) -> Conversation:
     """Insert a new conversation row.
 
@@ -53,8 +53,8 @@ def create_conversation(
         temperature: Sampling temperature passed to Ollama (0.0–2.0).
         tool_iteration_cap: Per-turn cap on single-agent tool-call
             iterations (caller should clamp to 1–10).
-        active_agent: Name of the Ollama host to start the chat on (a key in
-            `app.agents.AGENTS`, e.g. "host2"), or None for the primary host.
+        active_host: Name of the Ollama host to start the chat on (a key in
+            `app.hosts.HOSTS`, e.g. "host2"), or None for the primary host.
             A non-primary host's per-chat model is stored separately via
             ``set_chat_host_model`` (the ``chat_host_models`` table).
 
@@ -87,12 +87,12 @@ def create_conversation(
         row = conn.execute(
             "INSERT INTO conversations"
             " (name, model, name_locked, temperature, tool_iteration_cap,"
-            "  active_agent, project_id, created_at, updated_at)"
+            "  active_host, project_id, created_at, updated_at)"
             " VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?)"
             " RETURNING id, name, model, name_locked, temperature, tool_iteration_cap,"
-            "          active_agent, project_id, created_at, updated_at;",
+            "          active_host, project_id, created_at, updated_at;",
             (
-                name, model, temperature, tool_iteration_cap, active_agent,
+                name, model, temperature, tool_iteration_cap, active_host,
                 project_id, now, now,
             ),
         ).fetchone()
@@ -116,7 +116,7 @@ def get_conversation(
     """
     row = conn.execute(
         "SELECT id, name, model, name_locked, temperature, tool_iteration_cap,"
-        " active_agent, project_id, created_at, updated_at"
+        " active_host, project_id, created_at, updated_at"
         " FROM conversations WHERE id = ?;",
         (conversation_id,),
     ).fetchone()
@@ -137,7 +137,7 @@ def list_conversations(conn: sqlite3.Connection) -> list[Conversation]:
     """
     rows = conn.execute(
         "SELECT id, name, model, name_locked, temperature, tool_iteration_cap,"
-        " active_agent, project_id, created_at, updated_at"
+        " active_host, project_id, created_at, updated_at"
         " FROM conversations"
         " ORDER BY updated_at DESC, id DESC;"
     ).fetchall()
@@ -162,7 +162,7 @@ def list_conversations_in_project(
     """
     rows = conn.execute(
         "SELECT id, name, model, name_locked, temperature, tool_iteration_cap,"
-        " active_agent, project_id, created_at, updated_at"
+        " active_host, project_id, created_at, updated_at"
         " FROM conversations"
         " WHERE project_id = ?"
         " ORDER BY updated_at DESC, id DESC;",
@@ -200,7 +200,7 @@ def rename_conversation(
             " SET name = ?, name_locked = 1, updated_at = ?"
             " WHERE id = ?"
             " RETURNING id, name, model, name_locked, temperature, tool_iteration_cap,"
-            "          active_agent, project_id, created_at, updated_at;",
+            "          active_host, project_id, created_at, updated_at;",
             (new_name, now, conversation_id),
         ).fetchone()
     if row is None:
@@ -237,7 +237,7 @@ def set_name_auto(
             " SET name = ?, updated_at = ?"
             " WHERE id = ? AND name_locked = 0"
             " RETURNING id, name, model, name_locked, temperature, tool_iteration_cap,"
-            "          active_agent, project_id, created_at, updated_at;",
+            "          active_host, project_id, created_at, updated_at;",
             (new_name, now, conversation_id),
         ).fetchone()
     return _row_to_conversation(row) if row is not None else None
@@ -283,7 +283,7 @@ def set_conversation_temperature(
             " SET temperature = ?"
             " WHERE id = ?"
             " RETURNING id, name, model, name_locked, temperature, tool_iteration_cap,"
-            "          active_agent, project_id, created_at, updated_at;",
+            "          active_host, project_id, created_at, updated_at;",
             (temperature, conversation_id),
         ).fetchone()
     if row is None:
@@ -313,7 +313,7 @@ def set_conversation_tool_iteration_cap(
             " SET tool_iteration_cap = ?"
             " WHERE id = ?"
             " RETURNING id, name, model, name_locked, temperature, tool_iteration_cap,"
-            "          active_agent, project_id, created_at, updated_at;",
+            "          active_host, project_id, created_at, updated_at;",
             (tool_iteration_cap, conversation_id),
         ).fetchone()
     if row is None:
@@ -321,21 +321,21 @@ def set_conversation_tool_iteration_cap(
     return _row_to_conversation(row)
 
 
-def set_active_agent(
-    conn: sqlite3.Connection, conversation_id: int, agent_name: str | None
+def set_active_host(
+    conn: sqlite3.Connection, conversation_id: int, host_name: str | None
 ) -> Conversation:
-    """Set (or clear) the user-invoked agent active for a conversation.
+    """Set (or clear) the selected Ollama host for a conversation.
 
-    Does NOT bump ``updated_at`` — switching agents isn't a message event and
+    Does NOT bump ``updated_at`` — switching hosts isn't a message event and
     shouldn't reorder the sidebar (same convention as the temperature / tool-
     cap setters above).
 
     Args:
         conn: Open SQLite connection.
         conversation_id: Id of the conversation to update.
-        agent_name: An agent key from `app.agents.AGENTS`, or None to return
-            the chat to Normal plain-chat behavior. Caller validates the name
-            (routes resolve it via `app.agents.get_agent`).
+        host_name: A host key from `app.hosts.HOSTS`, or None to return the
+            chat to the primary host. Caller validates the name (routes resolve
+            it via `app.hosts.get_host`).
 
     Returns:
         The updated Conversation.
@@ -346,11 +346,11 @@ def set_active_agent(
     with conn:
         row = conn.execute(
             "UPDATE conversations"
-            " SET active_agent = ?"
+            " SET active_host = ?"
             " WHERE id = ?"
             " RETURNING id, name, model, name_locked, temperature, tool_iteration_cap,"
-            "          active_agent, project_id, created_at, updated_at;",
-            (agent_name, conversation_id),
+            "          active_host, project_id, created_at, updated_at;",
+            (host_name, conversation_id),
         ).fetchone()
     if row is None:
         raise LookupError(f"Conversation {conversation_id} not found.")

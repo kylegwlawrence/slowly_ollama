@@ -40,7 +40,7 @@ from tests.test_routes import (
 def _seed_chat(
     *,
     project_id: int | None = None,
-    active_agent: str | None = None,
+    active_host: str | None = None,
     model: str = "llama3",
 ) -> int:
     """Create a chat row directly in the DB; return the chat id.
@@ -58,7 +58,7 @@ def _seed_chat(
             ).fetchone()[0]
         chat = queries.create_conversation(
             conn, name="test", model=model, project_id=project_id,
-            active_agent=active_agent,
+            active_host=active_host,
         )
     return chat.id
 

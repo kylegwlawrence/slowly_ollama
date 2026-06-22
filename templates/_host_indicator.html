@@ -14,29 +14,29 @@
    the loaded state uses the sage accent surface; the unloaded state uses a
    muted light grey so the user can see at a glance that nothing is resident.
 
-   Stable id so the agent-picker endpoint can OOB-swap it on change. Pass
+   Stable id so the host-picker endpoint can OOB-swap it on change. Pass
    ``oob=True`` from that endpoint to add ``hx-swap-oob``; the initial header
    render leaves it off.
 
-   Context: ``conversation``, ``active_agent_spec`` (an AgentSpec or None),
+   Context: ``conversation``, ``active_host_spec`` (an HostSpec or None),
    ``effective_model`` (the model the chat will actually run on, resolved by
    ``_effective_model`` — the chat's per-host model on the selected host, or the
    primary model), ``model_loaded`` (bool, defaults to True if the caller forgot
    — better to render the chip in its normal colour than to lie about
    residency). #}
-<button id="agent-indicator-{{ conversation.id }}"
+<button id="host-indicator-{{ conversation.id }}"
         type="button"
-        class="chat-panel__model{% if active_agent_spec %} chat-panel__model--agent{% endif %}"
+        class="chat-panel__model{% if active_host_spec %} chat-panel__model--host{% endif %}"
         data-state="{% if model_loaded|default(True) %}loaded{% else %}unloaded{% endif %}"
-        data-role="agent-indicator"
+        data-role="host-indicator"
         hx-post="/chats/{{ conversation.id }}/unload-model"
         hx-target="this"
         hx-swap="outerHTML"
         title="{% if model_loaded|default(True) %}Click to unload this model from Ollama's memory{% else %}Unloaded — the next message will reload it{% endif %}"
         {% if oob %}hx-swap-oob="true" {% endif %}>
   <span class="material-symbols-outlined">dns</span>
-  {%- if active_agent_spec -%}
-    {{ active_agent_spec.label }} · {{ effective_model }}
+  {%- if active_host_spec -%}
+    {{ active_host_spec.label }} · {{ effective_model }}
   {%- else -%}
     {{ primary_host_label() }} · {{ effective_model }}
   {%- endif -%}

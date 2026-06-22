@@ -8,7 +8,7 @@ sub-routers, mounted by ``main.py``.
 Sub-modules:
     :mod:`app.routes.chats`    — chat panel + sidebar + messages + stream
                                  + per-chat settings (temperature, tool cap,
-                                 agent, tool/RAG toggles), plus ``/`` and
+                                 Ollama host), plus ``/`` and
                                  ``/models``.
     :mod:`app.routes.projects` — projects index + CRUD + chats/settings tabs.
     :mod:`app.routes.files`    — files tab routes (list, view, download).

@@ -12,7 +12,7 @@ Routes:
     POST   /chats/{id}/messages              — user msg + assistant placeholder
     GET    /chats/{id}/stream                — SSE assistant stream
     POST   /chats/{id}/regenerate            — regenerate assistant reply
-    POST   /chats/{id}/agent                 — set/clear active agent
+    POST   /chats/{id}/host                  — set/clear selected Ollama host
     POST   /chats/{id}/compact                — summarize older turns (phase 18)
     GET    /chats/{id}/archived               — archived rows for disclosure
     PATCH  /chats/{id}/temperature           — set per-chat temperature
@@ -28,15 +28,15 @@ from fastapi import APIRouter, Form, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 
 from app import backup, config, generation, ollama, queries, render
-from app.agents import get_agent
+from app.hosts import get_host
 from app.connection import open_connection
 from app.db import initialize_database
 from app.dependencies import DB, OllamaClient
 from app.ollama import OllamaProtocolError, OllamaUnavailable
 from app.routes._helpers import (
-    _agent_overrides,
+    _host_overrides,
     _effective_model,
-    _resolve_active_spec,
+    _resolve_active_host,
     _resolve_num_ctx,
     _sidebar_rag_context,
     _spawn_health_refresh,
@@ -68,7 +68,7 @@ async def list_models_endpoint(
 ) -> Response:
     """Return ``<option>`` tags for the model dropdown.
 
-    ``host`` is the selected host's NAME (a key in ``app.agents.AGENTS``, e.g.
+    ``host`` is the selected host's NAME (a key in ``app.hosts.HOSTS``, e.g.
     ``"host2"``), as submitted by the composer's machine picker. Unset/empty
     (or an unknown name) lists the primary ``OLLAMA_HOST``'s models; a known
     name lists that host's models. This is what powers the single model
@@ -97,7 +97,7 @@ async def list_models_endpoint(
     """
     # Resolve the host NAME to its base URL via the registry: a known
     # non-primary host → its ollama_host; primary / unknown → None (local).
-    spec = get_agent(host)
+    spec = get_host(host)
     target_host = spec.ollama_host if spec else None
     try:
         models = sorted(
@@ -340,7 +340,7 @@ async def send_message_endpoint(
             num_ctx=_resolve_num_ctx(db, conversation_id),
             history=history,
             on_complete="append",
-            **_agent_overrides(conversation, db),
+            **_host_overrides(conversation, db),
         )
     except generation.GenerationInProgress:
         # UI gate (placeholder keeps the send button disabled) makes
@@ -374,10 +374,10 @@ async def send_message_endpoint(
     # just spawned will (re)load the model in Ollama. If the chip is
     # already loaded this is a no-op visually; if the user had just
     # clicked unload, this flips it back to the accent colour.
-    spec = _resolve_active_spec(conversation, db)
-    indicator_oob = templates.get_template("_agent_indicator.html").render(
+    spec = _resolve_active_host(conversation, db)
+    indicator_oob = templates.get_template("_host_indicator.html").render(
         conversation=conversation,
-        active_agent_spec=spec,
+        active_host_spec=spec,
         effective_model=_effective_model(conversation, spec, db),
         model_loaded=True,
         oob=True,
@@ -467,7 +467,7 @@ async def regenerate_endpoint(
             num_ctx=_resolve_num_ctx(db, conversation_id),
             history=prompt_history,
             on_complete="replace",
-            **_agent_overrides(conversation, db),
+            **_host_overrides(conversation, db),
         )
     except generation.GenerationInProgress:
         return HTMLResponse(
@@ -484,10 +484,10 @@ async def regenerate_endpoint(
         stream_url=f"/chats/{conversation_id}/stream",
     )
     # Same chip-reset as send_message: regen will reload the model too.
-    spec = _resolve_active_spec(conversation, db)
-    indicator_oob = templates.get_template("_agent_indicator.html").render(
+    spec = _resolve_active_host(conversation, db)
+    indicator_oob = templates.get_template("_host_indicator.html").render(
         conversation=conversation,
-        active_agent_spec=spec,
+        active_host_spec=spec,
         effective_model=_effective_model(conversation, spec, db),
         model_loaded=True,
         oob=True,
@@ -495,29 +495,27 @@ async def regenerate_endpoint(
     return HTMLResponse(content=placeholder_html + indicator_oob)
 
 
-@router.post("/chats/{conversation_id}/agent", response_class=HTMLResponse)
-async def set_chat_agent_endpoint(
+@router.post("/chats/{conversation_id}/host", response_class=HTMLResponse)
+async def set_chat_host_endpoint(
     conversation_id: int,
     db: DB,
     client: OllamaClient,
-    agent: Annotated[str | None, Form()] = None,
+    host: Annotated[str | None, Form()] = None,
 ) -> Response:
-    """Set/clear the user-invoked agent for a chat; return OOB UI updates.
+    """Set/clear the selected Ollama host for a chat; return OOB UI updates.
 
-    Called by the in-chat agent dropdown on change (``hx-post`` with
+    Called by the in-chat host dropdown on change (``hx-post`` with
     ``hx-swap="none"`` — the response is OOB-only). The selection is
     persisted so it survives reloads and so subsequent turns resolve the
-    same agent. ``agent`` is the agent name, or empty/None for Normal.
-    An unknown name resolves to Normal (defensive).
+    same host. ``host`` is the host name, or empty/None for the primary host.
+    An unknown name resolves to the primary host (defensive).
 
     OOB swaps returned:
-      - ``#agent-indicator-{id}``: the header indicator, updated to the
-        agent label + model (or the chat's pinned model for Normal).
-      - ``#chat-tool-chips``: refreshed so the per-chat chips are hidden
-        while an agent is active (its allowlist governs its tools) and
-        restored when switching back to Normal. Only emitted when the
-        chat's pinned model supports tools — otherwise there is no chip
-        bar in the DOM and the swap would be a no-op anyway.
+      - ``#host-indicator-{id}``: the header indicator, updated to the
+        host label + model (or the chat's pinned model for the primary host).
+      - ``#sidebar-rag-section``: refreshed because switching host changes the
+        effective model, which can flip whether the model supports tools and
+        thus whether the read-only Sources health panel shows.
 
     Raises:
         HTTPException 404: When the conversation is unknown.
@@ -527,13 +525,13 @@ async def set_chat_agent_endpoint(
     except LookupError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
 
-    selected = get_agent(agent)
-    conversation = queries.set_active_agent(
+    selected = get_host(host)
+    conversation = queries.set_active_host(
         db, conversation_id, selected.name if selected else None
     )
     # Resolve through the toggle so a disabled remote host falls back to the
     # primary (matches the indicator + generation path).
-    spec = _resolve_active_spec(conversation, db)
+    spec = _resolve_active_host(conversation, db)
 
     # The effective model can change with the host (a non-primary host uses the
     # chat's per-host model, or its default), so re-probe residency ON THAT
@@ -544,9 +542,9 @@ async def set_chat_agent_endpoint(
         client, effective_model, host=effective_host
     )
 
-    indicator_html = templates.get_template("_agent_indicator.html").render(
+    indicator_html = templates.get_template("_host_indicator.html").render(
         conversation=conversation,
-        active_agent_spec=spec,
+        active_host_spec=spec,
         effective_model=effective_model,
         model_loaded=model_loaded,
         oob=True,
@@ -582,7 +580,7 @@ async def unload_chat_model_endpoint(
     """Unload the chat's currently-effective model from Ollama's memory.
 
     Triggered by clicking the header model chip. The "effective" model is
-    the active agent's assigned model when an agent is invoked, otherwise
+    the selected host's model when a non-primary host is active, otherwise
     the chat's pinned model — same rule the indicator uses to decide what
     to display. We unload whatever the user sees in the chip.
 
@@ -601,7 +599,7 @@ async def unload_chat_model_endpoint(
     except LookupError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
 
-    spec = _resolve_active_spec(conversation, db)
+    spec = _resolve_active_host(conversation, db)
     effective_model = _effective_model(conversation, spec, db)
     effective_host = spec.ollama_host if spec else None
 
@@ -613,9 +611,9 @@ async def unload_chat_model_endpoint(
             f"Couldn't reach Ollama to unload: {e}",
         )
 
-    indicator_html = templates.get_template("_agent_indicator.html").render(
+    indicator_html = templates.get_template("_host_indicator.html").render(
         conversation=conversation,
-        active_agent_spec=spec,
+        active_host_spec=spec,
         effective_model=effective_model,
         model_loaded=False,
     )
@@ -749,14 +747,14 @@ async def compact_chat_endpoint(
     # still gets the benefit when summarizing a long history.
     num_ctx = _resolve_num_ctx(db, conversation_id)
 
-    # When an agent is active on this chat, compact through the agent's
+    # When a non-primary host is selected, compact through that host's
     # model + host so the summarizer reuses whatever Ollama instance just
     # streamed the conversation (warm KV cache there, not on the local
-    # Ollama). Route through `_agent_overrides` so the phase-20b
+    # Ollama). Route through `_host_overrides` so the phase-20b
     # remote-Ollama toggle is respected here too — a chat with the
-    # Remote agent selected but the toggle off summarizes locally on the
+    # remote host selected but the toggle off summarizes locally on the
     # chat's pinned model instead of trying to reach host1.
-    overrides = _agent_overrides(conversation, db)
+    overrides = _host_overrides(conversation, db)
     summarize_model = overrides["model"]
     summarize_host = overrides["ollama_host"]
     try:

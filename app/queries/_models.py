@@ -46,8 +46,8 @@ class Conversation:
         updated_at: When the row was last touched — bumped by rename, by
             appending a message, or by replacing the last assistant message.
             Used as the sort key for the sidebar so active chats float up.
-        active_agent: Name of the selected Ollama host for this chat (a key in
-            `app.agents.AGENTS`, e.g. "host2"), or None for the primary host.
+        active_host: Name of the selected Ollama host for this chat (a key in
+            `app.hosts.HOSTS`, e.g. "host2"), or None for the primary host.
             Persisted so the picker + indicator survive reloads.
         model: The primary-host model. A non-primary host's per-chat model
             lives in the ``chat_host_models`` table (keyed by host name), not
@@ -66,7 +66,7 @@ class Conversation:
     project_id: int
     created_at: datetime
     updated_at: datetime
-    active_agent: str | None = None
+    active_host: str | None = None
 
 
 @dataclass(frozen=True)

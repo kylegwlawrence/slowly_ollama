@@ -24,16 +24,16 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app import generation, ollama, queries, render
 from app import rag_servers as _rag_servers
-from app.agents import get_agent, list_agents
+from app.hosts import get_host, list_hosts
 from app.dependencies import DB, OllamaClient
 from app.projects import ensure_project_workspace
 from app.routes._helpers import (
-    _agent_overrides,
+    _host_overrides,
     _composer_host_context,
     _effective_model,
     _placeholder_name,
     _project_context,
-    _resolve_active_spec,
+    _resolve_active_host,
     _sidebar_rag_context,
     _spawn_health_refresh,
 )
@@ -234,7 +234,7 @@ async def update_project_endpoint(
     ).render(
         project=project,
         saved=True,
-        agents=list_agents(),
+        hosts=list_hosts(),
         global_default_num_ctx=queries.get_default_num_ctx(db),
     )
     header_oob = templates.get_template(
@@ -320,7 +320,7 @@ def _render_project_page(
         "active_chat_supports_tools": False,
         "servers": [],
         "rag_health": {},
-        # Most tabs need agents + defaults available; include them so
+        # Most tabs need hosts + defaults available; include them so
         # included partials don't have to re-fetch.
         **_project_context(db, composer=active_tab == "chats"),
     }
@@ -367,7 +367,7 @@ def project_chats_endpoint(
         extra={
             "conversation": None,
             # Pre-fill hooks for the composer so a project default
-            # propagates into the model / agent selects.
+            # propagates into the model / host selects.
             "project_default_model": project.default_model,
             "project_default_agent": project.default_agent,
             # Initial host + model-default for the single model dropdown.
@@ -461,14 +461,14 @@ async def project_chat_panel_endpoint(
 
     # Resolve through the toggle so a disabled remote host renders as the
     # primary (matches the indicator + generation path).
-    active_agent_spec = _resolve_active_spec(conversation, db)
+    active_host_spec = _resolve_active_host(conversation, db)
 
     # Reflect Ollama's actual memory state in the header chip. The "effective"
     # model is the chat's per-host model on its selected host, else the chat's
     # pinned model — same rule the indicator uses to decide what to render.
-    effective_model = _effective_model(conversation, active_agent_spec, db)
+    effective_model = _effective_model(conversation, active_host_spec, db)
     effective_host = (
-        active_agent_spec.ollama_host if active_agent_spec else None
+        active_host_spec.ollama_host if active_host_spec else None
     )
     model_loaded = await ollama.is_model_loaded(
         client, effective_model, host=effective_host
@@ -490,7 +490,7 @@ async def project_chat_panel_endpoint(
             "archived_count": archived_count,
             "pending_stream_url": pending_stream_url,
             "supports_tools": supports_tools,
-            "active_agent_spec": active_agent_spec,
+            "active_host_spec": active_host_spec,
             "effective_model": effective_model,
             "model_loaded": model_loaded,
             **sidebar_ctx,
@@ -512,7 +512,7 @@ async def create_project_chat_endpoint(
     content: Annotated[str, Form()],
     temperature: Annotated[float | None, Form()] = None,
     tool_iteration_cap: Annotated[int | None, Form()] = None,
-    agent: Annotated[str | None, Form()] = None,
+    host: Annotated[str | None, Form()] = None,
 ) -> Response:
     """Create a chat inside a project AND save its first message.
 
@@ -534,12 +534,12 @@ async def create_project_chat_endpoint(
     if tool_iteration_cap is None:
         tool_iteration_cap = queries.get_default_tool_iteration_cap(db)
     tool_iteration_cap = max(1, min(10, tool_iteration_cap))
-    agent_spec = get_agent(agent)
+    host_spec = get_host(host)
     # The single `model` field is the model for the SELECTED host. On the
     # primary host it IS conversations.model. On a non-primary host it belongs
     # in chat_host_models; conversations.model (NOT NULL) keeps a sensible
     # primary fallback so switching to primary mid-chat still has a valid model.
-    if agent_spec is None:
+    if host_spec is None:
         primary_model = model
     else:
         primary_model = (
@@ -552,12 +552,12 @@ async def create_project_chat_endpoint(
         project_id=project_id,
         temperature=temperature,
         tool_iteration_cap=tool_iteration_cap,
-        active_agent=agent_spec.name if agent_spec else None,
+        active_host=host_spec.name if host_spec else None,
     )
     # Remember the picked model for the non-primary host. Empty ("" before
     # /models loads) → skip, so the host falls back to its default_model.
-    if agent_spec is not None and model:
-        queries.set_chat_host_model(db, chat.id, agent_spec.name, model)
+    if host_spec is not None and model:
+        queries.set_chat_host_model(db, chat.id, host_spec.name, model)
     queries.append_message(db, chat.id, "user", content)
 
     # All configured RAG servers feed the sidebar health panel below; fetch
@@ -576,7 +576,7 @@ async def create_project_chat_endpoint(
         num_ctx=queries.resolve_num_ctx_for_project(db, project.num_ctx),
         history=messages,
         on_complete="append",
-        **_agent_overrides(chat, db),
+        **_host_overrides(chat, db),
     )
     # Phase 19: warm the RAG health cache so a freshly-created chat's
     # sidebar Sources section reflects current server health.
@@ -586,7 +586,7 @@ async def create_project_chat_endpoint(
 
     # Toggle-aware host spec for the header chip (a disabled remote host
     # renders as the primary), matching the generation path's resolution.
-    active_spec = _resolve_active_spec(chat, db)
+    active_spec = _resolve_active_host(chat, db)
 
     panel_html = templates.get_template("_chat_panel.html").render(
         conversation=chat,
@@ -599,8 +599,8 @@ async def create_project_chat_endpoint(
         pending_stream_url=f"/chats/{chat.id}/stream",
         active_chat_id=chat.id,
         supports_tools=supports_tools,
-        agents=list_agents(),
-        active_agent_spec=active_spec,
+        hosts=list_hosts(),
+        active_host_spec=active_spec,
         effective_model=_effective_model(chat, active_spec, db),
         # Brand-new chat: we just kicked off start_generation, which is
         # (re)loading the effective model right now. Skip the /api/ps
@@ -672,7 +672,7 @@ def project_settings_endpoint(
         extra={
             "settings_ctx": {
                 "project": project,
-                "agents": list_agents(),
+                "hosts": list_hosts(),
                 "saved": False,
                 "global_default_num_ctx": queries.get_default_num_ctx(db),
             },

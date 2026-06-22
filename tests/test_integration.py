@@ -332,14 +332,14 @@ def test_host_picker_journey(agent_client: TestClient) -> None:
     """
     client = agent_client
 
-    from app.agents import AGENTS, AgentSpec
+    from app.hosts import HOSTS, HostSpec
     from app.connection import open_connection
     import os
 
-    saved = AGENTS.get("host2")
-    AGENTS["host2"] = AgentSpec(
+    saved = HOSTS.get("host2")
+    HOSTS["host2"] = HostSpec(
         name="host2", label="host2", description="d",
-        model="host2-model", system_prompt="", tools=frozenset(),
+        model="host2-model",
         ollama_host="http://host1:11434",
     )
     try:
@@ -352,7 +352,7 @@ def test_host_picker_journey(agent_client: TestClient) -> None:
         # 1. Create a chat on the primary host (no selection).
         created = client.post(
             f"/projects/{pid}/chats",
-            data={"model": "llama3", "content": "hello", "agent": ""},
+            data={"model": "llama3", "content": "hello", "host": ""},
         )
         assert created.status_code == 201
         chat_id = int(re.search(r'data-chat-id="(\d+)"', created.text).group(1))
@@ -368,8 +368,8 @@ def test_host_picker_journey(agent_client: TestClient) -> None:
 
         # 3. Switch this chat to the "host2" host.
         switch = client.post(
-            f"/chats/{chat_id}/agent",
-            data={"agent": "host2"},
+            f"/chats/{chat_id}/host",
+            data={"host": "host2"},
             headers={"HX-Request": "true"},
         )
         assert switch.status_code == 200
@@ -382,8 +382,8 @@ def test_host_picker_journey(agent_client: TestClient) -> None:
         # 4. Switch back to the primary host — the indicator drops the host2
         # host and shows the chat's pinned model again.
         normal = client.post(
-            f"/chats/{chat_id}/agent",
-            data={"agent": ""},
+            f"/chats/{chat_id}/host",
+            data={"host": ""},
             headers={"HX-Request": "true"},
         )
         assert normal.status_code == 200
@@ -392,8 +392,8 @@ def test_host_picker_journey(agent_client: TestClient) -> None:
         assert "llama3" in panel3.text
     finally:
         if saved is None:
-            AGENTS.pop("host2", None)
+            HOSTS.pop("host2", None)
         else:
-            AGENTS["host2"] = saved
+            HOSTS["host2"] = saved
 
 

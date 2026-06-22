@@ -270,9 +270,9 @@ def test_migration_backfills_tool_iteration_cap_column(tmp_path: Path) -> None:
         assert cap == 5
 
 
-def test_migration_backfills_active_agent_column(tmp_path: Path) -> None:
+def test_migration_backfills_active_host_column(tmp_path: Path) -> None:
     """A conversations table that pre-dates phase 16 gets the nullable
-    active_agent column backfilled (NULL = Normal) on init."""
+    active_host column backfilled (NULL = Normal) on init."""
     db = tmp_path / "chats.db"
     with sqlite3.connect(db) as conn:
         conn.executescript(
@@ -297,12 +297,72 @@ def test_migration_backfills_active_agent_column(tmp_path: Path) -> None:
         columns = {
             row[1] for row in conn.execute("PRAGMA table_info(conversations);")
         }
-        assert "active_agent" in columns
+        assert "active_host" in columns
         # The pre-existing row defaults to NULL (the Normal agent).
         value = conn.execute(
-            "SELECT active_agent FROM conversations WHERE name = 'legacy';"
+            "SELECT active_host FROM conversations WHERE name = 'legacy';"
         ).fetchone()[0]
         assert value is None
+
+
+def test_migration_renames_active_agent_to_active_host(tmp_path: Path) -> None:
+    """A phase 16–22 conversations table carrying the misnamed ``active_agent``
+    column is renamed in place to ``active_host`` (phase 23), preserving every
+    stored host selection — no data loss, no duplicate column."""
+    db = tmp_path / "chats.db"
+    with sqlite3.connect(db) as conn:
+        # HEAD-1 shape: project_id already present (so the project_id rebuild
+        # no-ops) and the column still named active_agent.
+        conn.executescript(
+            """
+            CREATE TABLE projects (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                description TEXT NOT NULL DEFAULT '',
+                workspace_subdir TEXT NOT NULL UNIQUE,
+                default_model TEXT,
+                default_agent TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO projects (id, name, workspace_subdir, created_at, updated_at)
+                VALUES (1, 'Default', 'default', 'now', 'now');
+            CREATE TABLE conversations (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                model TEXT NOT NULL,
+                name_locked INTEGER NOT NULL DEFAULT 0,
+                temperature REAL NOT NULL DEFAULT 0.8,
+                tool_iteration_cap INTEGER NOT NULL DEFAULT 5,
+                active_agent TEXT,
+                project_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO conversations
+                (id, name, model, active_agent, project_id, created_at, updated_at)
+                VALUES
+                (1, 'picked', 'm', 'host2', 1, 'now', 'now'),
+                (2, 'primary', 'm', NULL, 1, 'now', 'now');
+            """
+        )
+
+    initialize_database(db)
+
+    with sqlite3.connect(db) as conn:
+        columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(conversations);")
+        }
+        assert "active_host" in columns
+        assert "active_agent" not in columns  # renamed, not duplicated
+        rows = dict(
+            conn.execute(
+                "SELECT name, active_host FROM conversations ORDER BY id;"
+            ).fetchall()
+        )
+        assert rows == {"picked": "host2", "primary": None}
+    # Idempotent: a second run is a no-op (active_host already present).
+    initialize_database(db)
 
 
 def test_migration_moves_slowly_model_to_chat_host_models(tmp_path: Path) -> None:
@@ -338,14 +398,14 @@ def test_migration_moves_slowly_model_to_chat_host_models(tmp_path: Path) -> Non
                 name_locked INTEGER NOT NULL DEFAULT 0,
                 temperature REAL NOT NULL DEFAULT 0.8,
                 tool_iteration_cap INTEGER NOT NULL DEFAULT 5,
-                active_agent TEXT,
+                active_host TEXT,
                 slowly_model TEXT,
                 project_id INTEGER NOT NULL,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
             INSERT INTO conversations
-                (id, name, model, active_agent, slowly_model, project_id,
+                (id, name, model, active_host, slowly_model, project_id,
                  created_at, updated_at)
                 VALUES
                 (1, 'on-host2', 'm', 'host2', 'slow:1', 1, 'now', 'now'),

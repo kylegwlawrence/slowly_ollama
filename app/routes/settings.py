@@ -21,7 +21,7 @@ from fastapi.responses import HTMLResponse
 
 from app import queries
 from app import rag_servers as _rag_servers
-from app.agents import list_agents
+from app.hosts import list_hosts
 from app.config import extra_ollama_hosts
 from app.dependencies import DB
 from app.rag_health import probe_rag_health
@@ -45,7 +45,7 @@ def settings_endpoint(request: Request, db: DB) -> Response:
     default_tool_iteration_cap = queries.get_default_tool_iteration_cap(db)
     default_model = queries.get_default_model(db)
     default_num_ctx = queries.get_default_num_ctx(db)
-    agents = list_agents()
+    hosts = list_hosts()
     # Surface the configured non-primary hosts (OLLAMA_EXTRA_HOSTS, or the
     # legacy SLOWLY_OLLAMA_* fallback) to the settings template.
     # remote_configured gates the toggle vs the "set env vars first" hint;
@@ -59,7 +59,7 @@ def settings_endpoint(request: Request, db: DB) -> Response:
         "default_tool_iteration_cap": default_tool_iteration_cap,
         "default_model": default_model,
         "default_num_ctx": default_num_ctx,
-        "agents": agents,
+        "hosts": hosts,
         "remote_configured": remote_configured,
         "extra_hosts": extra_hosts,
         "remote_enabled": remote_enabled,

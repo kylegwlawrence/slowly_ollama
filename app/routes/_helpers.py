@@ -1,7 +1,7 @@
 """Shared helpers used by multiple route sub-modules.
 
 Lives alongside the sub-routers so they can each import the per-render
-context, the chip-state lookup, the agent-overrides resolver, etc. from
+context and the host-overrides resolver from
 one place rather than reaching across to a sibling sub-module.
 """
 
@@ -10,7 +10,7 @@ import sqlite3
 
 from app import ollama, queries, rag_health
 from app import rag_servers as _rag_servers
-from app.agents import enabled_agents, get_agent
+from app.hosts import enabled_hosts, get_host
 
 
 def _spawn_health_refresh(db: sqlite3.Connection) -> None:
@@ -132,28 +132,28 @@ def _resolve_num_ctx(
     return queries.resolve_num_ctx_for_project(db, project.num_ctx)
 
 
-def _resolve_active_spec(
+def _resolve_active_host(
     conversation: queries.Conversation, db: sqlite3.Connection
 ):
-    """Return the effective AgentSpec for a conversation, honoring the toggle.
+    """Return the effective HostSpec for a conversation, honoring the toggle.
 
-    Wraps :func:`app.agents.get_agent` so callers that render the chat
-    header (model chip, agent indicator, unload button) all see the same
+    Wraps :func:`app.hosts.get_host` so callers that render the chat
+    header (model chip, host indicator, unload button) all see the same
     "what's actually going to run" view: a chat with
-    ``active_agent="host2"`` resolves to ``None`` when the phase-20b
+    ``active_host="host2"`` resolves to ``None`` when the phase-20b
     Remote Ollama toggle is off, so the indicator shows the primary host's
     pinned model instead of the now-disabled second host.
 
     Args:
-        conversation: The chat whose ``active_agent`` to resolve.
+        conversation: The chat whose ``active_host`` to resolve.
         db: Open SQLite connection — the toggle lives in ``app_settings``.
 
     Returns:
-        The resolved ``AgentSpec``, or ``None`` for the primary host (no
+        The resolved ``HostSpec``, or ``None`` for the primary host (no
         selection, unknown name, OR a second-host spec while the toggle is
         off).
     """
-    spec = get_agent(conversation.active_agent)
+    spec = get_host(conversation.active_host)
     if spec is not None and spec.ollama_host is not None:
         if not queries.get_remote_ollama_enabled(db):
             return None
@@ -176,7 +176,7 @@ def _effective_model(
 
     Args:
         conversation: The chat whose effective model to resolve.
-        spec: The resolved host ``AgentSpec`` (from :func:`_resolve_active_spec`),
+        spec: The resolved host ``HostSpec`` (from :func:`_resolve_active_host`),
             or ``None`` for the primary host.
         db: Open SQLite connection — non-primary models live in
             ``chat_host_models``.
@@ -192,13 +192,13 @@ def _effective_model(
     )
 
 
-def _agent_overrides(
+def _host_overrides(
     conversation: queries.Conversation, db: sqlite3.Connection
 ) -> dict:
     """Resolve a conversation's selected Ollama host into ``start_generation`` kwargs.
 
     The per-chat picker selects a host, stored in
-    ``conversation.active_agent``: NULL/empty (or an unknown/removed name)
+    ``conversation.active_host``: NULL/empty (or an unknown/removed name)
     means the primary host ("host1"); a known name (e.g. ``"host2"``) means
     that registered second host.
 
@@ -208,16 +208,15 @@ def _agent_overrides(
     row for that host, falling back to the host spec's ``default_model``), but
     is otherwise IDENTICAL — both run the plain generation path, so the project
     system prompt and the full tool registry apply on either host; only the
-    machine and the model differ. The host spec's own ``system_prompt`` /
-    ``tools`` fields are deliberately ignored (a host is not an agent).
+    machine and the model differ.
 
     Phase 20b gating still applies: when a selected host's spec has a non-None
     ``ollama_host`` AND the app-wide ``remote_ollama_enabled`` toggle is off,
-    ``_resolve_active_spec`` returns None and we fall back to the primary host
-    — chats with ``active_agent="host2"`` then run plain on the chat's pinned
+    ``_resolve_active_host`` returns None and we fall back to the primary host
+    — chats with ``active_host="host2"`` then run plain on the chat's pinned
     local model, no data loss, regardless of whether the second host is up.
     """
-    spec = _resolve_active_spec(conversation, db)
+    spec = _resolve_active_host(conversation, db)
     if spec is None:
         return {
             "model": conversation.model,
@@ -264,7 +263,7 @@ def _composer_host_context(
     initial_host = project.default_agent or ""
     initial_model_default = primary_default_model
     if initial_host:
-        spec = get_agent(initial_host)
+        spec = get_host(initial_host)
         if spec is not None:
             initial_model_default = spec.model
         else:
@@ -299,8 +298,8 @@ def _project_context(
         "default_temperature": queries.get_default_temperature(db),
         "default_tool_iteration_cap": queries.get_default_tool_iteration_cap(db),
         "global_default_model": queries.get_default_model(db),
-        # enabled_agents respects the phase-20b remote-Ollama toggle so a
+        # enabled_hosts respects the phase-20b remote-Ollama toggle so a
         # disabled remote host disappears from the picker without the
         # registry having to be rebuilt.
-        "agents": enabled_agents(db),
+        "hosts": enabled_hosts(db),
     }

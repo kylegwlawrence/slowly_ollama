@@ -5,7 +5,7 @@
 <section class="chat-panel" data-chat-id="{{ conversation.id }}">
   <header class="chat-panel__header">
     <h2 class="chat-panel__name">{{ conversation.name }}</h2>
-    {% include "_agent_indicator.html" %}
+    {% include "_host_indicator.html" %}
     {# Mobile-only toggle. On desktop .chat-panel__controls is display:contents
        (its children flow into the header as today) and this button is hidden;
        on narrow viewports the button shows and toggles
@@ -16,20 +16,20 @@
       <span class="material-symbols-outlined" aria-hidden="true">tune</span>
     </button>
     {# Collapsible controls: host picker, Temp, Tool cap, backup controls.
-       OOB-safe — #agent-indicator/#backup-chip are swapped by id regardless
+       OOB-safe — #host-indicator/#backup-chip are swapped by id regardless
        of this wrapper. #}
     <div class="chat-panel__controls" id="chat-controls-{{ conversation.id }}">
-    {# Phase 16: agent picker. Its OWN form, NOT nested inside .message-form —
+    {# Ollama host picker. Its OWN form, NOT nested inside .message-form —
        if it were, the message form's hx-post + hx-target would inherit onto
        the <select> via HTMX attribute inheritance. On change it posts the
        selection; the server persists it and OOB-swaps the header indicator +
-       chip bar, so hx-swap="none" here. #}
+       the sidebar Sources section, so hx-swap="none" here. #}
     <form class="chat-panel__chip-form"
-          hx-post="/chats/{{ conversation.id }}/agent"
+          hx-post="/chats/{{ conversation.id }}/host"
           hx-trigger="change"
           hx-swap="none">
-      {% set selected_agent = conversation.active_agent %}
-      {% include "_agent_select.html" %}
+      {% set selected_host = conversation.active_host %}
+      {% include "_host_select.html" %}
     </form>
     <form class="chat-panel__chip-form"
           hx-patch="/chats/{{ conversation.id }}/temperature"
@@ -94,8 +94,8 @@
      / tickToolRows sections respectively. The pill markup itself
      (textarea + send button + auto-grow / Enter-to-submit handlers)
      is in _input_pill.html so the in-chat and empty-state composers
-     stay in sync. The agent picker (phase 16) now lives in the header
-     alongside the other chips — see the chat-panel__agent-form above. #}
+     stay in sync. The host picker now lives in the header
+     alongside the other chips — see the host-picker form above. #}
   {# Compacting indicator: lives outside #messages so the outerHTML swap
      from /compact doesn't blow it away mid-request. `htmx-indicator` is
      opacity-0 by default; htmx adds `htmx-request` to the element named
