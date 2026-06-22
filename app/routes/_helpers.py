@@ -11,57 +11,6 @@ import sqlite3
 from app import ollama, queries, rag_health
 from app import rag_servers as _rag_servers
 from app.agents import enabled_agents, get_agent
-from app.tools import RAG_TOOL_NAME, TOOLS
-
-
-def _default_tool_states() -> list[queries.ChatToolState]:
-    """Return ChatToolState list with all non-RAG tools enabled.
-
-    query_rag is excluded — RAG servers get their own per-server chips.
-    Reads ``TOOLS`` live (not a startup snapshot) so a tool whose @tool
-    decorator runs after this module imports — or which the lifespan
-    gating later popped — is reflected on the next call without needing
-    a specific import order in ``main.py``.
-    """
-    return [
-        queries.ChatToolState(tool_name=name, enabled=True)
-        for name in TOOLS
-        if name != RAG_TOOL_NAME
-    ]
-
-
-def _chip_states(
-    db: sqlite3.Connection,
-    conversation_id: int,
-    *,
-    servers: list | None = None,
-) -> tuple[list[queries.ChatToolState], list[queries.ChatRagState]]:
-    """Return (tool_states, rag_server_states) for the chip bar.
-
-    tool_states excludes query_rag; RAG servers get their own chips.
-    Both lists respect the per-chat settings stored in DB.
-
-    Pass ``servers`` when you already hold the list from a prior
-    ``_rag_servers.list_servers`` call to avoid a redundant fetch.
-    """
-    tool_states = [
-        s
-        for s in queries.get_chat_tool_states(
-            db,
-            conversation_id,
-            # Iterate the live registry so gating-popped tools (e.g. file
-            # tools when FILE_TOOL_ROOT is unset) don't surface and tools
-            # registered after this module imported still do.
-            list(TOOLS),
-        )
-        if s.tool_name != RAG_TOOL_NAME
-    ]
-    if servers is None:
-        servers = _rag_servers.list_servers(db)
-    rag_server_states = queries.get_chat_rag_states(
-        db, conversation_id, [s.name for s in servers]
-    )
-    return tool_states, rag_server_states
 
 
 def _spawn_health_refresh(db: sqlite3.Connection) -> None:
@@ -90,49 +39,41 @@ async def _sidebar_rag_context(
     supports_tools: bool,
     servers: list | None = None,
 ) -> dict:
-    """Build the context vars the sidebar's RAG section needs (phase 19).
+    """Build the context for the sidebar's read-only RAG health panel.
 
-    Returns keys consumable by ``_sidebar.html``'s guard:
+    Phase 23 removed per-server gating — ``query_rag`` now searches every
+    configured RAG server — so this section is purely informational: it lists
+    all configured servers with their cached health. Returns keys consumed by
+    ``_sidebar.html`` / ``_sidebar_rag_section.html``:
       ``active_conversation``
       ``active_chat_supports_tools``
-      ``active_chat_agent_active``
-      ``rag_server_states``
+      ``servers``
       ``rag_health``
 
-    When ``conversation`` is None (no active chat), returns the minimal
-    shape with empty lists — the guard in ``_sidebar.html`` shorts the
-    section to hidden. When no servers are configured, also returns empty
-    ``rag_health`` (no need to probe).
+    When ``conversation`` is None (no active chat) or the model doesn't
+    support tools, returns the minimal empty shape — the template guard shorts
+    the section to a hidden wrapper. When no servers are configured, also
+    returns empty ``rag_health`` (no need to probe).
 
-    The RAG chips apply on either Ollama host (the picker selects a host,
-    not an agent with its own allowlist), so ``active_chat_agent_active`` is
-    always False — the section is governed solely by tool support + whether
-    any servers are configured.
-
-    Probes server health in parallel via the cache; render-time cost is
-    one ``asyncio.gather`` per chat-panel render (cache-hit fast path:
+    Probes server health in parallel via the cache; render-time cost is one
+    ``asyncio.gather`` per chat-panel render (cache-hit fast path:
     sub-millisecond).
     """
     if conversation is None or not supports_tools:
         return {
             "active_conversation": conversation,
             "active_chat_supports_tools": supports_tools,
-            "active_chat_agent_active": False,
-            "rag_server_states": [],
+            "servers": [],
             "rag_health": {},
         }
 
     if servers is None:
         servers = _rag_servers.list_servers(db)
-    rag_server_states = queries.get_chat_rag_states(
-        db, conversation.id, [s.name for s in servers]
-    )
     if not servers:
         return {
             "active_conversation": conversation,
             "active_chat_supports_tools": supports_tools,
-            "active_chat_agent_active": False,
-            "rag_server_states": rag_server_states,
+            "servers": [],
             "rag_health": {},
         }
 
@@ -140,8 +81,7 @@ async def _sidebar_rag_context(
     return {
         "active_conversation": conversation,
         "active_chat_supports_tools": supports_tools,
-        "active_chat_agent_active": False,
-        "rag_server_states": rag_server_states,
+        "servers": servers,
         "rag_health": health_map,
     }
 
@@ -262,17 +202,14 @@ def _agent_overrides(
     means the primary host ("host1"); a known name (e.g. ``"host2"``) means
     that registered second host.
 
-    The primary host returns the chat's pinned model with no overrides,
-    ``think=None`` (omit the flag), and ``ollama_host=None`` (local). A
-    selected second host returns its ``ollama_host`` and the chat's per-host
-    model (the ``chat_host_models`` row for that host, falling back to the host
-    spec's ``default_model``), but is otherwise IDENTICAL:
-    ``tool_allowlist=None`` and
-    ``system_prompt_override=None`` route it through the plain-chat generation
-    path, so the per-chat tool/RAG chips and the project system prompt apply on
-    either host — only the machine and the model differ. The host spec's own
-    ``system_prompt`` / ``tools`` fields are deliberately ignored (a host is
-    not an agent).
+    The primary host returns the chat's pinned model with ``think=None`` (omit
+    the flag) and ``ollama_host=None`` (local). A selected second host returns
+    its ``ollama_host`` and the chat's per-host model (the ``chat_host_models``
+    row for that host, falling back to the host spec's ``default_model``), but
+    is otherwise IDENTICAL — both run the plain generation path, so the project
+    system prompt and the full tool registry apply on either host; only the
+    machine and the model differ. The host spec's own ``system_prompt`` /
+    ``tools`` fields are deliberately ignored (a host is not an agent).
 
     Phase 20b gating still applies: when a selected host's spec has a non-None
     ``ollama_host`` AND the app-wide ``remote_ollama_enabled`` toggle is off,
@@ -284,8 +221,6 @@ def _agent_overrides(
     if spec is None:
         return {
             "model": conversation.model,
-            "system_prompt_override": None,
-            "tool_allowlist": None,
             "think": None,
             "ollama_host": None,
         }
@@ -293,8 +228,6 @@ def _agent_overrides(
     # falling back to the host spec's default_model.
     return {
         "model": _effective_model(conversation, spec, db),
-        "system_prompt_override": None,
-        "tool_allowlist": None,
         "think": None,
         "ollama_host": spec.ollama_host,
     }
@@ -353,25 +286,21 @@ def _project_context(
     """Build the shared context for project page renders.
 
     Pulls together global defaults the composer / chat panel need —
-    default temperature, default tool cap, agent registry, current
-    RAG-server states. Centralized here so every project endpoint
-    renders with the same shape.
+    default temperature, default tool cap, host registry. Centralized here
+    so every project endpoint renders with the same shape.
 
     Args:
         db: Open SQLite connection.
-        composer: When True, also includes the per-composer default
-            tool / RAG chip states (only meaningful on Chats-tab empty
-            state where the composer renders).
+        composer: Accepted for call-site symmetry; no longer changes the
+            returned context (the composer's per-chat tool chips were removed
+            in phase 23).
     """
-    ctx = {
+    return {
         "default_temperature": queries.get_default_temperature(db),
         "default_tool_iteration_cap": queries.get_default_tool_iteration_cap(db),
         "global_default_model": queries.get_default_model(db),
         # enabled_agents respects the phase-20b remote-Ollama toggle so a
-        # disabled remote agent disappears from the picker without the
+        # disabled remote host disappears from the picker without the
         # registry having to be rebuilt.
         "agents": enabled_agents(db),
     }
-    if composer:
-        ctx["default_tool_states"] = _default_tool_states()
-    return ctx

@@ -155,29 +155,3 @@ class Message:
     # manual-compact endpoint. NULL = active. Set in
     # `archive_messages_before`; never written by `append_message`.
     archived_at: datetime | None = None
-
-
-@dataclass(frozen=True)
-class ChatToolState:
-    """Enabled/disabled state of one tool for one conversation.
-
-    Attributes:
-        tool_name: Registered name of the tool (matches TOOLS key).
-        enabled: True when the tool is active for this conversation.
-    """
-
-    tool_name: str
-    enabled: bool
-
-
-@dataclass(frozen=True)
-class ChatRagState:
-    """Enabled/disabled state of one RAG server for one conversation.
-
-    Attributes:
-        server_name: Unique name from rag_servers.name (e.g. ``"arxiv"``).
-        enabled: True when this server's chip is toggled on for the chat.
-    """
-
-    server_name: str
-    enabled: bool

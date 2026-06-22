@@ -7,18 +7,16 @@ from app.tools import github as _github  # noqa: F401 — registers tool
 from app.tools.github import _to_raw_url, fetch_github_file
 
 
-def test_fetch_github_file_seeds_into_chip_states() -> None:
-    """fetch_github_file shows up in the chip-bar seed state.
+def test_fetch_github_file_registered_in_tools() -> None:
+    """fetch_github_file registers into the live TOOLS registry.
 
-    Regression guard: `_default_tool_states` used to snapshot tool names at
-    `_helpers.py` import time, which silently dropped any tool whose @tool
-    decorator ran later in the startup order. The fix reads TOOLS live; this
-    test fails if anyone reintroduces the snapshot.
+    Phase 23 offers a tool-capable model the full registry every turn (no
+    allowlist / chip filtering), so registration is all that gates a tool's
+    availability. This fails if the @tool decorator stops running.
     """
-    from app.routes._helpers import _default_tool_states
+    from app.tools import TOOLS
 
-    names = {s.tool_name for s in _default_tool_states()}
-    assert "fetch_github_file" in names
+    assert "fetch_github_file" in TOOLS
 
 
 def test_to_raw_url_passes_raw_through() -> None:

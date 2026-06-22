@@ -15,23 +15,17 @@ import pytest
 from app.connection import open_connection
 from app.db import initialize_database
 from app.queries import (
-    ChatRagState,
-    ChatToolState,
     append_message,
     archive_messages_before,
     count_assistant_messages,
     create_conversation,
     delete_conversation,
     get_chat_host_model,
-    get_chat_rag_states,
-    get_chat_tool_states,
     get_conversation,
     get_default_model,
     get_default_num_ctx,
     get_default_temperature,
     get_default_tool_iteration_cap,
-    get_enabled_rag_server_names,
-    get_enabled_tool_names,
     get_remote_ollama_enabled,
     get_setting,
     list_active_messages,
@@ -39,8 +33,6 @@ from app.queries import (
     list_messages,
     rename_conversation,
     replace_last_assistant_message,
-    seed_chat_rag_servers,
-    seed_chat_tools,
     set_active_agent,
     set_chat_host_model,
     set_conversation_temperature,
@@ -52,8 +44,6 @@ from app.queries import (
     set_name_auto,
     set_remote_ollama_enabled,
     set_setting,
-    toggle_chat_rag_server,
-    toggle_chat_tool,
 )
 
 
@@ -718,212 +708,6 @@ def test_resolve_num_ctx_for_project_falls_back_to_global(
 
     set_default_num_ctx(conn, 8000)
     assert resolve_num_ctx_for_project(conn, None) == 8000
-
-
-# ---------------------------------------------------------------------------
-# Phase 15: per-chat tool enablement
-# ---------------------------------------------------------------------------
-
-
-def _make_chat(conn: sqlite3.Connection) -> int:
-    """Create a minimal conversation and return its id."""
-    chat = create_conversation(conn, name="t", model="llama3")
-    return chat.id
-
-
-def test_seed_chat_tools_all_enabled_by_default(
-    conn: sqlite3.Connection,
-) -> None:
-    """seed_chat_tools with enabled_names=None enables every tool."""
-    cid = _make_chat(conn)
-    seed_chat_tools(conn, cid, ["current_time", "query_rag"])
-    states = get_chat_tool_states(conn, cid, ["current_time", "query_rag"])
-    assert all(s.enabled for s in states)
-
-
-def test_seed_chat_tools_partial_enabled(conn: sqlite3.Connection) -> None:
-    """seed_chat_tools with enabled_names only enables the named subset."""
-    cid = _make_chat(conn)
-    seed_chat_tools(
-        conn, cid, ["current_time", "query_rag"],
-        enabled_names={"current_time"},
-    )
-    states = {s.tool_name: s.enabled
-              for s in get_chat_tool_states(conn, cid, ["current_time", "query_rag"])}
-    assert states["current_time"] is True
-    assert states["query_rag"] is False
-
-
-def test_seed_chat_tools_is_idempotent(conn: sqlite3.Connection) -> None:
-    """Calling seed_chat_tools twice doesn't flip or duplicate rows."""
-    cid = _make_chat(conn)
-    seed_chat_tools(conn, cid, ["current_time"], enabled_names={"current_time"})
-    seed_chat_tools(conn, cid, ["current_time"], enabled_names=set())
-    # Second call uses INSERT OR IGNORE — first write wins.
-    states = get_chat_tool_states(conn, cid, ["current_time"])
-    assert states[0].enabled is True
-
-
-def test_get_chat_tool_states_unseeded_defaults_to_enabled(
-    conn: sqlite3.Connection,
-) -> None:
-    """Conversations with no rows are treated as all-tools-on."""
-    cid = _make_chat(conn)
-    states = get_chat_tool_states(conn, cid, ["current_time", "query_rag"])
-    assert all(s.enabled for s in states)
-    assert [s.tool_name for s in states] == ["current_time", "query_rag"]
-
-
-def test_get_chat_tool_states_respects_seeded_rows(
-    conn: sqlite3.Connection,
-) -> None:
-    """Seeded disabled row is reflected correctly."""
-    cid = _make_chat(conn)
-    seed_chat_tools(conn, cid, ["current_time", "query_rag"],
-                    enabled_names=set())
-    states = {s.tool_name: s.enabled
-              for s in get_chat_tool_states(conn, cid, ["current_time", "query_rag"])}
-    assert states["current_time"] is False
-    assert states["query_rag"] is False
-
-
-def test_toggle_chat_tool_off_from_unseeded(conn: sqlite3.Connection) -> None:
-    """First toggle on an unseeded tool turns it off (implicit on → off)."""
-    cid = _make_chat(conn)
-    result = toggle_chat_tool(conn, cid, "current_time")
-    assert result is False
-    states = get_chat_tool_states(conn, cid, ["current_time"])
-    assert states[0].enabled is False
-
-
-def test_toggle_chat_tool_on_from_off(conn: sqlite3.Connection) -> None:
-    """Second toggle flips back to on."""
-    cid = _make_chat(conn)
-    toggle_chat_tool(conn, cid, "current_time")   # off
-    result = toggle_chat_tool(conn, cid, "current_time")  # on
-    assert result is True
-
-
-def test_get_enabled_tool_names_returns_subset(
-    conn: sqlite3.Connection,
-) -> None:
-    """Only enabled tool names are returned."""
-    cid = _make_chat(conn)
-    seed_chat_tools(conn, cid, ["current_time", "query_rag"],
-                    enabled_names={"current_time"})
-    enabled = get_enabled_tool_names(conn, cid, ["current_time", "query_rag"])
-    assert enabled == ["current_time"]
-
-
-def test_get_enabled_tool_names_unseeded_returns_all(
-    conn: sqlite3.Connection,
-) -> None:
-    """Unseeded conversation: all names returned (missing row = enabled)."""
-    cid = _make_chat(conn)
-    enabled = get_enabled_tool_names(conn, cid, ["current_time", "query_rag"])
-    assert enabled == ["current_time", "query_rag"]
-
-
-def test_chat_tool_state_dataclass(conn: sqlite3.Connection) -> None:
-    """ChatToolState is frozen and carries the right fields."""
-    state = ChatToolState(tool_name="current_time", enabled=True)
-    assert state.tool_name == "current_time"
-    assert state.enabled is True
-    with pytest.raises(Exception):
-        state.enabled = False  # type: ignore[misc]
-
-
-# ---------------------------------------------------------------------------
-# Phase 15b: per-chat RAG server enablement
-# ---------------------------------------------------------------------------
-
-
-def test_seed_chat_rag_servers_all_enabled_by_default(
-    conn: sqlite3.Connection,
-) -> None:
-    """seed_chat_rag_servers with enabled_names=None enables every server."""
-    cid = _make_chat(conn)
-    seed_chat_rag_servers(conn, cid, ["arxiv", "pubmed"])
-    states = get_chat_rag_states(conn, cid, ["arxiv", "pubmed"])
-    assert {s.server_name: s.enabled for s in states} == {"arxiv": True, "pubmed": True}
-
-
-def test_seed_chat_rag_servers_partial_enabled(conn: sqlite3.Connection) -> None:
-    """seed_chat_rag_servers with enabled_names only enables the named subset."""
-    cid = _make_chat(conn)
-    seed_chat_rag_servers(conn, cid, ["arxiv", "pubmed"], enabled_names={"arxiv"})
-    states = get_chat_rag_states(conn, cid, ["arxiv", "pubmed"])
-    assert {s.server_name: s.enabled for s in states} == {"arxiv": True, "pubmed": False}
-
-
-def test_seed_chat_rag_servers_is_idempotent(conn: sqlite3.Connection) -> None:
-    """Calling seed_chat_rag_servers twice doesn't flip rows already written."""
-    cid = _make_chat(conn)
-    seed_chat_rag_servers(conn, cid, ["arxiv"], enabled_names={"arxiv"})
-    seed_chat_rag_servers(conn, cid, ["arxiv"], enabled_names=set())
-    states = get_chat_rag_states(conn, cid, ["arxiv"])
-    # First seed wins; second call is a no-op (INSERT OR IGNORE).
-    assert states[0].enabled is True
-
-
-def test_get_chat_rag_states_unseeded_defaults_to_enabled(
-    conn: sqlite3.Connection,
-) -> None:
-    """Unseeded conversation: all servers default to enabled."""
-    cid = _make_chat(conn)
-    states = get_chat_rag_states(conn, cid, ["arxiv", "pubmed"])
-    assert all(s.enabled for s in states)
-
-
-def test_get_chat_rag_states_respects_seeded_rows(
-    conn: sqlite3.Connection,
-) -> None:
-    """Seeded disabled row is returned as disabled."""
-    cid = _make_chat(conn)
-    seed_chat_rag_servers(conn, cid, ["arxiv", "pubmed"], enabled_names={"pubmed"})
-    states = {s.server_name: s.enabled for s in get_chat_rag_states(conn, cid, ["arxiv", "pubmed"])}
-    assert states == {"arxiv": False, "pubmed": True}
-
-
-def test_toggle_chat_rag_server_off_from_unseeded(conn: sqlite3.Connection) -> None:
-    """First toggle on an unseeded row inserts disabled (on → off)."""
-    cid = _make_chat(conn)
-    result = toggle_chat_rag_server(conn, cid, "arxiv")
-    assert result is False
-    states = get_chat_rag_states(conn, cid, ["arxiv"])
-    assert states[0].enabled is False
-
-
-def test_toggle_chat_rag_server_on_from_off(conn: sqlite3.Connection) -> None:
-    """Second toggle flips back to enabled (off → on)."""
-    cid = _make_chat(conn)
-    toggle_chat_rag_server(conn, cid, "arxiv")  # off
-    result = toggle_chat_rag_server(conn, cid, "arxiv")  # on
-    assert result is True
-
-
-def test_get_enabled_rag_server_names_unseeded(conn: sqlite3.Connection) -> None:
-    """Unseeded conversation: all names returned (missing row = enabled)."""
-    cid = _make_chat(conn)
-    enabled = get_enabled_rag_server_names(conn, cid, ["arxiv", "pubmed"])
-    assert enabled == ["arxiv", "pubmed"]
-
-
-def test_get_enabled_rag_server_names_filtered(conn: sqlite3.Connection) -> None:
-    """Only enabled servers are returned when some are toggled off."""
-    cid = _make_chat(conn)
-    seed_chat_rag_servers(conn, cid, ["arxiv", "pubmed"], enabled_names={"pubmed"})
-    enabled = get_enabled_rag_server_names(conn, cid, ["arxiv", "pubmed"])
-    assert enabled == ["pubmed"]
-
-
-def test_chat_rag_state_dataclass(conn: sqlite3.Connection) -> None:
-    """ChatRagState is frozen and carries the right fields."""
-    state = ChatRagState(server_name="arxiv", enabled=True)
-    assert state.server_name == "arxiv"
-    assert state.enabled is True
-    with pytest.raises(Exception):
-        state.enabled = False  # type: ignore[misc]
 
 
 # ---------------------------------------------------------------------------

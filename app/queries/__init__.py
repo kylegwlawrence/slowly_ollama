@@ -8,14 +8,13 @@ import X`` continues to work for every X the old module exposed.
 
 Submodules:
     :mod:`app.queries._models` — shared dataclasses (Conversation, Message,
-        Project, ChatToolState, ChatRagState) + Role literal + _UNSET sentinel.
+        Project) + Role literal + _UNSET sentinel.
     :mod:`app.queries.conversations` — CRUD for the conversations table.
     :mod:`app.queries.messages` — CRUD for the messages table + token-count
         helpers.
     :mod:`app.queries.projects` — CRUD for the projects table + slugifier.
     :mod:`app.queries.settings` — app_settings get/set + global default-*
         helpers (temperature, model, tool cap, num_ctx).
-    :mod:`app.queries.chat_state` — per-chat tool + RAG-server chip state.
     :mod:`app.queries.chat_hosts` — per-chat model for each non-primary host.
 
 Each function takes a ``sqlite3.Connection`` and wraps writes in
@@ -26,8 +25,6 @@ instead of strings.
 """
 
 from app.queries._models import (
-    ChatRagState,
-    ChatToolState,
     Conversation,
     Message,
     Project,
@@ -38,16 +35,6 @@ from app.queries._models import (
 from app.queries.chat_hosts import (
     get_chat_host_model,
     set_chat_host_model,
-)
-from app.queries.chat_state import (
-    get_chat_rag_states,
-    get_chat_tool_states,
-    get_enabled_rag_server_names,
-    get_enabled_tool_names,
-    seed_chat_rag_servers,
-    seed_chat_tools,
-    toggle_chat_rag_server,
-    toggle_chat_tool,
 )
 from app.queries.conversations import (
     create_conversation,
@@ -100,8 +87,6 @@ from app.queries.settings import (
 
 __all__ = [
     # Models
-    "ChatRagState",
-    "ChatToolState",
     "Conversation",
     "Message",
     "Project",
@@ -155,13 +140,4 @@ __all__ = [
     # Per-chat host models
     "get_chat_host_model",
     "set_chat_host_model",
-    # Chat state (per-chat chips)
-    "get_chat_rag_states",
-    "get_chat_tool_states",
-    "get_enabled_rag_server_names",
-    "get_enabled_tool_names",
-    "seed_chat_rag_servers",
-    "seed_chat_tools",
-    "toggle_chat_rag_server",
-    "toggle_chat_tool",
 ]

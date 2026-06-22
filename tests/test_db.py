@@ -73,15 +73,14 @@ def test_initialize_is_idempotent(initialized_db: Path) -> None:
             )
         }
     # Phase 12a added rag_servers; phase 13a added app_settings;
-    # phase 15 added chat_tool_settings; phase 15b added chat_rag_settings;
-    # conversations + messages predate all.
+    # conversations + messages predate all. Phase 23 dropped the per-chat
+    # chip tables (chat_tool_settings, chat_rag_settings) from the schema, so
+    # a fresh DB no longer creates them.
     assert tables == {
         "conversations",
         "messages",
         "rag_servers",
         "app_settings",
-        "chat_tool_settings",
-        "chat_rag_settings",
         # Phase 17 added the projects table.
         "projects",
         # Generic per-chat host→model store (replaced the slowly_model column).

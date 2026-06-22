@@ -32,19 +32,9 @@
     {# Shared with the in-chat message form so both pills behave
        identically (autogrow, Enter-to-submit, send icon). #}
     {% include "_input_pill.html" %}
-    {# Phase 15: tool chips default to all-on. Clicking toggles state
-       client-side (app.js). Checked boxes submit as `enabled_tools` form
-       fields with POST /chats so the new chat seeds its tool rows.
-       Phase 19: RAG-server chips moved to the sidebar's Sources
-       section, so the composer renders only non-RAG tool chips here.
-       New chats default to all-RAG-servers-on via the empty-form path
-       in create_project_chat_endpoint. #}
-    {% if default_tool_states %}
-    {% set is_composer = true %}
-    {% set supports_tools = true %}
-    {% set tool_states = default_tool_states %}
-    {% include "_tool_chips.html" %}
-    {% endif %}
+    {# Phase 23: per-chat tool/RAG chips were removed. A tool-capable model is
+       offered the full tool registry on every turn, so there's nothing to pick
+       here at chat-creation time. #}
     {# Model selector lives in a toolbar below the input. The placeholder
        option blocks submission via the `required` attribute until /models
        responds (or until the user manually picks). #}

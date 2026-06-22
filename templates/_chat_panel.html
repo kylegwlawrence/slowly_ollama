@@ -15,9 +15,9 @@
             aria-controls="chat-controls-{{ conversation.id }}">
       <span class="material-symbols-outlined" aria-hidden="true">tune</span>
     </button>
-    {# Collapsible controls: host picker, Temp, Tool cap, tool chips, backup
-       controls. OOB-safe — #agent-indicator/#chat-tool-chips/#backup-chip are
-       swapped by id regardless of this wrapper. #}
+    {# Collapsible controls: host picker, Temp, Tool cap, backup controls.
+       OOB-safe — #agent-indicator/#backup-chip are swapped by id regardless
+       of this wrapper. #}
     <div class="chat-panel__controls" id="chat-controls-{{ conversation.id }}">
     {# Phase 16: agent picker. Its OWN form, NOT nested inside .message-form —
        if it were, the message form's hx-post + hx-target would inherit onto
@@ -62,13 +62,9 @@
       </div>
     </form>
     {% endif %}
-    {# Per-chat tool chips, rendered only when the model supports tools.
-       Wrapped in _chat_tool_chips.html so the host-picker endpoint can
-       OOB-swap the whole #chat-tool-chips bar. The chips apply on either
-       host, so they render the same regardless of the selected host. #}
-    {% if supports_tools %}
-    {% include "_chat_tool_chips.html" %}
-    {% endif %}
+    {# Phase 23: per-chat tool/RAG chips removed — a tool-capable model gets
+       the full tool registry every turn, so there's nothing to toggle here.
+       RAG-source health now lives in the sidebar's read-only Sources panel. #}
     {# Phase 21/22: backup status chip + pull/push buttons. Grouped with
        margin-left: auto so they anchor to the right edge of the header row. #}
     {% if backups_enabled() %}

@@ -15,8 +15,6 @@ Routes:
     POST   /chats/{id}/agent                 — set/clear active agent
     POST   /chats/{id}/compact                — summarize older turns (phase 18)
     GET    /chats/{id}/archived               — archived rows for disclosure
-    POST   /chats/{id}/tools/{name}          — toggle per-chat tool
-    POST   /chats/{id}/rag-servers/{name}    — toggle per-chat RAG server
     PATCH  /chats/{id}/temperature           — set per-chat temperature
     PATCH  /chats/{id}/tool-iteration-cap    — set per-chat tool cap
     GET    /backup/status                    — remote-backup status chip (phase 21)
@@ -30,7 +28,6 @@ from fastapi import APIRouter, Form, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 
 from app import backup, config, generation, ollama, queries, render
-from app import rag_servers as _rag_servers
 from app.agents import get_agent
 from app.connection import open_connection
 from app.db import initialize_database
@@ -38,7 +35,6 @@ from app.dependencies import DB, OllamaClient
 from app.ollama import OllamaProtocolError, OllamaUnavailable
 from app.routes._helpers import (
     _agent_overrides,
-    _chip_states,
     _effective_model,
     _resolve_active_spec,
     _resolve_num_ctx,
@@ -46,7 +42,6 @@ from app.routes._helpers import (
     _spawn_health_refresh,
 )
 from app.templates import templates
-from app.tools import TOOLS
 
 router = APIRouter()
 
@@ -557,22 +552,10 @@ async def set_chat_agent_endpoint(
         oob=True,
     )
 
-    chips_oob = ""
-    supports_tools = await ollama.model_supports_tools(client, conversation.model)
-    if supports_tools:
-        tool_states, rag_server_states = _chip_states(db, conversation_id)
-        chips_oob = templates.get_template("_chat_tool_chips.html").render(
-            conversation=conversation,
-            active_agent_spec=spec,
-            supports_tools=True,
-            tool_states=tool_states,
-            rag_server_states=rag_server_states,
-            oob=True,
-        )
-
-    # Phase 19: agent state changes whether the sidebar Sources section
-    # should be visible (Normal → show, named agent → hide). OOB-swap the
-    # section so it reflects the new agent state.
+    # Switching host can change the effective model → whether the model
+    # supports tools → whether the sidebar Sources health panel shows. OOB-swap
+    # the section so it reflects the newly-selected host.
+    supports_tools = await ollama.model_supports_tools(client, effective_model)
     sidebar_ctx = await _sidebar_rag_context(
         db, conversation, supports_tools=supports_tools
     )
@@ -584,7 +567,7 @@ async def set_chat_agent_endpoint(
         **sidebar_ctx,
     )
 
-    return HTMLResponse(content=indicator_html + chips_oob + sidebar_rag_oob)
+    return HTMLResponse(content=indicator_html + sidebar_rag_oob)
 
 
 @router.post(
@@ -855,96 +838,6 @@ async def archived_messages_endpoint(
         request=request,
         name="_archived_messages.html",
         context={"blocks": blocks},
-    )
-
-
-@router.post(
-    "/chats/{conversation_id}/tools/{tool_name}",
-    response_class=HTMLResponse,
-)
-async def toggle_chat_tool_endpoint(
-    request: Request,
-    conversation_id: int,
-    tool_name: str,
-    db: DB,
-) -> Response:
-    """Toggle one tool on/off for a conversation; return the updated chip bar.
-
-    Called by an HTMX hx-post on each tool chip. Returns the full chip
-    bar fragment for innerHTML swap into ``#chat-tool-chips`` so chip
-    ordering stays stable and all chip states are in sync.
-
-    Chips are only visible when the model supports tools, so supports_tools
-    is always True here — no capability re-check needed.
-
-    Raises:
-        HTTPException 404: When the conversation or tool name is unknown.
-    """
-    try:
-        conversation = queries.get_conversation(db, conversation_id)
-    except LookupError as e:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
-    if tool_name not in TOOLS:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Unknown tool: {tool_name}")
-    queries.toggle_chat_tool(db, conversation_id, tool_name)
-    tool_states, rag_server_states = _chip_states(db, conversation_id)
-    return templates.TemplateResponse(
-        request=request,
-        name="_tool_chips.html",
-        context={
-            "conversation": conversation,
-            "tool_states": tool_states,
-            "rag_server_states": rag_server_states,
-            "supports_tools": True,
-            "is_composer": False,
-        },
-    )
-
-
-@router.post(
-    "/chats/{conversation_id}/rag-servers/{server_name}",
-    response_class=HTMLResponse,
-)
-async def toggle_chat_rag_server_endpoint(
-    request: Request,
-    conversation_id: int,
-    server_name: str,
-    db: DB,
-) -> Response:
-    """Toggle one RAG server on/off for a conversation; return the sidebar
-    Sources section (phase 19 — chips moved out of the chat header).
-
-    Called by an HTMX hx-post on each per-server chip in the sidebar.
-    Each chip's ``hx-target="#sidebar-rag-section"`` + ``hx-swap="outerHTML"``
-    consumes the rendered section directly.
-
-    404s when the conversation is unknown or the server name is not in the
-    currently-configured set — prevents toggling phantom servers.
-
-    Raises:
-        HTTPException 404: When the conversation or server name is unknown.
-    """
-    try:
-        conversation = queries.get_conversation(db, conversation_id)
-    except LookupError as e:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
-    servers = _rag_servers.list_servers(db)
-    if server_name not in {s.name for s in servers}:
-        raise HTTPException(
-            status.HTTP_404_NOT_FOUND, f"Unknown RAG server: {server_name}"
-        )
-    queries.toggle_chat_rag_server(db, conversation_id, server_name)
-    sidebar_ctx = await _sidebar_rag_context(
-        db, conversation, supports_tools=True, servers=servers
-    )
-    return templates.TemplateResponse(
-        request=request,
-        name="_sidebar_rag_section.html",
-        context={
-            "conversation": conversation,
-            "oob": False,
-            **sidebar_ctx,
-        },
     )
 
 

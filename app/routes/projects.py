@@ -29,7 +29,6 @@ from app.dependencies import DB, OllamaClient
 from app.projects import ensure_project_workspace
 from app.routes._helpers import (
     _agent_overrides,
-    _chip_states,
     _composer_host_context,
     _effective_model,
     _placeholder_name,
@@ -38,7 +37,6 @@ from app.routes._helpers import (
     _sidebar_rag_context,
     _spawn_health_refresh,
 )
-from app.tools import TOOLS
 from app.templates import templates
 
 router = APIRouter()
@@ -313,15 +311,14 @@ def _render_project_page(
         # highlight correctly. Default None for the empty-state /
         # Files / Settings tabs.
         "active_chat_id": None,
-        # Phase 19: sidebar Sources section defaults — overridden via
-        # `extra` on chat-panel routes that compute the real values.
-        # Always present so templates can read them without |default
-        # gymnastics, and so the partial renders an empty (invisible)
-        # wrapper as a stable OOB target on chat-less pages.
+        # Sidebar Sources health-panel defaults — overridden via `extra` on
+        # chat-panel routes that compute the real values. Always present so
+        # templates can read them without |default gymnastics, and so the
+        # partial renders an empty (invisible) wrapper as a stable OOB target
+        # on chat-less pages.
         "active_conversation": None,
         "active_chat_supports_tools": False,
-        "active_chat_agent_active": False,
-        "rag_server_states": [],
+        "servers": [],
         "rag_health": {},
         # Most tabs need agents + defaults available; include them so
         # included partials don't have to re-fetch.
@@ -461,10 +458,6 @@ async def project_chat_panel_endpoint(
     supports_tools = await ollama.model_supports_tools(
         client, conversation.model
     )
-    if supports_tools:
-        tool_states, rag_server_states = _chip_states(db, conversation_id)
-    else:
-        tool_states, rag_server_states = [], []
 
     # Resolve through the toggle so a disabled remote host renders as the
     # primary (matches the indicator + generation path).
@@ -497,8 +490,6 @@ async def project_chat_panel_endpoint(
             "archived_count": archived_count,
             "pending_stream_url": pending_stream_url,
             "supports_tools": supports_tools,
-            "tool_states": tool_states,
-            "rag_server_states": rag_server_states,
             "active_agent_spec": active_agent_spec,
             "effective_model": effective_model,
             "model_loaded": model_loaded,
@@ -525,11 +516,9 @@ async def create_project_chat_endpoint(
 ) -> Response:
     """Create a chat inside a project AND save its first message.
 
-    Same shape as the pre-phase-17 ``POST /chats``: persists the chat,
-    seeds per-chat tool / RAG rows from the composer checkboxes, spawns
-    the generation task, and returns the rendered chat panel + the OOB
-    sidebar row in one body. ``HX-Push-Url`` syncs the address bar to
-    the canonical project-scoped URL.
+    Persists the chat, spawns the generation task, and returns the rendered
+    chat panel + the OOB sidebar row in one body. ``HX-Push-Url`` syncs the
+    address bar to the canonical project-scoped URL.
 
     Raises:
         HTTPException 404: When the project does not exist.
@@ -571,26 +560,9 @@ async def create_project_chat_endpoint(
         queries.set_chat_host_model(db, chat.id, agent_spec.name, model)
     queries.append_message(db, chat.id, "user", content)
 
-    form_data = await request.form()
-    enabled_tools_raw = form_data.getlist("enabled_tools")
-    enabled_names: set[str] | None = (
-        set(enabled_tools_raw) if enabled_tools_raw else None
-    )
-    queries.seed_chat_tools(
-        db, chat.id, list(TOOLS), enabled_names=enabled_names
-    )
-
-    enabled_rag_raw = form_data.getlist("enabled_rag_servers")
-    enabled_rag: set[str] | None = (
-        set(enabled_rag_raw) if enabled_rag_raw else None
-    )
+    # All configured RAG servers feed the sidebar health panel below; fetch
+    # once and reuse.
     rag_servers_list = _rag_servers.list_servers(db)
-    queries.seed_chat_rag_servers(
-        db,
-        chat.id,
-        [s.name for s in rag_servers_list],
-        enabled_names=enabled_rag,
-    )
 
     messages = queries.list_messages(db, chat.id)
     blocks = render.group_messages_for_render(messages)
@@ -611,12 +583,6 @@ async def create_project_chat_endpoint(
     _spawn_health_refresh(db)
 
     supports_tools = await ollama.model_supports_tools(client, chat.model)
-    if supports_tools:
-        tool_states, rag_server_states = _chip_states(
-            db, chat.id, servers=rag_servers_list
-        )
-    else:
-        tool_states, rag_server_states = [], []
 
     # Toggle-aware host spec for the header chip (a disabled remote host
     # renders as the primary), matching the generation path's resolution.
@@ -633,8 +599,6 @@ async def create_project_chat_endpoint(
         pending_stream_url=f"/chats/{chat.id}/stream",
         active_chat_id=chat.id,
         supports_tools=supports_tools,
-        tool_states=tool_states,
-        rag_server_states=rag_server_states,
         agents=list_agents(),
         active_agent_spec=active_spec,
         effective_model=_effective_model(chat, active_spec, db),

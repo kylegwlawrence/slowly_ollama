@@ -151,28 +151,11 @@ CREATE TABLE IF NOT EXISTS app_settings (
     value TEXT NOT NULL
 );
 
--- Phase 15: per-chat tool enablement. One row per (conversation_id, tool_name).
--- A missing row means enabled (unseeded chats default to all tools on).
--- Cascade-deletes with the parent conversation.
-CREATE TABLE IF NOT EXISTS chat_tool_settings (
-    conversation_id INTEGER NOT NULL
-        REFERENCES conversations(id) ON DELETE CASCADE,
-    tool_name       TEXT NOT NULL,
-    enabled         INTEGER NOT NULL DEFAULT 1,
-    PRIMARY KEY (conversation_id, tool_name)
-);
-
--- Phase 15b: per-chat RAG server enablement. One row per (conversation_id, server_name).
--- A missing row means enabled (default on). Cascade-deletes with the parent conversation.
--- server_name matches rag_servers.name — no FK enforced; server deletions orphan rows
--- that are harmlessly ignored on lookup.
-CREATE TABLE IF NOT EXISTS chat_rag_settings (
-    conversation_id INTEGER NOT NULL
-        REFERENCES conversations(id) ON DELETE CASCADE,
-    server_name     TEXT NOT NULL,
-    enabled         INTEGER NOT NULL DEFAULT 1,
-    PRIMARY KEY (conversation_id, server_name)
-);
+-- Phase 23 removed the per-chat tool/RAG chip tables (chat_tool_settings,
+-- chat_rag_settings). A tool-capable model is now offered the full registry
+-- every turn and query_rag searches every configured RAG server, so no
+-- per-chat enablement state is persisted. Existing DBs keep the now-orphan
+-- tables harmlessly — no destructive migration drops them.
 
 -- Per-chat model for each non-primary Ollama host the chat has picked a
 -- model for. One row per (conversation_id, host_name); host_name matches a

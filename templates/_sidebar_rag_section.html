@@ -1,35 +1,34 @@
-{# Phase 19: per-chat RAG-source chips, rendered in the sidebar above the
-   Settings footer. Replaces the old RAG-chip iteration in
-   _tool_chips.html / the chat-panel header.
+{# Read-only RAG-source health panel (phase 23).
+
+   The per-server gating chips (phase 15b/19) were removed — query_rag now
+   always searches every configured RAG server — so this section is purely a
+   health indicator: it lists every configured server with its cached
+   liveness. Nothing here toggles anything.
 
    Rendering shape:
-     <section id="sidebar-rag-section"> is ALWAYS emitted when there is
-     an active chat — even if the section "should be hidden" (agent active,
-     no servers configured, model doesn't support tools). Hidden = empty
-     wrapper with no styling class. This keeps the id present so the
-     toggle endpoint and the agent-picker endpoint have a stable
-     hx-target / hx-swap-oob anchor.
+     <section id="sidebar-rag-section"> is ALWAYS emitted when there is an
+     active chat, even when hidden, so it stays a stable hx-swap-oob anchor
+     for the chat-switch / host-pick endpoints. Hidden = empty wrapper with no
+     styling class.
 
-     The visible content (header + chip list) renders only when ALL of
-     these are true:
+     Visible content (header + list) renders only when ALL are true:
+       - there is an active chat (conversation)
        - active_chat_supports_tools
-       - NOT active_chat_agent_active
-       - len(rag_server_states) > 0
+       - len(servers) > 0
 
-   Context vars (passed via _sidebar_rag_context in app/routes/_helpers.py):
+   Context vars (via _sidebar_rag_context in app/routes/_helpers.py):
      conversation: Conversation         — the active chat.
-     rag_server_states: list[ChatRagState]
-     rag_health: dict[str, bool | None] — None = unknown (URL malformed
-                                           or pre-cache); render grey.
-     active_chat_supports_tools, active_chat_agent_active: bool.
-     oob: bool — when True, add hx-swap-oob="true" so the section can
-                  replace its sibling-in-DOM from an OOB response.
+     servers: list[RagServer]           — all configured RAG servers.
+     rag_health: dict[str, bool | None] — True = up (green), False = down
+                                          (red), None = unknown (grey).
+     active_chat_supports_tools: bool.
+     oob: bool — when True, add hx-swap-oob="true" so the section can replace
+                  its sibling-in-DOM from an OOB response.
 #}
 {% set _show = (
   conversation|default(none) is not none
   and active_chat_supports_tools|default(false)
-  and not active_chat_agent_active|default(false)
-  and (rag_server_states|default([])|length > 0)
+  and (servers|default([])|length > 0)
 ) %}
 <section id="sidebar-rag-section"
          {%- if _show %} class="sidebar__rag-section"{% endif %}
@@ -37,28 +36,23 @@
   {%- if _show %}
   <header class="sidebar__rag-header">
     <span class="sidebar__rag-title">Sources</span>
-    <span class="sidebar__rag-subtitle">(this chat)</span>
+    <span class="sidebar__rag-subtitle">(available)</span>
   </header>
   <ul class="sidebar__rag-chips">
-    {% for state in rag_server_states %}
-      {# Status only drives the visual when the chip is ENABLED — a
-         disabled server's health isn't actionable (it won't be queried
-         anyway), so we render it as plain "off" even when /health
-         reported it down. Red is reserved for enabled-but-broken. #}
-      {% set status = rag_health.get(state.server_name) %}
-      {% set _red = (state.enabled and status is sameas false) %}
+    {% for server in servers %}
+      {# green = reachable, red = unreachable, grey = health unknown (URL
+         malformed or pre-cache). query_rag uses every server regardless;
+         this is informational only. #}
+      {% set status = rag_health.get(server.name) %}
       {% set state_class = (
-        'tool-chip--unavailable' if _red else
-        ('tool-chip--on' if state.enabled else 'tool-chip--off')
+        'tool-chip--unavailable' if status is sameas false else
+        ('tool-chip--on' if status is sameas true else 'tool-chip--off')
       ) %}
       <li>
-        <button class="tool-chip {{ state_class }}"
-                hx-post="/chats/{{ conversation.id }}/rag-servers/{{ state.server_name }}"
-                hx-target="#sidebar-rag-section"
-                hx-swap="outerHTML"
-                {%- if _red %} title="Server unreachable — clicking still toggles; query_rag will surface the error if you send"{% endif %}>
-          <span class="tool-chip__label">{{ state.server_name.removesuffix('_rag') }}</span>
-        </button>
+        <span class="tool-chip {{ state_class }}"
+              {%- if status is sameas false %} title="Server unreachable — query_rag will surface the error if used"{% elif status is sameas none %} title="Health unknown"{% endif %}>
+          <span class="tool-chip__label">{{ server.name.removesuffix('_rag') }}</span>
+        </span>
       </li>
     {% endfor %}
   </ul>

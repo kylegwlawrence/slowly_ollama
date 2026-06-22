@@ -284,34 +284,24 @@ async def start_generation(
     tool_iteration_cap: int = _TOOL_ITERATION_CAP,
     history: list,
     on_complete: Literal["append", "replace"],
-    system_prompt_override: str | None = None,
-    tool_allowlist: frozenset[str] | None = None,
     think: bool | None = None,
     num_ctx: int | None = None,
     ollama_host: str | None = None,
 ) -> GenerationState:
     """Register a GenerationState and spawn the producer task.
 
-    Always runs the single-agent producer ``_run_generation``. When the
-    caller is invoking a named agent (phase 16), it passes the agent's
-    ``model`` (as ``model``), ``system_prompt_override``, and
-    ``tool_allowlist``; otherwise those default to None and the producer
-    runs the ordinary per-chat-chips plain-chat path.
+    Runs the producer ``_run_generation``. A tool-capable model is always
+    offered the full tool registry (gated only on capability); the project's
+    system prompt, the selected Ollama host, and the chat's ``think`` flag are
+    threaded through.
 
     Args:
-        system_prompt_override: The invoked agent's system prompt, injected
-            on every turn. None for Normal chat (the producer falls back to
-            its tool-use nudge, and only when tools are present).
-        tool_allowlist: The invoked agent's permitted tool names. None for
-            Normal chat (the producer filters by the per-chat tool/RAG
-            chips). An empty frozenset means "agent with no tools".
-        think: The invoked agent's Ollama ``think`` flag (True/False), or
-            None for Normal chat (omit the flag → Ollama default). Passed
-            straight through to the chat calls.
-        ollama_host: The invoked agent's optional remote Ollama base URL.
-            When set, the producer routes every chat call (probe + stream)
-            at that host instead of the shared client's local base_url.
-            None keeps the existing local-Ollama behavior.
+        think: The Ollama ``think`` flag (True/False), or None to omit it
+            (Ollama default). Passed straight through to the chat calls.
+        ollama_host: An optional remote Ollama base URL. When set, the
+            producer routes every chat call (probe + stream) at that host
+            instead of the shared client's local base_url. None keeps the
+            local-Ollama behavior.
 
     Raises:
         GenerationInProgress: if a generation is already running for
@@ -352,8 +342,6 @@ async def start_generation(
             tool_iteration_cap=tool_iteration_cap,
             history=history,
             on_complete=on_complete,
-            system_prompt_override=system_prompt_override,
-            tool_allowlist=tool_allowlist,
             think=think,
             num_ctx=num_ctx,
             ollama_host=ollama_host,
@@ -564,88 +552,31 @@ async def _maybe_emit_title(
     await _emit(state, "title", row_html)
 
 
-def _chat_tool_specs(
-    db: sqlite3.Connection, conversation_id: int
-) -> list[dict]:
-    """Tool specs for a Normal (non-agent) turn — per-chat chips filter them.
+def _turn_tool_specs(db: sqlite3.Connection) -> list[dict]:
+    """All registered tool specs for a turn, gated only by configuration.
 
-    The per-chat tool chips (phase 15) and per-server RAG chips (phase 15b)
-    select which registered tools the model sees. ``query_rag`` has no chip of
-    its own — its sole gate is whether any RAG server is enabled for the chat;
-    when at least one is, its ``source`` description is rebuilt from the
-    enabled servers.
+    Every registered tool is offered to a tool-capable model — phase 23
+    removed the per-chat / per-agent allowlist (the chip gating of phases
+    15/15b). ``query_rag`` is the one conditional: it is included only when at
+    least one RAG server is configured, with its ``source`` description rebuilt
+    from every configured server.
 
     Args:
-        db: Open SQLite connection.
-        conversation_id: Chat whose chip state filters the registry.
+        db: Open SQLite connection (to read the configured RAG servers).
 
     Returns:
         Ollama-shaped tool specs, possibly empty.
     """
-    enabled_names = set(
-        queries.get_enabled_tool_names(db, conversation_id, list(TOOLS.keys()))
-    )
-    all_rag_servers = _rag_servers.list_servers(db)
-    enabled_rag_names = set(
-        queries.get_enabled_rag_server_names(
-            db, conversation_id, [s.name for s in all_rag_servers]
-        )
-    )
-    enabled_rag_servers = [
-        s for s in all_rag_servers if s.name in enabled_rag_names
-    ]
-
-    specs: list[dict] = []
-    # tool_specs_for_ollama() deep-copies each spec's parameters dict, so
-    # patching `source.description` below is safe — the mutation is local
-    # to this turn's spec list and never leaks back into the registry.
-    for spec in tool_specs_for_ollama():
-        name = spec["function"]["name"]
-        if name == RAG_TOOL_NAME:
-            if not enabled_rag_servers:
-                continue  # All server chips off → exclude query_rag.
-            spec["function"]["parameters"]["properties"]["source"][
-                "description"
-            ] = build_source_description(enabled_rag_servers)
-            specs.append(spec)
-            continue
-        if name not in enabled_names:
-            continue
-        specs.append(spec)
-    return specs
-
-
-def _agent_tool_specs(
-    db: sqlite3.Connection, allowlist: frozenset[str]
-) -> list[dict]:
-    """Tool specs for an invoked agent — its allowlist is the only gate.
-
-    The agent's per-chat chips do NOT apply; the allowlist alone decides which
-    registered tools are offered. ``query_rag`` is included only when it's in
-    the allowlist AND at least one RAG server is configured (using all
-    configured servers for the ``source`` description — there are no per-agent
-    server chips).
-
-    Args:
-        db: Open SQLite connection.
-        allowlist: Tool names the agent may call. Empty → no tools.
-
-    Returns:
-        Ollama-shaped tool specs, possibly empty.
-    """
-    if not allowlist:
-        return []
     all_rag_servers = _rag_servers.list_servers(db)
     specs: list[dict] = []
     # tool_specs_for_ollama() deep-copies each spec's parameters dict, so
-    # patching `source.description` below is local to this turn's spec list.
+    # patching `source.description` below is local to this turn's spec list
+    # and never leaks back into the registry.
     for spec in tool_specs_for_ollama():
         name = spec["function"]["name"]
-        if name not in allowlist:
-            continue
         if name == RAG_TOOL_NAME:
             if not all_rag_servers:
-                continue
+                continue  # No RAG servers configured → omit query_rag.
             spec["function"]["parameters"]["properties"]["source"][
                 "description"
             ] = build_source_description(all_rag_servers)
@@ -664,8 +595,6 @@ async def _run_generation(
     tool_iteration_cap: int = _TOOL_ITERATION_CAP,
     history: list,
     on_complete: Literal["append", "replace"],
-    system_prompt_override: str | None = None,
-    tool_allowlist: frozenset[str] | None = None,
     think: bool | None = None,
     num_ctx: int | None = None,
     ollama_host: str | None = None,
@@ -687,20 +616,11 @@ async def _run_generation(
     `319dd40`) for loop semantics — they're unchanged.
     """
     working_history = list(history)
-    # Build the candidate tool specs, then gate on model capability.
+    # Every registered tool is offered, gated only on model capability.
     # `model_supports_tools` returns False on cache/network failure, which
-    # collapses to tools_payload = None (omits the key entirely).
-    #
-    # Two paths:
-    #   - Agent turn (phase 16, `tool_allowlist is not None`): the invoked
-    #     agent's allowlist governs the specs (an empty frozenset → no tools).
-    #   - Normal turn (`tool_allowlist is None`): the per-chat tool/RAG chips
-    #     filter the registry, exactly as before.
-    if tool_allowlist is not None:
-        _enabled_specs = _agent_tool_specs(db, tool_allowlist)
-    else:
-        _enabled_specs = _chat_tool_specs(db, conversation_id)
-
+    # collapses to tools_payload = None (omits the key entirely). query_rag is
+    # included only when a RAG server is configured (see _turn_tool_specs).
+    _enabled_specs = _turn_tool_specs(db)
     tools_payload = (
         _enabled_specs
         if _enabled_specs
@@ -718,24 +638,16 @@ async def _run_generation(
         # to None so the turn still runs without project-scoped extras.
         _project = None
 
-    # System prompt selection:
-    #   - Agent turn: always inject the agent's prompt — it's the agent's
-    #     identity, and a no-tools agent (Content Generator) still needs it.
-    #     The per-project prompt is intentionally IGNORED here; agents have
-    #     purposeful prompts of their own.
-    #   - Normal turn: combine the project's system prompt (when set) with
-    #     the tool-use nudge (when tools are actually sent). With neither,
-    #     omit the system message entirely — keeps plain chat byte-identical
-    #     to pre-project-prompt behavior for users who haven't set one.
-    if tool_allowlist is not None:
-        system_prompt = system_prompt_override
-    else:
-        parts: list[str] = []
-        if _project is not None and _project.system_prompt:
-            parts.append(_project.system_prompt)
-        if tools_payload is not None:
-            parts.append(SINGLE_AGENT_SYSTEM_PROMPT)
-        system_prompt = "\n\n".join(parts) if parts else None
+    # System prompt = the project's prompt (when set) + the tool-use nudge
+    # (only when tools are actually sent). With neither, omit the system
+    # message entirely — keeps plain chat byte-identical to pre-project-prompt
+    # behavior for users who haven't set one.
+    parts: list[str] = []
+    if _project is not None and _project.system_prompt:
+        parts.append(_project.system_prompt)
+    if tools_payload is not None:
+        parts.append(SINGLE_AGENT_SYSTEM_PROMPT)
+    system_prompt = "\n\n".join(parts) if parts else None
 
     turn_id = str(time.monotonic_ns())
     card_id = render.card_id_for(turn_id)
