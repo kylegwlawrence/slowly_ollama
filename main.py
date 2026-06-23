@@ -10,6 +10,7 @@ shutdown. Routes pull them off ``app.state`` via the dependency
 functions in ``app.dependencies``.
 """
 
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -70,6 +71,19 @@ async def lifespan(app: FastAPI):
     # no-ops. Runs after open_connection() so we have the shared DB to
     # read/write the flag through.
     migrate_legacy_workspace(db, queries)
+
+    # Phase 26: reconcile stored host selections against the current registry.
+    # A host removed from OLLAMA_EXTRA_HOSTS leaves stale active_host names;
+    # clear them to NULL (primary) so host resolution's "unknown name is a bug"
+    # invariant holds. Runs every boot — config can change between restarts.
+    from app.hosts import HOSTS
+
+    cleared = queries.clear_unknown_active_hosts(db, set(HOSTS))
+    if cleared:
+        logging.getLogger("uvicorn.error").info(
+            "Reconciled %d stale active_host selection(s) to the primary host.",
+            cleared,
+        )
 
     try:
         yield

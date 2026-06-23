@@ -17,6 +17,7 @@ from app.db import initialize_database
 from app.queries import (
     append_message,
     archive_messages_before,
+    clear_unknown_active_hosts,
     count_assistant_messages,
     create_conversation,
     delete_conversation,
@@ -798,6 +799,31 @@ def test_set_active_host_unknown_conversation_raises(
     """Setting the agent on a missing chat raises LookupError."""
     with pytest.raises(LookupError):
         set_active_host(conn, 9999, "research")
+
+
+def test_clear_unknown_active_hosts_reconciles_stale_names(
+    conn: sqlite3.Connection,
+) -> None:
+    """Stale host names are cleared to NULL; valid ones and NULL are kept."""
+    stale = create_conversation(conn, name="stale", model="m", active_host="gone")
+    valid = create_conversation(conn, name="valid", model="m", active_host="host2")
+    primary = create_conversation(conn, name="primary", model="m")
+
+    cleared = clear_unknown_active_hosts(conn, {"host2"})
+
+    assert cleared == 1  # only the one distinct unknown name
+    assert get_conversation(conn, stale.id).active_host is None
+    assert get_conversation(conn, valid.id).active_host == "host2"
+    assert get_conversation(conn, primary.id).active_host is None
+
+
+def test_clear_unknown_active_hosts_noop_when_consistent(
+    conn: sqlite3.Connection,
+) -> None:
+    """A DB with only valid/NULL selections reports zero cleared."""
+    create_conversation(conn, name="valid", model="m", active_host="host2")
+    create_conversation(conn, name="primary", model="m")
+    assert clear_unknown_active_hosts(conn, {"host2"}) == 0
 
 
 def test_set_conversation_temperature_round_trip(

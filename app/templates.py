@@ -194,23 +194,3 @@ from app import config as _config  # noqa: E402
 
 templates.env.globals["backups_enabled"] = _config.backups_enabled
 templates.env.globals["backup_status"] = _backup.backup_status
-
-
-# Host picker: expose the primary OLLAMA_HOST's hostname so the picker's
-# leading option/label ("host1") derives from config rather than being
-# hardcoded. A callable global (not a value) so it reads the env at render
-# time; app.config imports nothing from app.templates, so this is cycle-safe.
-def _primary_host_label() -> str:
-    """Jinja global: hostname of the primary OLLAMA_HOST (host-picker label)."""
-    from urllib.parse import urlparse
-
-    try:
-        raw = _config.ollama_host()
-    except KeyError:
-        # OLLAMA_HOST unset (shouldn't happen in a configured app) — render a
-        # neutral label rather than 500 the whole page.
-        return "default"
-    return urlparse(raw).hostname or raw
-
-
-templates.env.globals["primary_host_label"] = _primary_host_label

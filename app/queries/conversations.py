@@ -362,6 +362,44 @@ def set_active_host(
     return _row_to_conversation(row)
 
 
+def clear_unknown_active_hosts(
+    conn: sqlite3.Connection, valid_names: set[str]
+) -> int:
+    """Clear any ``active_host`` not in ``valid_names`` back to NULL (primary).
+
+    Run at startup to reconcile stored selections against the current host
+    registry: a host removed from ``OLLAMA_EXTRA_HOSTS`` leaves stale names on
+    conversations, and ``app.hosts.get_host`` now treats an unknown name as a
+    bug (raises). Clearing them keeps that invariant — after this, a stored
+    ``active_host`` is always either NULL or a registered host. NULL rows are
+    already the primary host and need no update.
+
+    Does NOT bump ``updated_at`` — reconciliation isn't a message event and
+    shouldn't reorder the sidebar (same convention as ``set_active_host``).
+
+    Args:
+        conn: Open SQLite connection.
+        valid_names: The registered non-primary host names (``app.hosts.HOSTS``
+            keys). The primary host is NULL, so it's never a candidate.
+
+    Returns:
+        The number of distinct stale host names cleared (0 when the DB is
+        already consistent).
+    """
+    rows = conn.execute(
+        "SELECT DISTINCT active_host FROM conversations"
+        " WHERE active_host IS NOT NULL;"
+    ).fetchall()
+    unknown = [r["active_host"] for r in rows if r["active_host"] not in valid_names]
+    if unknown:
+        with conn:
+            conn.executemany(
+                "UPDATE conversations SET active_host = NULL WHERE active_host = ?;",
+                [(name,) for name in unknown],
+            )
+    return len(unknown)
+
+
 def set_conversation_think_mode(
     conn: sqlite3.Connection, conversation_id: int, think_mode: str
 ) -> Conversation:

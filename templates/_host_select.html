@@ -2,8 +2,9 @@
    (new chat) and the in-chat message toolbar.
 
    Context:
-   - `hosts`: app.hosts.enabled_hosts() — the registered non-primary
-     hosts (e.g. "host2"); empty when none are configured/enabled.
+   - `hosts`: app.hosts.enabled_hosts() / list_hosts() — every host in
+     dropdown order, the PRIMARY host first, then any configured/enabled
+     extras (e.g. "host2").
    - `selected_host`: the currently-selected host name, or "" / None for
      the primary host. Always set by the includer.
    - `select_id` (optional): DOM id for the <select>. The composer passes
@@ -12,14 +13,14 @@
    - `primary_default_model` (optional): when set (composer only), each option
      carries `data-default-model` so app.js can pre-select the right default
      model after re-fetching that host's models. The primary option uses this
-     value; each host option uses its own default model. Omitted in-chat.
+     value; each extra host uses its own default model. Omitted in-chat.
 
-   The leading option (value "") is the primary host (OLLAMA_HOST), labelled
-   with its hostname; picking it clears the chat's selected host. #}
+   The primary host's option value stays "" (it's stored as active_host NULL),
+   so picking it clears the chat's selected host. #}
 <select{% if select_id %} id="{{ select_id }}"{% endif %}
         class="host-select" name="host" aria-label="Ollama host">
-  <option value=""{% if not selected_host %} selected{% endif %}{% if primary_default_model is defined %} data-default-model="{{ primary_default_model }}"{% endif %}>{{ primary_host_label() }}</option>
   {% for a in hosts %}
-  <option value="{{ a.name }}"{% if selected_host == a.name %} selected{% endif %}{% if primary_default_model is defined %} data-default-model="{{ a.model }}"{% endif %}>{{ a.label }}</option>
+  {% set opt_value = "" if a.is_primary else a.name %}
+  <option value="{{ opt_value }}"{% if selected_host == opt_value or (not selected_host and a.is_primary) %} selected{% endif %}{% if primary_default_model is defined %} data-default-model="{{ primary_default_model if a.is_primary else a.model }}"{% endif %}>{{ a.label }}</option>
   {% endfor %}
 </select>

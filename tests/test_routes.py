@@ -363,30 +363,26 @@ def test_models_endpoint_targets_configured_host(
     assert captured["host"] == "http://host1:11434"
 
 
-def test_primary_host_label_extracts_hostname(
+def test_models_endpoint_unknown_host_falls_back_to_primary(
+    make_client: ClientFactory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The host-picker label is the hostname parsed from OLLAMA_HOST."""
-    from app import templates as templates_mod
+    """A stale ?host=<removed> resolves to the primary host (local), not a 500."""
+    captured: dict = {}
+
+    async def fake_list(_client: object, host: str | None = None) -> list[str]:
+        captured["host"] = host
+        return ["local-model:1"]
 
     monkeypatch.setattr(
-        templates_mod._config, "ollama_host", lambda: "http://host1:11434"
+        "app.routes.chats.ollama.list_tool_capable_models", fake_list
     )
-    assert templates_mod._primary_host_label() == "host1"
 
+    with make_client(_tool_capable_handler) as client:
+        response = client.get("/models?host=does_not_exist")
 
-def test_primary_host_label_falls_back_when_ollama_host_unset(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """If OLLAMA_HOST is unset, the label degrades to 'default' rather than
-    raising and 500-ing the page render."""
-    from app import templates as templates_mod
-
-    def _raise_keyerror() -> str:
-        raise KeyError("OLLAMA_HOST")
-
-    monkeypatch.setattr(templates_mod._config, "ollama_host", _raise_keyerror)
-    assert templates_mod._primary_host_label() == "default"
+    assert response.status_code == 200
+    assert captured["host"] is None  # primary host → local Ollama
 
 
 # ---------------------------------------------------------------------------
@@ -2998,6 +2994,49 @@ def test_create_chat_with_host_persists_active_host(
             HOSTS.pop("host2", None)
         else:
             HOSTS["host2"] = saved
+
+
+def test_create_chat_with_unknown_host_falls_back_to_primary(
+    make_client: ClientFactory,
+) -> None:
+    """A stale composer post (host removed) creates the chat on the primary."""
+    db_path = Path(os.environ["DB_PATH"])
+    initialize_database(db_path)
+
+    with make_client(_tool_capable_handler) as client:
+        response = client.post(
+            f"/projects/{_default_project_id()}/chats",
+            data={"model": "llama3", "content": "hi", "host": "does_not_exist"},
+        )
+
+    assert response.status_code == 201
+    import re as _re
+
+    chat_id = int(_re.search(r'data-chat-id="(\d+)"', response.text).group(1))
+    with open_connection(db_path) as conn:
+        chat = queries.get_conversation(conn, chat_id)
+    # Primary host → active_host NULL, and the submitted model is the chat's.
+    assert chat.active_host is None
+    assert chat.model == "llama3"
+
+
+def test_startup_reconciles_stale_active_host(
+    make_client: ClientFactory,
+) -> None:
+    """Lifespan startup clears an active_host not in the registry to NULL."""
+    db_path = Path(os.environ["DB_PATH"])
+    initialize_database(db_path)
+    with open_connection(db_path) as conn:
+        chat = queries.create_conversation(
+            conn, name="ghost-host", model="m", active_host="ghost"
+        )
+
+    # Entering the client runs the lifespan, which reconciles stale selections.
+    with make_client(_tool_capable_handler):
+        pass
+
+    with open_connection(db_path) as conn:
+        assert queries.get_conversation(conn, chat.id).active_host is None
 
 
 def test_create_chat_on_host_stores_model_in_side_table(

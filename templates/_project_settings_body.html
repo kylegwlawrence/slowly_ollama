@@ -56,9 +56,9 @@
       <label class="project-settings__field--full">
         Default Ollama host (for new chats in this project)
         <select name="default_agent">
-          <option value=""{% if not project.default_agent %} selected{% endif %}>{{ primary_host_label() }}</option>
           {% for a in hosts %}
-            <option value="{{ a.name }}"{% if project.default_agent == a.name %} selected{% endif %}>{{ a.label }}</option>
+          {% set opt_value = "" if a.is_primary else a.name %}
+            <option value="{{ opt_value }}"{% if project.default_agent == opt_value or (not project.default_agent and a.is_primary) %} selected{% endif %}>{{ a.label }}</option>
           {% endfor %}
         </select>
       </label>

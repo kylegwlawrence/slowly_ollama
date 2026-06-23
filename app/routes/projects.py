@@ -23,7 +23,7 @@ from fastapi import APIRouter, Form, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app import generation, ollama, queries, render
-from app.hosts import get_host, list_hosts
+from app.hosts import get_host, get_primary_host, list_hosts, UnknownHostError
 from app.dependencies import DB, OllamaClient
 from app.projects import ensure_project_workspace
 from app.routes._helpers import (
@@ -537,12 +537,16 @@ async def create_project_chat_endpoint(
     # think_mode can't resolve to think=true and 400 a non-thinking model.
     if think_mode not in {"default", "off"}:
         think_mode = "default"
-    host_spec = get_host(host)
+    try:
+        host_spec = get_host(host)
+    except UnknownHostError:
+        # Stale composer post (host removed since the page rendered) → primary.
+        host_spec = get_primary_host()
     # The single `model` field is the model for the SELECTED host. On the
     # primary host it IS conversations.model. On a non-primary host it belongs
     # in chat_host_models; conversations.model (NOT NULL) keeps a sensible
     # primary fallback so switching to primary mid-chat still has a valid model.
-    if host_spec is None:
+    if host_spec.is_primary:
         primary_model = model
     else:
         primary_model = (
@@ -556,11 +560,11 @@ async def create_project_chat_endpoint(
         temperature=temperature,
         tool_iteration_cap=tool_iteration_cap,
         think_mode=think_mode,
-        active_host=host_spec.name if host_spec else None,
+        active_host=None if host_spec.is_primary else host_spec.name,
     )
     # Remember the picked model for the non-primary host. Empty ("" before
     # /models loads) → skip, so the host falls back to its default_model.
-    if host_spec is not None and model:
+    if not host_spec.is_primary and model:
         queries.set_chat_host_model(db, chat.id, host_spec.name, model)
     queries.append_message(db, chat.id, "user", content)
 

@@ -14,10 +14,12 @@ import pytest
 from app import hosts, queries
 from app.hosts import (
     HOSTS,
+    PRIMARY_HOST_NAME,
     HostSpec,
+    UnknownHostError,
     enabled_hosts,
     get_host,
-    host_label,
+    get_primary_host,
     list_hosts,
 )
 from app.connection import open_connection
@@ -68,15 +70,14 @@ def test_host_specs_are_populated() -> None:
 
 
 def test_get_host_resolves_names_and_primary() -> None:
-    """get_host maps a known host name to its spec; None/""/unknown → None.
+    """get_host maps a known name to its spec; empty/None → primary host.
 
-    None (the primary host) and any unknown/removed name both resolve to None
-    so the generation layer falls back to plain chat on the primary host.
+    Resolution never returns None: an empty/missing name (and the literal
+    PRIMARY_HOST_NAME) resolves to the primary host spec.
     """
-    assert get_host(None) is None
-    assert get_host("") is None
-    assert get_host("does_not_exist") is None
-    assert get_host("research") is None  # removed persona agent
+    assert get_host(None).is_primary
+    assert get_host("").is_primary
+    assert get_host(PRIMARY_HOST_NAME).is_primary
 
     saved = HOSTS.get("host2")
     HOSTS["host2"] = _slowly_spec()
@@ -89,9 +90,65 @@ def test_get_host_resolves_names_and_primary() -> None:
             HOSTS["host2"] = saved
 
 
-def test_list_hosts_returns_registry_in_order() -> None:
-    """list_hosts preserves insertion (dropdown) order."""
-    assert list_hosts() == list(HOSTS.values())
+def test_get_host_raises_on_unknown_name() -> None:
+    """An unknown/removed name is a bug (stale data was reconciled away)."""
+    with pytest.raises(UnknownHostError):
+        get_host("does_not_exist")
+    with pytest.raises(UnknownHostError):
+        get_host("research")  # removed persona agent
+
+
+def test_get_primary_host_is_primary_and_local() -> None:
+    """The primary spec is local (no ollama_host) and flagged is_primary."""
+    primary = get_primary_host()
+    assert primary.is_primary
+    assert primary.name == PRIMARY_HOST_NAME
+    assert primary.ollama_host is None
+
+
+def test_primary_host_label_extracts_hostname(monkeypatch) -> None:
+    """The primary host's label is the hostname parsed from OLLAMA_HOST."""
+    from app import config
+
+    monkeypatch.setattr(config, "ollama_host", lambda: "http://host1:11434")
+    assert get_primary_host().label == "host1"
+
+
+def test_primary_host_label_falls_back_when_ollama_host_unset(monkeypatch) -> None:
+    """If OLLAMA_HOST is unset, the label degrades to 'default' rather than
+    raising and 500-ing the page render."""
+    from app import config
+
+    def _raise_keyerror() -> str:
+        raise KeyError("OLLAMA_HOST")
+
+    monkeypatch.setattr(config, "ollama_host", _raise_keyerror)
+    assert get_primary_host().label == "default"
+
+
+def test_primary_host_label_falls_back_to_raw_url_when_unparseable(
+    monkeypatch,
+) -> None:
+    """An OLLAMA_HOST urlparse can't extract a hostname from falls back to the
+    raw string — better to show something than swallow the label."""
+    from app import config
+
+    monkeypatch.setattr(config, "ollama_host", lambda: "not-a-url")
+    assert get_primary_host().label == "not-a-url"
+
+
+def test_list_hosts_returns_primary_first_then_registry() -> None:
+    """list_hosts leads with the primary host, then the extras in order."""
+    listed = list_hosts()
+    assert listed[0] == get_primary_host()
+    assert listed[1:] == list(HOSTS.values())
+
+
+def test_enabled_hosts_always_includes_primary(_db) -> None:
+    """The primary (local) host is always first in the picker, toggle aside."""
+    assert enabled_hosts(_db)[0].is_primary
+    queries.set_remote_ollama_enabled(_db, False)
+    assert enabled_hosts(_db)[0].is_primary
 
 
 def test_hostspec_is_frozen() -> None:
@@ -189,36 +246,6 @@ def test_build_hosts_from_extra_hosts_json(monkeypatch) -> None:
     assert hosts_map["host2"].ollama_host == "http://host2:11434"
     assert hosts_map["mac"].label == "Mac Studio"
     assert hosts_map["mac"].ollama_host == "http://mac:11434"
-
-
-def test_host_label_extracts_hostname() -> None:
-    """`host_label` extracts the hostname from a typical Ollama URL."""
-    spec = HostSpec(
-        name="x", label="X", description="d", model="m",
-        ollama_host="http://host1:11434",
-    )
-    assert host_label(spec) == "host1"
-
-
-def test_host_label_returns_none_for_primary_host() -> None:
-    """A primary-host spec (ollama_host=None) returns None (template short-circuits)."""
-    spec = HostSpec(name="x", label="X", description="d", model="m")
-    assert host_label(spec) is None
-
-
-def test_host_label_returns_none_for_none_spec() -> None:
-    """Passing None (primary host — no selection) returns None."""
-    assert host_label(None) is None
-
-
-def test_host_label_falls_back_to_raw_url_when_unparseable() -> None:
-    """A value urlparse can't extract a hostname from falls back to the raw
-    string — better to show something than swallow the label."""
-    spec = HostSpec(
-        name="x", label="X", description="d", model="m",
-        ollama_host="not-a-url",
-    )
-    assert host_label(spec) == "not-a-url"
 
 
 def test_enabled_hosts_includes_slowly_when_toggle_default(_db) -> None:

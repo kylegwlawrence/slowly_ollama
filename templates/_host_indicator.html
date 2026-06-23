@@ -18,7 +18,8 @@
    ``oob=True`` from that endpoint to add ``hx-swap-oob``; the initial header
    render leaves it off.
 
-   Context: ``conversation``, ``active_host_spec`` (an HostSpec or None),
+   Context: ``conversation``, ``active_host_spec`` (the resolved HostSpec from
+   ``_resolve_active_host`` — always set; the primary host for no selection),
    ``effective_model`` (the model the chat will actually run on, resolved by
    ``_effective_model`` — the chat's per-host model on the selected host, or the
    primary model), ``model_loaded`` (bool, defaults to True if the caller forgot
@@ -26,7 +27,7 @@
    residency). #}
 <button id="host-indicator-{{ conversation.id }}"
         type="button"
-        class="chat-panel__model{% if active_host_spec %} chat-panel__model--host{% endif %}"
+        class="chat-panel__model{% if not active_host_spec.is_primary %} chat-panel__model--host{% endif %}"
         data-state="{% if model_loaded|default(True) %}loaded{% else %}unloaded{% endif %}"
         data-role="host-indicator"
         hx-post="/chats/{{ conversation.id }}/unload-model"
@@ -35,9 +36,5 @@
         title="{% if model_loaded|default(True) %}Click to unload this model from Ollama's memory{% else %}Unloaded — the next message will reload it{% endif %}"
         {% if oob %}hx-swap-oob="true" {% endif %}>
   <span class="material-symbols-outlined">dns</span>
-  {%- if active_host_spec -%}
-    {{ active_host_spec.label }} · {{ effective_model }}
-  {%- else -%}
-    {{ primary_host_label() }} · {{ effective_model }}
-  {%- endif -%}
+  {{ active_host_spec.label }} · {{ effective_model }}
 </button>

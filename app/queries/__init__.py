@@ -37,6 +37,7 @@ from app.queries.chat_hosts import (
     set_chat_host_model,
 )
 from app.queries.conversations import (
+    clear_unknown_active_hosts,
     create_conversation,
     delete_conversation,
     get_conversation,
@@ -95,6 +96,7 @@ __all__ = [
     "_UNSET",
     "_Unset",
     # Conversations
+    "clear_unknown_active_hosts",
     "create_conversation",
     "delete_conversation",
     "get_conversation",

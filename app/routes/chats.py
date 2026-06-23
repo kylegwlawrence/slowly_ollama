@@ -29,7 +29,7 @@ from fastapi import APIRouter, Form, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 
 from app import backup, config, generation, ollama, queries, render
-from app.hosts import get_host
+from app.hosts import get_host, get_primary_host, UnknownHostError
 from app.connection import open_connection
 from app.db import initialize_database
 from app.dependencies import DB, OllamaClient
@@ -95,9 +95,14 @@ async def list_models_endpoint(
     user a clear message to act on.
     """
     # Resolve the host NAME to its base URL via the registry: a known
-    # non-primary host → its ollama_host; primary / unknown → None (local).
-    spec = get_host(host)
-    target_host = spec.ollama_host if spec else None
+    # non-primary host → its ollama_host; primary → None (local). The host
+    # comes from the dropdown (a query param), so a stale page could post a
+    # since-removed name — treat that as the primary host rather than 500.
+    try:
+        spec = get_host(host)
+    except UnknownHostError:
+        spec = get_primary_host()
+    target_host = spec.ollama_host
     try:
         models = sorted(
             await ollama.list_tool_capable_models(client, host=target_host)
@@ -506,7 +511,8 @@ async def set_chat_host_endpoint(
     ``hx-swap="none"`` — the response is OOB-only). The selection is
     persisted so it survives reloads and so subsequent turns resolve the
     same host. ``host`` is the host name, or empty/None for the primary host.
-    An unknown name resolves to the primary host (defensive).
+    A name no longer in the registry (a stale dropdown post) resolves to the
+    primary host rather than erroring.
 
     OOB swaps returned:
       - ``#host-indicator-{id}``: the header indicator, updated to the
@@ -520,9 +526,13 @@ async def set_chat_host_endpoint(
     except LookupError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
 
-    selected = get_host(host)
+    try:
+        selected = get_host(host)
+    except UnknownHostError:
+        # Stale dropdown post (host removed since the page rendered) → primary.
+        selected = get_primary_host()
     conversation = queries.set_active_host(
-        db, conversation_id, selected.name if selected else None
+        db, conversation_id, None if selected.is_primary else selected.name
     )
     # Resolve through the toggle so a disabled remote host falls back to the
     # primary (matches the indicator + generation path).
@@ -532,7 +542,7 @@ async def set_chat_host_endpoint(
     # chat's per-host model, or its default), so re-probe residency ON THAT
     # HOST before re-rendering the chip rather than carrying over the old state.
     effective_model = _effective_model(conversation, spec, db)
-    effective_host = spec.ollama_host if spec else None
+    effective_host = spec.ollama_host
     model_loaded = await ollama.is_model_loaded(
         client, effective_model, host=effective_host
     )
