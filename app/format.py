@@ -1,8 +1,7 @@
 """Shared formatting helpers.
 
-Tiny module so the file tools (``app.tools.builtins``) and the Files-tab
-route handlers (``app.routes``) can format byte counts the same way
-without each carrying their own copy.
+So the file tools (``app.tools.builtins``) and the Files-tab routes
+(``app.routes``) format byte counts the same way.
 """
 
 
