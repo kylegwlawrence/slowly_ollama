@@ -1,6 +1,6 @@
 # slollillama
 
-A local-first chat application that uses a locally-running [Ollama](https://ollama.com) instance as the inference engine. No cloud calls — all inference runs on your own machines. Developed on macOS; also runs on Linux (the production deployment is a Linux systemd service).
+A local-first chat application that uses a locally-running [Ollama](https://ollama.com) instance as the inference engine. No direct cloud calls — all inference runs on your own machines. (The optional `web_search` tool is the one outward-facing feature: when enabled, the app talks only to a SearXNG instance *you* run locally, and that SearXNG reaches the internet on the app's behalf — the app itself still makes no direct cloud calls. See [Optional: web search](#5-enable-web-search-via-searxng-optional).) Developed on macOS; also runs on Linux (the production deployment is a Linux systemd service).
 
 Built with FastAPI + HTMX + SQLite. Conversation history persists across restarts.
 
@@ -65,6 +65,43 @@ FILE_TOOL_ROOT=~/slollillama_workspace
 ```
 
 Any path works — use an existing project folder, a notes directory, whatever you want the model to have access to. Each project is scoped to its own subdirectory under this root (browsable from the project's Files tab). Restart the app after changing this setting.
+
+### 5. Enable web search via SearXNG (optional)
+
+The `web_search` tool lets a tool-capable model search the public web. To keep the app local-only, it never calls a hosted search API — instead it talks to a [SearXNG](https://docs.searxng.org) metasearch instance that **you** run on the same machine. SearXNG proxies Google/Bing/DuckDuckGo/etc. and returns normalized JSON; the app only ever hits `http://localhost:<port>`, and SearXNG is the only thing that reaches the internet. (This is the one feature that softens "no cloud calls" to "no *direct* cloud calls.")
+
+Run SearXNG locally — Docker is simplest:
+
+```bash
+docker run -d --name searxng -p 127.0.0.1:8888:8080 \
+  -v ~/searxng:/etc/searxng \
+  docker.io/searxng/searxng:latest
+```
+
+**Bind to loopback (`127.0.0.1:8888`), not `0.0.0.0`.** This is a real security control: the next step disables SearXNG's bot limiter, so a public bind would expose an open, unthrottled search proxy to your whole network. The app and SearXNG run on the same box, so loopback is all that's needed.
+
+Then make two **required** edits in `~/searxng/settings.yml` and restart the container:
+
+```yaml
+search:
+  formats:
+    - html
+    - json      # the app requests format=json; default instances only allow html
+server:
+  limiter: false  # SearXNG would otherwise 429 the app's header-less server-side requests
+```
+
+Verify JSON works: `curl 'http://localhost:8888/search?q=test&format=json'` should return JSON with a `results` array (not HTML or a 403).
+
+Finally, point the app at it in `.env` and restart the app:
+
+```
+SEARXNG_URL=http://localhost:8888
+```
+
+Leave `SEARXNG_URL` unset to disable web search entirely — the tool is removed from the registry, so the model is never offered it.
+
+**A note on trust:** `web_search` is the first feature to pour untrusted internet text into a context that also holds the file tools. A malicious page can rank for a query and carry "ignore previous instructions" text (indirect prompt injection). The per-chat tool-iteration cap and the `FILE_TOOL_ROOT` sandbox bound the blast radius, but be aware of it when enabling both web search and write-capable file tools.
 
 ---
 
@@ -159,8 +196,8 @@ docs/code_reviews/   # Dated code reviews
 - **Streaming responses** — assistant replies stream token-by-token via SSE
 - **Reload-safe generation** — a page reload during a reply attaches a new consumer to the in-flight stream instead of cancelling it
 - **Manual chat compaction** — summarize the older portion of a chat to shrink the Ollama prompt; originals are soft-archived and viewable through a disclosure in the summary bubble
-- **Tool calling** — extensible tool system; a tool-capable model is offered the full registry every turn. Built-in tools: `current_time`, `fetch_github_file`, `query_rag` (RAG retrieval), and a workspace file suite (`read_file`, `write_file`, `list_directory`, `search_files`) gated on `FILE_TOOL_ROOT`
+- **Tool calling** — extensible tool system; a tool-capable model is offered the full registry every turn. Built-in tools: `current_time`, `fetch_github_file`, `query_rag` (RAG retrieval), `web_search` (web results via a self-hosted SearXNG, gated on `SEARXNG_URL`), and a workspace file suite (`read_file`, `write_file`, `list_directory`, `search_files`) gated on `FILE_TOOL_ROOT`
 - **RAG support** — register external retrieval servers from `/settings`; `query_rag` searches every configured server, and the sidebar shows each server's read-only health state (green/grey/red), refreshed in the background on each send
 - **Multi-machine Ollama hosts** — pick which Ollama machine runs a chat from the header host picker; configure extra machines via `OLLAMA_EXTRA_HOSTS` (the primary `OLLAMA_HOST` is always the default). Each chat remembers its model per machine
 - **Remote backup/sync** — when `REMOTE_PATH` + `REMOTE_DB_PATH` are set, the app pushes a consistent copy of the database and workspaces to a remote mirror on each change (single-flight, debounced, offline-safe); a header status chip surfaces each push, and restore is manual and pull-only
-- **Fully local** — no telemetry, no cloud API calls, works offline
+- **Fully local** — no telemetry, no *direct* cloud API calls, works offline (the optional `web_search` tool reaches the internet only through a SearXNG instance you run yourself; see [Optional: web search](#5-enable-web-search-via-searxng-optional))

@@ -36,7 +36,9 @@ Current feature set:
 - **Tool calling + RAG.** `@tool` decorator + registry; a server-side tool loop
   (capped per chat, default 5 iterations). Tool-capable models get the full
   registry every turn. Built-in tools: `current_time`, workspace file tools,
-  `query_rag` (searches all configured RAG servers), and `fetch_github_file`.
+  `query_rag` (searches all configured RAG servers), `fetch_github_file`, and
+  `web_search` (queries a self-hosted SearXNG; gated on `SEARXNG_URL`, so the
+  app makes no *direct* cloud calls — SearXNG does the internet-facing work).
   Tool calls render as tool-card UI.
 - **Projects → chats.** Projects sit above chats, each with a per-project
   workspace subdir under `FILE_TOOL_ROOT`, a default model, and a ≤2000-char

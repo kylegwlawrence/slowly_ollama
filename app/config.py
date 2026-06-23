@@ -74,6 +74,18 @@ def github_token() -> str | None:
     return raw or None
 
 
+def searxng_url() -> str | None:
+    """Return the self-hosted SearXNG base URL (`SEARXNG_URL`), or None.
+
+    Used by the `web_search` tool. Optional: when unset, `web_search` is
+    dropped from the registry (see `refresh_web_search_registration`) so the
+    model is never offered a search tool that cannot succeed — same gating
+    as the file tools (`FILE_TOOL_ROOT`) and `query_rag` (no RAG servers).
+    """
+    raw = os.environ.get("SEARXNG_URL")
+    return raw or None
+
+
 def remote_ollama_host() -> str | None:
     """Return the remote Ollama base URL (`SLOWLY_OLLAMA_HOST`), or None.
 

@@ -18,15 +18,11 @@ import re
 import httpx
 
 from app.config import github_token
-from app.tools import tool
+from app.tools import TOOL_HTTP_TIMEOUT, tool
 
 # Cap raw response so a large file can't blow the model's context. 100k
 # is generous for source files (read_file caps at 50k).
 _FETCH_CAP = 100_000
-
-# 30s total / 5s connect, same as RAG retrieval: fail fast on a network
-# blip rather than stall on the (usually fast) raw CDN.
-_TIMEOUT = httpx.Timeout(30.0, connect=5.0)
 
 # https://github.com/{owner}/{repo}/blob/{ref}/{path}
 # {ref} is captured as one segment, so refs containing "/" (e.g.
@@ -86,7 +82,7 @@ async def fetch_github_file(url: str) -> str:
         headers["Authorization"] = f"Bearer {token}"
 
     try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=TOOL_HTTP_TIMEOUT) as client:
             response = await client.get(raw_url, headers=headers)
     except httpx.HTTPError as e:
         return f"GitHub fetch failed: {e}"

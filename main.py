@@ -30,6 +30,7 @@ from app.routes import router
 # would hide a side effect inside an HTTP module.
 from app.tools.builtins import refresh_file_tools_registration
 from app.tools.rag import refresh_query_rag_registration
+from app.tools.web_search import refresh_web_search_registration
 
 # Static assets live alongside `main.py` at the project root. Resolving
 # the path relative to this file (rather than CWD) keeps the mount
@@ -60,6 +61,10 @@ async def lifespan(app: FastAPI):
     # present when a workspace dir is configured, removed otherwise so
     # the model never sees a tool with nowhere to operate.
     refresh_file_tools_registration()
+
+    # Drop web_search unless SEARXNG_URL is configured, so the model is never
+    # offered a search tool that cannot succeed (same gating as the above).
+    refresh_web_search_registration()
 
     db = open_connection()
     ollama_client = create_client()

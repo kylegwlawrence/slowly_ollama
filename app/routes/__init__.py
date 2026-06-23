@@ -38,6 +38,7 @@ from app.routes.settings import router as _settings_router
 from app.tools import builtins as _tools_builtins  # noqa: F401
 from app.tools import github as _github_tool  # noqa: F401
 from app.tools import rag as _rag_tool  # noqa: F401
+from app.tools import web_search as _web_search_tool  # noqa: F401
 
 router = APIRouter()
 router.include_router(_chats_router)

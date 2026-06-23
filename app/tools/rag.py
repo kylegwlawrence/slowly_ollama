@@ -21,7 +21,14 @@ import httpx
 from app import rag_servers as _rag_servers_module
 from app.connection import open_connection
 from app.rag_servers import RagServer
-from app.tools import RAG_TOOL_NAME, Source, ToolResult, tool
+from app.tools import (
+    RAG_TOOL_NAME,
+    TOOL_HTTP_TIMEOUT,
+    Source,
+    ToolResult,
+    tool,
+    truncate_with_ellipsis,
+)
 
 # Caps that keep RAG output from blowing the model's context window: a
 # pathological retrieval could return 5 multi-kilobyte chunks. Trimming
@@ -29,11 +36,6 @@ from app.tools import RAG_TOOL_NAME, Source, ToolResult, tool
 _TOP_K = 5
 _PER_CHUNK_TEXT_CAP = 800
 _TOTAL_OUTPUT_CAP = 4000
-
-# Retrieval is fast (FTS5 + ANN over local SQLite), so 30s total / 5s
-# connect leaves headroom for slow private-network routes while still
-# failing fast on a down server.
-_RAG_TIMEOUT = httpx.Timeout(30.0, connect=5.0)
 
 
 def _list_sources() -> list[RagServer]:
@@ -97,13 +99,10 @@ def _format_chunks(items: list[dict], used_dense: bool) -> str:
         if section:
             header += f" (§{section})"
         text = (item.get("text") or "").strip()
-        if len(text) > _PER_CHUNK_TEXT_CAP:
-            # Reserve 3 chars for the ellipsis to land at the cap exactly.
-            text = text[: _PER_CHUNK_TEXT_CAP - 3] + "..."
+        text = truncate_with_ellipsis(text, _PER_CHUNK_TEXT_CAP)
         parts.append(f"{header}\n    {text}\n")
     out = "\n".join(parts).strip()
-    if len(out) > _TOTAL_OUTPUT_CAP:
-        out = out[: _TOTAL_OUTPUT_CAP - 3] + "..."
+    out = truncate_with_ellipsis(out, _TOTAL_OUTPUT_CAP)
     # Falls out empty when items=[] and used_dense=True (no note to show).
     return out or "(no matching chunks)"
 
@@ -148,7 +147,7 @@ async def query_rag(source: str, query: str) -> ToolResult:
     # /chunks here so the row stays usable for other future endpoints.
     url = f"{server.url.rstrip('/')}/chunks"
     try:
-        async with httpx.AsyncClient(timeout=_RAG_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=TOOL_HTTP_TIMEOUT) as client:
             response = await client.get(
                 url, params={"q": query, "top_k": _TOP_K}
             )

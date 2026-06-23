@@ -17,6 +17,8 @@ import typing
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
+import httpx
+
 
 @dataclass(frozen=True)
 class Source:
@@ -182,6 +184,36 @@ TOOLS: dict[str, ToolSpec] = {}
 # filtering) and generation (source-description patching) — one place to
 # update if the function is renamed.
 RAG_TOOL_NAME = "query_rag"
+
+# Shared HTTP timeout for tools that call out over the network (query_rag,
+# web_search, fetch_github_file). 30s total / 5s connect: generous enough
+# for a slow private-network route or a fan-out search, but fails fast on a
+# down service rather than inheriting httpx's 5s default (too tight for the
+# first; too loose for a dead host). One constant so the discipline lives in
+# a single place.
+TOOL_HTTP_TIMEOUT = httpx.Timeout(30.0, connect=5.0)
+
+
+def truncate_with_ellipsis(text: str, cap: int) -> str:
+    """Trim ``text`` to at most ``cap`` characters, ending in ``"..."``.
+
+    Reserves 3 characters for the ellipsis so the visible length lands
+    exactly at ``cap``. Used by the output-formatting tools (read_file,
+    query_rag, web_search) to keep a single result from blowing the model's
+    context window. ``cap`` is assumed comfortably larger than 3 (every
+    caller passes hundreds-to-thousands); smaller values aren't guarded.
+
+    Args:
+        text: The string to bound.
+        cap: Maximum length of the returned string, ellipsis included.
+
+    Returns:
+        ``text`` unchanged when it already fits, else its first
+        ``cap - 3`` characters plus ``"..."``.
+    """
+    if len(text) <= cap:
+        return text
+    return text[: cap - 3] + "..."
 
 
 # Python type → JSON schema type. Anything unmapped defaults to "string";
@@ -374,6 +406,9 @@ def format_tool_invocation(name: str, arguments: dict) -> str:
         source = arguments.get("source", "?")
         query = arguments.get("query", "")
         return f'searching {source}: "{query}"'
+    if name == "web_search":
+        query = arguments.get("query", "")
+        return f'searching the web: "{query}"'
     if name == "search_files":
         pattern = arguments.get("pattern", "*")
         path = arguments.get("path", ".")

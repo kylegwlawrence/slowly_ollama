@@ -64,6 +64,13 @@ def _isolate_module_state() -> Iterator[None]:
     saved_file_tools = {n: TOOLS.get(n) for n in _FILE_TOOL_NAMES}
     for name in _FILE_TOOL_NAMES:
         TOOLS.pop(name, None)
+    # web_search registers at import like the file tools, but is gated on
+    # SEARXNG_URL (unset under test), so production would have popped it at
+    # startup. Snapshot, then pop, keeping the default test tool universe
+    # unconfigured; web_search tests opt back in by setting SEARXNG_URL and
+    # calling refresh_web_search_registration().
+    saved_web_search = TOOLS.get("web_search")
+    TOOLS.pop("web_search", None)
     yield
     generation.live_generations.clear()
     generation.live_generations.update(saved_gens)
@@ -77,3 +84,7 @@ def _isolate_module_state() -> Iterator[None]:
             TOOLS[name] = spec
         else:
             TOOLS.pop(name, None)
+    if saved_web_search is not None:
+        TOOLS["web_search"] = saved_web_search
+    else:
+        TOOLS.pop("web_search", None)

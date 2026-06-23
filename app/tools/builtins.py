@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.config import file_tool_root
 from app.format import format_size_bytes
-from app.tools import tool
+from app.tools import tool, truncate_with_ellipsis
 
 # Output caps so a huge result can't blow the model's context window.
 # Mirror the caps in app/tools/rag.py.
@@ -129,10 +129,7 @@ def read_file(path: str) -> str:
         # Binary files, permission errors, etc.: surface as text so the
         # tool loop reacts instead of crashing.
         return f"Could not read '{path}': {e}"
-    if len(text) > _READ_FILE_CAP:
-        # Reserve 3 chars for the ellipsis so visible length stays at the cap.
-        text = text[: _READ_FILE_CAP - 3] + "..."
-    return text
+    return truncate_with_ellipsis(text, _READ_FILE_CAP)
 
 
 @tool
