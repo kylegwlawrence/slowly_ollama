@@ -73,7 +73,7 @@ def _format_results(items: list[dict]) -> str:
 
 @tool
 async def web_search(query: str) -> ToolResult:
-    """Search the public web for current information via the user's SearXNG instance. Use for recent events, or facts not in the conversation, the project, or the configured knowledge bases. Returns ranked result snippets with URLs.
+    """Search the public web for current information. Use for recent events, or facts not in the conversation, the project, or the configured knowledge bases. Returns ranked result snippets with URLs.
 
     Args:
         query: Natural-language web search query.
