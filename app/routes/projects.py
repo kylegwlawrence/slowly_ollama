@@ -42,13 +42,10 @@ router = APIRouter()
 
 @router.get("/projects", response_class=HTMLResponse)
 def list_projects_endpoint(request: Request, db: DB) -> Response:
-    """Render the projects index page.
+    """Render the projects index page (the app home; ``GET /`` 302s here).
 
-    Full layout with the projects sidebar on the left and a
-    list-and-create panel on the right. Direct hits to /projects land
-    here; the page is the new home of the app (``GET /`` 302s here).
     HTMX requests get just the projects-index fragment for a cheap
-    main-panel swap.
+    main-panel swap; full hits get the layout with sidebar.
     """
     projects = queries.list_projects(db)
     if request.headers.get("HX-Request"):
@@ -63,13 +60,11 @@ def list_projects_endpoint(request: Request, db: DB) -> Response:
         context={
             "layout": "projects",
             "projects": projects,
-            # Phase 17b: sidebar highlights the current project; no
-            # project is "current" on the index page.
+            # No project is "current" on the index page.
             "active_project_id": None,
             "project": None,
             "conversation": None,
             "active_chat_id": None,
-            # Phase 24: always-visible sidebar reference lists.
             **_sidebar_reference_context(db),
         },
     )
@@ -88,11 +83,9 @@ def create_project_endpoint(
 ) -> Response:
     """Create a project; return the new row + push the URL to its chats tab.
 
-    Name must be unique (UNIQUE constraint). On conflict returns 409 with a
-    plain-text reason; HTMX leaves the form intact on a non-2xx response.
-
-    Eagerly creates the on-disk workspace so the Files tab works
-    immediately, even before the first agent tool call lands there.
+    Name must be unique; on conflict returns 409 (HTMX leaves the form
+    intact on non-2xx). Eagerly creates the on-disk workspace so the Files
+    tab works before the first tool call lands there.
     """
     name_clean = name.strip()
     if not name_clean:
@@ -109,9 +102,8 @@ def create_project_endpoint(
             status_code=status.HTTP_409_CONFLICT,
         )
     ensure_project_workspace(project)
-    # Phase 17b: render the main-panel tile AND OOB-prepend a row into
-    # the unified sidebar's #projects-list so the new project appears
-    # in the sidebar without a full reload.
+    # Render the main-panel tile AND OOB-prepend a row into the sidebar's
+    # #projects-list so the new project appears without a full reload.
     tile_html = templates.get_template("_project_item.html").render(
         project=project
     )
@@ -128,11 +120,9 @@ def create_project_endpoint(
 
 @router.get("/projects/{project_id}")
 def project_redirect_endpoint(project_id: int) -> RedirectResponse:
-    """Canonical entry: /projects/{id} → /projects/{id}/chats.
+    """Canonical entry: /projects/{id} → /projects/{id}/chats (default tab).
 
-    Saves a tab in the URL for "open the project" links; the Chats tab is
-    the default. Does NOT verify the project exists — the redirect target
-    will 404 if not.
+    Does NOT verify the project exists — the redirect target 404s if not.
     """
     return RedirectResponse(
         url=f"/projects/{project_id}/chats",
@@ -148,11 +138,9 @@ async def update_project_endpoint(
 ) -> Response:
     """Update a project's editable fields; return the refreshed settings tab.
 
-    The settings form posts ALL of its fields on submit (even when they
-    haven't changed), so the route reads the FormData directly to
-    distinguish "field omitted entirely" (sentinel — leave alone) from
-    "field submitted empty" (clear). Empty strings for
-    ``default_model`` / ``default_agent`` persist as NULL.
+    The settings form posts ALL fields on submit, so we read FormData
+    directly to distinguish "field omitted" (sentinel — leave alone) from
+    "field submitted empty" (clear to NULL).
 
     Raises:
         HTTPException 404: When the project does not exist.
@@ -163,17 +151,16 @@ async def update_project_endpoint(
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
     form = await request.form()
 
-    # Name / description are simple — passing None leaves them alone, but
-    # the form always sends them (the textbox can't be omitted client-side).
+    # Name / description: passing None leaves them alone (the form always
+    # sends them, since the textbox can't be omitted client-side).
     name = form.get("name")
     description = form.get("description")
 
     def _string_or_clear(key: str):
-        """Return the new value (or None to clear, or sentinel to leave alone).
+        """Map a form field to update_project's value.
 
-        If the form key is absent → sentinel (don't touch).
-        If present but empty/whitespace → None (clear to SQL NULL).
-        Else → the trimmed string.
+        Absent → sentinel (don't touch); empty/whitespace → None (clear to
+        NULL); else the trimmed string.
         """
         if key not in form:
             return queries._UNSET
@@ -185,9 +172,8 @@ async def update_project_endpoint(
         """Mirror of ``_string_or_clear`` for integer fields like num_ctx.
 
         Absent → sentinel; empty/whitespace → None (inherit global);
-        non-numeric → sentinel (treat as untouched — better than
-        crashing the whole save for a stray ``"abc"``); otherwise the
-        parsed int (clamping happens in ``update_project``).
+        non-numeric → sentinel (untouched, rather than crash the save on a
+        stray ``"abc"``); else the parsed int (clamped in update_project).
         """
         if key not in form:
             return queries._UNSET
@@ -200,11 +186,9 @@ async def update_project_endpoint(
         except ValueError:
             return queries._UNSET
 
-    # Per-project system prompt. The form always submits the field, even
-    # when blank. Trim + cap at 2000 chars (the textarea enforces the cap
-    # client-side too, but a hand-rolled POST would bypass that). When
-    # the field is absent entirely (e.g. legacy form), pass None so
-    # update_project leaves the existing value alone.
+    # Per-project system prompt. Trim + cap at 2000 chars server-side (the
+    # textarea caps client-side too, but a hand-rolled POST would bypass it).
+    # Absent field → None, so update_project leaves the existing value alone.
     raw_prompt = form.get("system_prompt") if "system_prompt" in form else None
     if raw_prompt is None:
         system_prompt_arg: str | None = None
@@ -224,11 +208,9 @@ async def update_project_endpoint(
         num_ctx=_int_or_clear("num_ctx"),
         system_prompt=system_prompt_arg,
     )
-    # Phase 17b: the settings body is swapped into #project-page-body, but
-    # the project name also lives in the page header (above the body) and
-    # in the unified sidebar. Append OOB swaps for both so a rename lands
-    # everywhere on the same response — no separate refresh needed. Idempotent
-    # when the name didn't change, so we always include them.
+    # The project name also lives in the page header and the sidebar, both
+    # outside #project-page-body. Append OOB swaps for both so a rename lands
+    # everywhere on one response. Idempotent, so always include them.
     settings_html = templates.get_template(
         "_project_settings_body.html"
     ).render(
@@ -252,12 +234,11 @@ async def update_project_endpoint(
     status_code=status.HTTP_200_OK,
 )
 def delete_project_endpoint(project_id: int, db: DB) -> Response:
-    """Delete a project (and cascade its chats). Refuses the last project.
+    """Delete a project (cascading its chats); refuses the last one.
 
-    Refuses with 409 when this would leave zero projects — the app needs
-    at least one as a home view. The on-disk workspace under
-    ``FILE_TOOL_ROOT/<workspace_subdir>`` is PRESERVED (not deleted) so the
-    user can recover files from a deleted project.
+    Returns 409 when this would leave zero projects — the app needs at
+    least one as a home view. The on-disk workspace is PRESERVED so the
+    user can recover its files.
 
     Raises:
         HTTPException 404: When the project does not exist.
@@ -272,12 +253,10 @@ def delete_project_endpoint(project_id: int, db: DB) -> Response:
             status_code=status.HTTP_409_CONFLICT,
         )
     queries.delete_project(db, project_id)
-    # Phase 17b: use HX-Redirect, not HX-Location. HX-Location issues an
-    # ajax GET (carrying HX-Request) and swaps the response into <body> —
-    # which here means the /projects fragment replaces the entire body,
-    # wiping the sidebar. HX-Redirect sets window.location, so the
-    # browser does a real navigation, /projects renders as a full page
-    # with the sidebar intact, and history is clean.
+    # Use HX-Redirect, not HX-Location: HX-Location does an ajax GET and
+    # swaps the /projects fragment into <body>, wiping the sidebar.
+    # HX-Redirect sets window.location, so the browser navigates for real
+    # and /projects renders as a full page with the sidebar intact.
     response = Response(content="", status_code=status.HTTP_200_OK)
     response.headers["HX-Redirect"] = "/projects"
     return response
@@ -298,21 +277,17 @@ def _render_project_page(
         db: Open SQLite connection.
         project: The project being viewed.
         active_tab: ``"chats"`` / ``"files"`` / ``"settings"``.
-        extra: Per-tab context — merged into the template context. Pass
-            ``conversation`` for an open chat, ``files_ctx`` for the
-            Files tab, ``settings_ctx`` for the Settings tab, etc.
+        extra: Per-tab context merged into the template context (e.g.
+            ``conversation``, ``files_ctx``, ``settings_ctx``).
     """
     chats = queries.list_conversations_in_project(db, project.id)
     base = {
         "project": project,
         "active_tab": active_tab,
         "chats": chats,
-        # Active chat id (when one is open) makes the sidebar row
-        # highlight correctly. Default None for the empty-state /
-        # Files / Settings tabs.
+        # None highlights no sidebar row (empty-state / Files / Settings).
         "active_chat_id": None,
-        # Most tabs need hosts + defaults available; include them so
-        # included partials don't have to re-fetch.
+        # Hosts + defaults, so included partials don't re-fetch.
         **_project_context(db, composer=active_tab == "chats"),
     }
     if extra:
@@ -323,8 +298,7 @@ def _render_project_page(
             name="_project_page.html",
             context=base,
         )
-    # Phase 17b: full-page renders include the unified sidebar, which
-    # needs the projects list + active row id.
+    # Full-page renders include the sidebar (projects list + active row id).
     return templates.TemplateResponse(
         request=request,
         name="index.html",
@@ -332,7 +306,6 @@ def _render_project_page(
             "layout": "project",
             "projects": queries.list_projects(db),
             "active_project_id": project.id,
-            # Phase 24: always-visible sidebar reference lists.
             **_sidebar_reference_context(db),
             **base,
         },
@@ -343,10 +316,9 @@ def _render_project_page(
 def project_chats_endpoint(
     project_id: int, request: Request, db: DB
 ) -> Response:
-    """Render the project page with the Chats tab active, no chat open.
+    """Render the project page, Chats tab active, no chat open.
 
-    Shows the empty-state composer (the only "create new chat"
-    affordance — POST goes to /projects/{pid}/chats).
+    Shows the empty-state composer (POST goes to /projects/{pid}/chats).
     """
     try:
         project = queries.get_project(db, project_id)
@@ -359,11 +331,10 @@ def project_chats_endpoint(
         active_tab="chats",
         extra={
             "conversation": None,
-            # Pre-fill hooks for the composer so a project default
-            # propagates into the model / host selects.
+            # Pre-fill hooks so the project default propagates into the
+            # composer's model / host selects.
             "project_default_model": project.default_model,
             "project_default_agent": project.default_agent,
-            # Initial host + model-default for the single model dropdown.
             **_composer_host_context(db, project),
         },
     )
@@ -376,11 +347,10 @@ def project_chats_endpoint(
 def project_new_chat_endpoint(
     project_id: int, request: Request, db: DB
 ) -> Response:
-    """HTMX-only entry point for the sidebar "+ New chat" link.
+    """HTMX-only: the sidebar "+ New chat" link.
 
-    Returns the empty-state composer fragment scoped to the project.
-    Cheaper than a full project-chats render because the sidebar
-    doesn't re-render (preserving the chats list's scroll position).
+    Returns just the composer fragment. Cheaper than a full project-chats
+    render, and leaves the chats list's scroll position untouched.
 
     Raises:
         HTTPException 404: When the project does not exist.
@@ -415,10 +385,8 @@ async def project_chat_panel_endpoint(
 ) -> Response:
     """Render the project page with a specific chat open.
 
-    Validates that the chat belongs to the project — a chat-id that
-    points at a different project's chat 404s rather than rendering as
-    if it were under this project. The backcompat /chats/{id} redirect
-    resolves the real project_id and lands the user on the canonical URL.
+    404s if the chat belongs to a different project rather than rendering
+    it as if it were under this one.
 
     Raises:
         HTTPException 404: When the project, the chat, or the
@@ -438,9 +406,8 @@ async def project_chat_panel_endpoint(
     blocks = render.group_messages_for_render(messages)
     archived_count = render.count_archived_blocks(messages)
 
-    # Phase 12g: identical pending-stream logic to the legacy
-    # get_chat_panel_endpoint — preserved verbatim so a reload during an
-    # in-flight generation attaches as a fresh consumer.
+    # So a reload during an in-flight generation attaches as a fresh
+    # consumer (mirrors the legacy get_chat_panel_endpoint).
     pending_stream_url = None
     live = generation.live_generations.get(conversation_id)
     if live is not None and not live.done:
@@ -452,22 +419,20 @@ async def project_chat_panel_endpoint(
     # primary (matches the indicator + generation path).
     active_host_spec = _resolve_active_host(conversation, db)
 
-    # Reflect Ollama's actual memory state in the header chip. The "effective"
-    # model is the chat's per-host model on its selected host, else the chat's
-    # pinned model — same rule the indicator uses to decide what to render.
+    # Effective model = the chat's per-host model on its selected host, else
+    # its pinned model — same rule the indicator uses.
     effective_model = _effective_model(conversation, active_host_spec, db)
     effective_host = (
         active_host_spec.ollama_host if active_host_spec else None
     )
 
-    # Gate the header chips on the EFFECTIVE model + host — i.e. what actually
-    # runs this turn. A chat pinned to a model that only exists on a non-primary
-    # host (e.g. qwen3.5 on "host2") must be probed against THAT host, or the
-    # local /api/show 404s and the chip wrongly hides.
+    # Gate the header chips on the effective model + host (what actually
+    # runs this turn). A model that only exists on a non-primary host must
+    # be probed against THAT host, or the local /api/show 404s and the chip
+    # wrongly hides.
     supports_tools = await ollama.model_supports_tools(
         client, effective_model, host=effective_host
     )
-    # Phase 25: gate the per-chat thinking toggle the same way.
     supports_thinking = await ollama.model_supports_thinking(
         client, effective_model, host=effective_host
     )
@@ -515,9 +480,9 @@ async def create_project_chat_endpoint(
 ) -> Response:
     """Create a chat inside a project AND save its first message.
 
-    Persists the chat, spawns the generation task, and returns the rendered
-    chat panel + the OOB sidebar row in one body. ``HX-Push-Url`` syncs the
-    address bar to the canonical project-scoped URL.
+    Persists the chat, spawns the generation task, and returns the chat
+    panel + OOB sidebar row in one body. ``HX-Push-Url`` syncs the address
+    bar to the canonical project-scoped URL.
 
     Raises:
         HTTPException 404: When the project does not exist.
@@ -533,8 +498,8 @@ async def create_project_chat_endpoint(
     if tool_iteration_cap is None:
         tool_iteration_cap = queries.get_default_tool_iteration_cap(db)
     tool_iteration_cap = max(1, min(10, tool_iteration_cap))
-    # Phase 25: coerce unknown values to 'default' so a stale/hand-crafted
-    # think_mode can't resolve to think=true and 400 a non-thinking model.
+    # Coerce unknown values to 'default' so a stale/hand-crafted think_mode
+    # can't resolve to think=true and 400 a non-thinking model.
     if think_mode not in {"default", "off"}:
         think_mode = "default"
     try:
@@ -542,10 +507,10 @@ async def create_project_chat_endpoint(
     except UnknownHostError:
         # Stale composer post (host removed since the page rendered) → primary.
         host_spec = get_primary_host()
-    # The single `model` field is the model for the SELECTED host. On the
-    # primary host it IS conversations.model. On a non-primary host it belongs
-    # in chat_host_models; conversations.model (NOT NULL) keeps a sensible
-    # primary fallback so switching to primary mid-chat still has a valid model.
+    # The `model` field is for the SELECTED host. On the primary host it IS
+    # conversations.model; on a non-primary host it lives in chat_host_models
+    # and conversations.model (NOT NULL) keeps a primary fallback, so
+    # switching to primary mid-chat still has a valid model.
     if host_spec.is_primary:
         primary_model = model
     else:
@@ -563,7 +528,7 @@ async def create_project_chat_endpoint(
         active_host=None if host_spec.is_primary else host_spec.name,
     )
     # Remember the picked model for the non-primary host. Empty ("" before
-    # /models loads) → skip, so the host falls back to its default_model.
+    # /models loads) → skip, so the host uses its default_model.
     if not host_spec.is_primary and model:
         queries.set_chat_host_model(db, chat.id, host_spec.name, model)
     queries.append_message(db, chat.id, "user", content)
@@ -587,15 +552,13 @@ async def create_project_chat_endpoint(
     # renders as the primary), matching the generation path's resolution.
     active_spec = _resolve_active_host(chat, db)
 
-    # Gate the header chips on the EFFECTIVE model + host (what actually runs).
-    # A model that only exists on a non-primary host must be probed against
-    # that host, or the local /api/show 404s and the chip wrongly hides.
+    # Gate the header chips on the effective model + host (what actually
+    # runs); see project_chat_panel_endpoint for the non-primary-host probe.
     effective_model = _effective_model(chat, active_spec, db)
     effective_host = active_spec.ollama_host if active_spec else None
     supports_tools = await ollama.model_supports_tools(
         client, effective_model, host=effective_host
     )
-    # Phase 25: gate the per-chat thinking toggle the same way.
     supports_thinking = await ollama.model_supports_thinking(
         client, effective_model, host=effective_host
     )
@@ -603,10 +566,9 @@ async def create_project_chat_endpoint(
     panel_html = templates.get_template("_chat_panel.html").render(
         conversation=chat,
         blocks=blocks,
-        # Phase 18: a brand-new chat can't have archived rows yet (no
-        # compaction is possible), but pass 0 explicitly so the template's
-        # `archived_count is defined` check is symmetric with the chat-
-        # panel-load path.
+        # A brand-new chat has no archived rows, but pass 0 explicitly so
+        # the template's `archived_count is defined` check is symmetric with
+        # the chat-panel-load path.
         archived_count=0,
         pending_stream_url=f"/chats/{chat.id}/stream",
         active_chat_id=chat.id,
@@ -615,16 +577,14 @@ async def create_project_chat_endpoint(
         hosts=list_hosts(),
         active_host_spec=active_spec,
         effective_model=effective_model,
-        # Brand-new chat: we just kicked off start_generation, which is
-        # (re)loading the effective model right now. Skip the /api/ps
-        # round trip and render the chip in its loaded colour.
+        # start_generation is (re)loading the model right now, so skip the
+        # /api/ps round trip and render the chip in its loaded colour.
         model_loaded=True,
         project=project,
     )
 
-    # OOB-prepended sidebar row — wrapping <ul> for the same reason as
-    # the legacy create-chat path: non-outerHTML OOB modes unwrap the
-    # root element, so a top-level <li> would lose its styling.
+    # OOB-prepended sidebar row, wrapped in <ul>: non-outerHTML OOB modes
+    # unwrap the root element, so a bare <li> would lose its styling.
     item_html = templates.get_template("_chat_item.html").render(
         chat=chat,
         active_chat_id=chat.id,
@@ -634,8 +594,8 @@ async def create_project_chat_endpoint(
         f'<ul hx-swap-oob="afterbegin:#chats-list">{item_html}</ul>'
     )
 
-    # Phase 24: the sidebar reference lists (RAG servers + tools) are
-    # chat-independent, so a new chat needs no sidebar OOB beyond its row.
+    # The sidebar reference lists are chat-independent, so a new chat needs
+    # no sidebar OOB beyond its row.
     body = panel_html + oob_sidebar_row
     response = HTMLResponse(
         content=body, status_code=status.HTTP_201_CREATED

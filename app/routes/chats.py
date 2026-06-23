@@ -13,14 +13,14 @@ Routes:
     GET    /chats/{id}/stream                — SSE assistant stream
     POST   /chats/{id}/regenerate            — regenerate assistant reply
     POST   /chats/{id}/host                  — set/clear selected Ollama host
-    POST   /chats/{id}/compact                — summarize older turns (phase 18)
+    POST   /chats/{id}/compact                — summarize older turns
     GET    /chats/{id}/archived               — archived rows for disclosure
     PATCH  /chats/{id}/temperature           — set per-chat temperature
     PATCH  /chats/{id}/tool-iteration-cap    — set per-chat tool cap
-    PATCH  /chats/{id}/think-mode            — set per-chat thinking mode (phase 25)
-    GET    /backup/status                    — remote-backup status chip (phase 21)
-    POST   /backup/pull                      — restore DB + workspaces from mirror (phase 22)
-    POST   /backup/push                      — trigger an immediate mirror push (phase 22)
+    PATCH  /chats/{id}/think-mode            — set per-chat thinking mode
+    GET    /backup/status                    — remote-backup status chip
+    POST   /backup/pull                      — restore DB + workspaces from mirror
+    POST   /backup/push                      — trigger an immediate mirror push
 """
 
 from typing import Annotated
@@ -47,12 +47,7 @@ router = APIRouter()
 
 @router.get("/")
 def index_endpoint() -> RedirectResponse:
-    """Redirect the home URL to the projects index (phase 17).
-
-    All "where am I" navigation enters via /projects after phase 17 — the
-    projects index is the new home of the app. Direct hits to ``/`` (the
-    user opens the app from a fresh tab) 302 to ``/projects``.
-    """
+    """Redirect the home URL to the projects index (the app's home)."""
     return RedirectResponse(
         url="/projects", status_code=status.HTTP_302_FOUND
     )
@@ -67,37 +62,28 @@ async def list_models_endpoint(
 ) -> Response:
     """Return ``<option>`` tags for the model dropdown.
 
-    ``host`` is the selected host's NAME (a key in ``app.hosts.HOSTS``, e.g.
-    ``"host2"``), as submitted by the composer's machine picker. Unset/empty
-    (or an unknown name) lists the primary ``OLLAMA_HOST``'s models; a known
-    name lists that host's models. This is what powers the single model
-    dropdown re-fetching when the user switches machines.
+    ``host`` is the selected host's NAME (a key in ``app.hosts.HOSTS``).
+    Unset/empty (or an unknown name) lists the primary ``OLLAMA_HOST``'s
+    models; a known name lists that host's. Powers re-fetching the dropdown
+    when the user switches machines.
 
-    Phase 12f filters this list to models whose ``/api/show`` capability
-    list advertises ``"tools"`` — picking a non-tool-capable model from
-    the dropdown 400s on the first message because every chat turn ships
-    with ``tools=[...]`` in the request. ``list_tool_capable_models``
-    caches per process so the per-model ``/api/show`` round trips only
-    pay the cost on the first render in a 60-second window.
+    Filtered to models whose ``/api/show`` capabilities advertise ``"tools"``:
+    a non-tool-capable model 400s on the first message because every turn
+    ships ``tools=[...]``. ``list_tool_capable_models`` caches per process, so
+    the ``/api/show`` round trips only cost on the first render per 60s window.
 
-    Phase 17b: when ``prepend_blank=1`` is passed, the rendered list
-    starts with a "(no default — use global)" option. Project Settings
-    uses this so clearing the default selects an empty value (which the
-    PATCH route persists as NULL via the _UNSET sentinel).
+    With ``prepend_blank=1`` the list starts with a "(no default — use global)"
+    option; Project Settings uses it so clearing the default posts an empty
+    value (persisted as NULL via the _UNSET sentinel).
 
-    On Ollama failure this returns 200 with a single disabled
-    ``<option>`` carrying an explanatory message. The reason for not
-    returning 5xx: HTMX won't swap the dropdown's contents on a
-    non-2xx response by default, which would leave the placeholder
-    stuck at "Loading models…" with no indication that anything's
-    wrong. A 200 with a disabled option still blocks submission
-    (empty value + the form's `required` attribute) while giving the
-    user a clear message to act on.
+    On Ollama failure returns 200 with a single disabled ``<option>`` carrying
+    the message, NOT a 5xx: HTMX won't swap the dropdown on a non-2xx, leaving
+    it stuck at "Loading models…". The disabled option still blocks submission
+    (empty value + ``required``) while showing the user what's wrong.
     """
-    # Resolve the host NAME to its base URL via the registry: a known
-    # non-primary host → its ollama_host; primary → None (local). The host
-    # comes from the dropdown (a query param), so a stale page could post a
-    # since-removed name — treat that as the primary host rather than 500.
+    # Resolve the host NAME to its base URL: known non-primary → its
+    # ollama_host, primary → None (local). A stale dropdown may post a
+    # since-removed name — treat that as primary rather than 500.
     try:
         spec = get_host(host)
     except UnknownHostError:
@@ -107,8 +93,8 @@ async def list_models_endpoint(
         models = sorted(
             await ollama.list_tool_capable_models(client, host=target_host)
         )
-        # Phase 25: which of those models can think? Used to tag each option
-        # so the composer's Think select shows/hides as the model changes.
+        # Which models can think — tags each option so the composer's Think
+        # select shows/hides as the model changes.
         thinking_models = set(
             await ollama.list_thinking_capable_models(client, host=target_host)
         )
@@ -150,9 +136,8 @@ def list_chats_endpoint(request: Request, db: DB) -> Response:
     return templates.TemplateResponse(
         request=request,
         name="_chats_list.html",
-        # `active_chat_id` is None here — GET /chats refreshes the
-        # sidebar standalone (no conversation context). The page that
-        # owns the URL is responsible for the active highlight.
+        # None here: this refreshes the sidebar standalone, with no
+        # conversation context. The page owning the URL sets the highlight.
         context={
             "chats": queries.list_conversations(db),
             "active_chat_id": None,
@@ -162,11 +147,10 @@ def list_chats_endpoint(request: Request, db: DB) -> Response:
 
 @router.get("/chats/{conversation_id}")
 def chat_redirect_endpoint(conversation_id: int, db: DB) -> RedirectResponse:
-    """Phase 17 backcompat: resolve the project for a chat and 302 to the canonical URL.
+    """Backcompat: 302 a legacy ``/chats/{id}`` to its canonical
+    project-scoped URL (``/projects/{pid}/chats/{cid}``).
 
-    Pre-17 chats were addressable at ``/chats/{id}``; post-17 the canonical
-    URL is project-scoped (``/projects/{pid}/chats/{cid}``). External
-    bookmarks + transitional links keep working via this redirect.
+    Keeps old bookmarks + transitional links working.
 
     Raises:
         HTTPException 404: When the conversation does not exist.
@@ -185,13 +169,10 @@ def chat_redirect_endpoint(conversation_id: int, db: DB) -> RedirectResponse:
 def get_chat_edit_endpoint(
     request: Request, conversation_id: int, db: DB
 ) -> Response:
-    """Return the sidebar row in edit mode (a form with the name input).
+    """Return the sidebar row in edit mode (the rename form).
 
-    Wired to the rename button on the display row, which swaps this
-    fragment into place (outerHTML on the <li>). On submit the form
-    PATCHes /chats/{id}, which returns the display fragment that
-    swaps back over the edit fragment. On cancel the edit fragment
-    triggers GET /chats/{id}/item below.
+    The rename button swaps this in (outerHTML on the <li>). Submit PATCHes
+    /chats/{id} → display fragment; Cancel triggers GET /chats/{id}/item.
     """
     try:
         chat = queries.get_conversation(db, conversation_id)
@@ -211,14 +192,13 @@ def get_chat_item_endpoint(
 ) -> Response:
     """Return the sidebar row in display mode.
 
-    Exists for the rename flow's Cancel button: clicking it swaps
-    this display fragment back over the edit fragment, restoring the
-    original row without modifying anything.
+    Backs the rename flow's Cancel button: swaps the display fragment back
+    over the edit fragment, restoring the row unchanged.
     """
     try:
         chat = queries.get_conversation(db, conversation_id)
-        # Phase 17: pass the owning project so the row's link URL renders
-        # as the canonical project-scoped path, not the legacy /chats/{id}.
+        # Pass the owning project so the row's link renders the canonical
+        # project-scoped path, not the legacy /chats/{id}.
         project = queries.get_project_for_conversation(db, conversation_id)
     except LookupError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
@@ -239,8 +219,8 @@ def rename_chat_endpoint(
     """Rename a conversation; return the updated sidebar row."""
     try:
         chat = queries.rename_conversation(db, conversation_id, name)
-        # Phase 17: include the project so the rendered row's link URL is
-        # project-scoped (matches the canonical URL the browser is on).
+        # Include the project so the row's link is project-scoped (matches
+        # the canonical URL the browser is on).
         project = queries.get_project_for_conversation(db, conversation_id)
     except LookupError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
@@ -260,22 +240,18 @@ def delete_chat_endpoint(
     conversation_id: int, request: Request, db: DB
 ) -> Response:
     """Delete a conversation; return empty 200 so HTMX's
-    ``hx-swap="delete"`` removes the row from the sidebar.
+    ``hx-swap="delete"`` removes the sidebar row.
 
-    If the user is currently viewing the chat they just deleted (``Referer``
-    ends with the project-scoped or legacy chat URL), set ``HX-Location`` on
-    the response so HTMX navigates the page back to the owning project's
-    chats tab — otherwise they'd be left looking at a stale chat panel whose
-    URL 404s on reload.
+    If the user is viewing the chat they just deleted (``Referer`` matches its
+    URL), set ``HX-Location`` to navigate to the project's chats tab —
+    otherwise they're left on a stale panel whose URL 404s on reload.
 
-    Server-side check (rather than client-side ``window.location``
-    comparison) avoids a brittle timing race: the row's
-    ``hx-swap="delete"`` removes the button's parent ``<li>`` before
-    ``htmx:after-request`` fires, and event delivery to detached
-    elements isn't reliable across browsers.
+    The check is server-side (not client ``window.location``) to dodge a
+    timing race: ``hx-swap="delete"`` removes the button's ``<li>`` before
+    ``htmx:after-request`` fires, and events to detached elements aren't
+    reliably delivered across browsers.
     """
-    # Resolve the owning project BEFORE the delete — post-delete the join
-    # would 404. Cache the project so we can build the redirect URL below.
+    # Resolve the owning project BEFORE the delete — afterward the join 404s.
     try:
         project = queries.get_project_for_conversation(db, conversation_id)
     except LookupError:
@@ -283,9 +259,8 @@ def delete_chat_endpoint(
     queries.delete_conversation(db, conversation_id)
     response = Response(content="", status_code=status.HTTP_200_OK)
     referer = request.headers.get("Referer", "")
-    # Match BOTH the project-scoped canonical URL and the legacy redirect
-    # URL — a user on a backcompat link should still be redirected after
-    # deleting the chat they're viewing.
+    # Match both the canonical and legacy URLs so a user on a backcompat
+    # link still gets redirected.
     is_viewing_deleted = (
         project is not None
         and (
@@ -313,12 +288,10 @@ async def send_message_endpoint(
 ) -> Response:
     """Save the user message; return user-bubble + assistant placeholder.
 
-    The placeholder opens an SSE connection to
-    ``/chats/{id}/stream`` on insert — that endpoint drives the
-    actual streaming. Splitting "save user message" (POST) from
-    "stream assistant reply" (GET) is the standard HTMX pattern for
-    POST-triggered streams: htmx-ext-sse only opens connections via
-    GET-based ``sse-connect``.
+    The placeholder opens an SSE connection to ``/chats/{id}/stream`` on
+    insert, which drives the streaming. Splitting save (POST) from stream
+    (GET) is the standard HTMX pattern: htmx-ext-sse only opens connections
+    via GET-based ``sse-connect``.
     """
     try:
         conversation = queries.get_conversation(db, conversation_id)
@@ -329,16 +302,13 @@ async def send_message_endpoint(
         db, conversation_id, "user", content
     )
 
-    # Phase 12g: spawn the generation task NOW so the LLM call is
-    # already running by the time the browser opens the SSE
-    # connection. The task lives beyond this request's lifecycle —
-    # it's owned by `generation.live_generations`, not by the
-    # response generator. A page reload (client disconnect) won't
-    # cancel it; consume_generation just attaches a new consumer.
+    # Spawn the generation task NOW so the LLM call is already running by
+    # the time the browser opens the SSE connection. The task is owned by
+    # `generation.live_generations`, not this request — a reload (client
+    # disconnect) won't cancel it; consume_generation attaches a new consumer.
     #
-    # Phase 18: read only the active rows. The compact endpoint may
-    # have archived an earlier prefix into a `summary` row; sending
-    # the archived rows back would defeat the whole feature.
+    # Read only the active rows: compact may have archived an earlier prefix
+    # into a `summary` row, and re-sending the archived rows would defeat it.
     history = queries.list_active_messages(db, conversation_id)
     try:
         await generation.start_generation(
@@ -353,20 +323,18 @@ async def send_message_endpoint(
             **_host_overrides(conversation, db),
         )
     except generation.GenerationInProgress:
-        # UI gate (placeholder keeps the send button disabled) makes
-        # this rare; defensive 409 in case a duplicate POST sneaks
-        # through.
+        # The UI gate (disabled send button) makes this rare; defensive 409
+        # for a duplicate POST that slips through.
         return HTMLResponse(
             '<div class="error">A reply is already streaming for this chat.</div>',
             status_code=status.HTTP_409_CONFLICT,
         )
-    # Phase 20: the user message is now persisted — push state to the
-    # remote mirror. Fire-and-forget + debounced; no-ops when unconfigured.
+    # User message persisted — push to the remote mirror. Fire-and-forget +
+    # debounced; no-ops when unconfigured.
     backup.request_backup("send")
 
-    # Render the user bubble + assistant placeholder as one fragment.
-    # The browser receives them both, swaps them into #messages, and
-    # the placeholder's `sse-connect` triggers the streaming GET.
+    # Render the user bubble + assistant placeholder as one fragment; the
+    # placeholder's `sse-connect` triggers the streaming GET on insert.
     user_html = templates.get_template("_message.html").render(
         message=user_message
     )
@@ -376,10 +344,9 @@ async def send_message_endpoint(
         conversation_id=conversation_id,
         stream_url=f"/chats/{conversation_id}/stream",
     )
-    # OOB-swap the header model chip back to "loaded": the generation we
-    # just spawned will (re)load the model in Ollama. If the chip is
-    # already loaded this is a no-op visually; if the user had just
-    # clicked unload, this flips it back to the accent colour.
+    # OOB-swap the header model chip to "loaded": the spawned generation will
+    # (re)load the model. No-op if already loaded; flips it back if the user
+    # had just clicked unload.
     spec = _resolve_active_host(conversation, db)
     indicator_oob = templates.get_template("_host_indicator.html").render(
         conversation=conversation,
@@ -388,10 +355,9 @@ async def send_message_endpoint(
         model_loaded=True,
         oob=True,
     )
-    # Phase 21: OOB-swap the backup chip into its now-pending state so it
-    # starts polling /backup/status. request_backup("send") above already set
-    # the status to "pending", so this renders with the self-polling trigger.
-    # No-ops to empty when backups aren't configured (chip stays absent).
+    # OOB-swap the backup chip into its pending state so it starts polling
+    # /backup/status (request_backup("send") above already set status to
+    # "pending"). Renders empty when backups aren't configured.
     backup_chip_oob = templates.get_template("_backup_chip.html").render(oob=True)
     return HTMLResponse(
         content=user_html + placeholder_html + indicator_oob + backup_chip_oob
@@ -405,13 +371,11 @@ async def stream_endpoint(
     """SSE stream — attach as a consumer to the live generation if one
     exists, else emit a done event from the persisted assistant row.
 
-    Phase 12g: the POST that triggered this stream (either /messages
-    or /regenerate) spawned a generation task and registered it in
-    `generation.live_generations`. This endpoint is a thin
-    dispatcher — `consume_generation` handles all the replay/tail
-    logic. The fallback to `consume_finished` covers the race where
-    a reload's GET lands AFTER the generation finished and was
-    removed from the registry.
+    The triggering POST (/messages or /regenerate) spawned the task and
+    registered it in `generation.live_generations`; this is a thin dispatcher
+    over `consume_generation` (which handles replay/tail). The `consume_finished`
+    fallback covers the race where a reload's GET lands after the generation
+    finished and left the registry.
     """
     state = generation.live_generations.get(conversation_id)
     if state is not None:
@@ -438,20 +402,17 @@ async def regenerate_endpoint(
 ) -> Response:
     """Spawn a regen generation; return a placeholder that replaces the bubble.
 
-    Phase 12g: identical shape to send_message_endpoint, but
-    ``on_complete="replace"`` so the existing assistant row is
-    overwritten in place. The placeholder's ``sse-connect`` points
-    at ``/chats/{id}/stream`` (same endpoint as new-message flow
-    after 12g — the /regenerate-stream endpoint was removed).
+    Same shape as send_message_endpoint, but ``on_complete="replace"`` so the
+    existing assistant row is overwritten in place. The placeholder's
+    ``sse-connect`` points at ``/chats/{id}/stream`` (the shared stream endpoint).
     """
     try:
         conversation = queries.get_conversation(db, conversation_id)
     except LookupError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
 
-    # Phase 18: regenerate operates on active rows only. The persisted
-    # assistant row being replaced is by definition active, so the
-    # "last active row must be assistant" gate still works.
+    # Operate on active rows only. The assistant row being replaced is by
+    # definition active, so the "last active row must be assistant" gate holds.
     history = queries.list_active_messages(db, conversation_id)
     if not history or history[-1].role != "assistant":
         raise HTTPException(
@@ -459,9 +420,8 @@ async def regenerate_endpoint(
             "No assistant message to regenerate.",
         )
 
-    # Drop the last assistant message from the prompt so Ollama
-    # generates a fresh reply rather than seeing its own previous
-    # output in the history.
+    # Drop the last assistant message so Ollama generates fresh rather than
+    # seeing its own previous output.
     prompt_history = history[:-1]
     try:
         await generation.start_generation(
@@ -486,7 +446,7 @@ async def regenerate_endpoint(
         conversation_id=conversation_id,
         stream_url=f"/chats/{conversation_id}/stream",
     )
-    # Same chip-reset as send_message: regen will reload the model too.
+    # Same chip-reset as send_message: regen reloads the model too.
     spec = _resolve_active_host(conversation, db)
     indicator_oob = templates.get_template("_host_indicator.html").render(
         conversation=conversation,
@@ -507,16 +467,13 @@ async def set_chat_host_endpoint(
 ) -> Response:
     """Set/clear the selected Ollama host for a chat; return OOB UI updates.
 
-    Called by the in-chat host dropdown on change (``hx-post`` with
-    ``hx-swap="none"`` — the response is OOB-only). The selection is
-    persisted so it survives reloads and so subsequent turns resolve the
-    same host. ``host`` is the host name, or empty/None for the primary host.
-    A name no longer in the registry (a stale dropdown post) resolves to the
-    primary host rather than erroring.
+    Called by the in-chat host dropdown on change (``hx-post`` +
+    ``hx-swap="none"`` — response is OOB-only). The selection persists across
+    reloads and subsequent turns. ``host`` is the host name, or empty/None for
+    the primary host; a stale name (since-removed) resolves to primary.
 
-    OOB swaps returned:
-      - ``#host-indicator-{id}``: the header indicator, updated to the
-        host label + model (or the chat's pinned model for the primary host).
+    OOB-swaps ``#host-indicator-{id}``: the header indicator, updated to the
+    host label + model.
 
     Raises:
         HTTPException 404: When the conversation is unknown.
@@ -529,18 +486,17 @@ async def set_chat_host_endpoint(
     try:
         selected = get_host(host)
     except UnknownHostError:
-        # Stale dropdown post (host removed since the page rendered) → primary.
+        # Stale dropdown post → primary.
         selected = get_primary_host()
     conversation = queries.set_active_host(
         db, conversation_id, None if selected.is_primary else selected.name
     )
-    # Resolve through the toggle so a disabled remote host falls back to the
+    # Resolve through the toggle so a disabled remote host falls back to
     # primary (matches the indicator + generation path).
     spec = _resolve_active_host(conversation, db)
 
-    # The effective model can change with the host (a non-primary host uses the
-    # chat's per-host model, or its default), so re-probe residency ON THAT
-    # HOST before re-rendering the chip rather than carrying over the old state.
+    # The effective model can change with the host, so re-probe residency ON
+    # THAT HOST before re-rendering the chip rather than reusing old state.
     effective_model = _effective_model(conversation, spec, db)
     effective_host = spec.ollama_host
     model_loaded = await ollama.is_model_loaded(
@@ -569,20 +525,18 @@ async def unload_chat_model_endpoint(
 ) -> Response:
     """Unload the chat's currently-effective model from Ollama's memory.
 
-    Triggered by clicking the header model chip. The "effective" model is
-    the selected host's model when a non-primary host is active, otherwise
-    the chat's pinned model — same rule the indicator uses to decide what
-    to display. We unload whatever the user sees in the chip.
+    Triggered by clicking the header model chip. The "effective" model is the
+    selected host's model on a non-primary host, else the chat's pinned model
+    (same rule the indicator displays) — we unload what the user sees.
 
-    Returns the chip fragment with ``data-state="unloaded"`` so HTMX can
-    swap it in place. The next message-send POST will OOB-swap it back to
-    ``loaded`` because the generation request implicitly reloads the model.
+    Returns the chip with ``data-state="unloaded"``. The next send OOB-swaps
+    it back to ``loaded`` since generation implicitly reloads the model.
 
     Raises:
         HTTPException 404: When the conversation is unknown.
-        HTTPException 502: When Ollama is unreachable. The chip stays in
-            its previous state because HTMX won't swap on a non-2xx by
-            default — better than lying that the model was unloaded.
+        HTTPException 502: When Ollama is unreachable. The chip keeps its
+            previous state (HTMX won't swap on a non-2xx) rather than lying
+            that the model was unloaded.
     """
     try:
         conversation = queries.get_conversation(db, conversation_id)
@@ -610,11 +564,8 @@ async def unload_chat_model_endpoint(
     return HTMLResponse(content=indicator_html)
 
 
-# Phase 18: number of trailing (user/assistant/summary) rows to keep active
-# when the user clicks Compact. Captures the current working thread without
-# being so generous that the prompt stays bloated. Hardcoded for v1; a
-# per-chat knob is the natural "out of scope" thread once we have usage
-# data.
+# Trailing (user/assistant/summary) rows to keep active on Compact. Captures
+# the current working thread without bloating the prompt. Hardcoded for v1.
 _KEEP_RECENT_ON_COMPACT = 2
 
 
@@ -624,34 +575,28 @@ def _split_for_compact(
     """Split active rows into ``(to-summarize, to-keep)`` halves.
 
     ``keep_recent`` is counted in renderable rows (``user`` / ``assistant`` /
-    a prior ``summary``); attached ``tool_call`` / ``tool_result`` rows
-    travel with the kept assistant turn they belong to. Leaving an orphan
-    ``tool_result`` at the head of the kept window would 400 Ollama on
-    the next turn (the wire format requires a preceding ``assistant`` row
-    with ``tool_calls`` for every ``role: "tool"`` message).
+    prior ``summary``); attached ``tool_call`` / ``tool_result`` rows travel
+    with the assistant turn they belong to. An orphan ``tool_result`` at the
+    head of the kept window would 400 Ollama next turn — the wire format
+    requires a preceding ``assistant`` with ``tool_calls`` for every ``role:
+    "tool"`` message.
 
-    A prior ``summary`` row counts as renderable for the split because
-    re-compacting deliberately *subsumes* it — the prior summary becomes
-    part of the new compaction corpus, and the new summary replaces it.
+    A prior ``summary`` counts as renderable because re-compacting subsumes
+    it: it joins the new corpus and the new summary replaces it.
 
     Args:
         active: Rows from :func:`queries.list_active_messages`, oldest first.
-        keep_recent: How many renderable rows to keep unarchived. Must be
-            >= 1; callers pass ``_KEEP_RECENT_ON_COMPACT``.
+        keep_recent: Renderable rows to keep unarchived. Must be >= 1.
 
     Returns:
-        ``(to_summarize, to_keep)``. Either list may be empty: an empty
-        ``to_summarize`` means there's nothing older than the kept window
-        (the caller should 422), and an empty ``to_keep`` cannot occur in
-        practice because the user message that triggered the call sits
-        at the tail.
+        ``(to_summarize, to_keep)``. An empty ``to_summarize`` means nothing
+        older than the kept window (caller 422s); ``to_keep`` is never empty
+        in practice (the triggering user message sits at the tail).
     """
-    # Walk from the end; once we've seen `keep_recent` renderable rows,
-    # the boundary is at that index. If the chat has FEWER than
-    # `keep_recent` renderable rows total, the loop exits without
-    # breaking — in that case there's nothing to compact, so we keep
-    # everything and return an empty `to_summarize`. The route then
-    # 422s with "Nothing to compact yet."
+    # Walk from the end; the boundary is where we've seen `keep_recent`
+    # renderable rows. If the chat has fewer than that total, the loop exits
+    # without breaking — nothing to compact, so keep everything and return an
+    # empty `to_summarize` (the route then 422s).
     keep_idx: int | None = None
     renderables_seen = 0
     for i in range(len(active) - 1, -1, -1):
@@ -662,10 +607,9 @@ def _split_for_compact(
                 break
     if keep_idx is None:
         return [], list(active)
-    # Slide forward past any leading tool_* rows on the kept side so the
-    # kept window doesn't start with an orphan tool_result. (A leading
-    # tool_call without its assistant context is also illegal in the
-    # wire format; the slide-forward handles both.)
+    # Slide forward past leading tool_* rows so the kept window doesn't start
+    # with an orphan tool_result (or tool_call) — both are illegal in the wire
+    # format without their assistant context.
     while keep_idx < len(active) and active[keep_idx].role in (
         "tool_call", "tool_result",
     ):
@@ -684,11 +628,10 @@ async def compact_chat_endpoint(
 ) -> Response:
     """Summarize the older portion of a chat into a single ``summary`` row.
 
-    Phase 18. Keeps the most-recent ``_KEEP_RECENT_ON_COMPACT`` renderable
-    messages active; archives everything older (including any prior
-    ``summary`` row); inserts a fresh ``summary`` row carrying the
-    model-generated briefing. Returns the re-rendered messages container
-    so HTMX can swap it in place.
+    Keeps the most-recent ``_KEEP_RECENT_ON_COMPACT`` renderable messages
+    active; archives everything older (including any prior ``summary``);
+    inserts a fresh ``summary`` row with the model-generated briefing. Returns
+    the re-rendered messages container for HTMX to swap in place.
 
     Raises:
         HTTPException 404: Unknown conversation.
@@ -705,9 +648,9 @@ async def compact_chat_endpoint(
     except LookupError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
 
-    # In-flight gate. The producer's `working_history = list_active_messages`
-    # rebuild inside the tool-call loop would race the archive UPDATE
-    # below; refusing here is simpler and safer than coordinating.
+    # In-flight gate: the producer's `list_active_messages` rebuild inside the
+    # tool-call loop would race the archive UPDATE below. Refusing is simpler
+    # than coordinating.
     state = generation.live_generations.get(conversation_id)
     if state is not None and not state.done:
         raise HTTPException(
@@ -724,26 +667,21 @@ async def compact_chat_endpoint(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             "Nothing to compact yet.",
         )
-    # The cutoff is the FIRST kept row's id, not the summary row's id.
-    # Every row in `to_summarize` has id < to_keep[0].id (rows are
-    # ordered by created_at, id). Using the summary's id would archive
-    # the kept rows too — they were all appended BEFORE the summary, so
-    # all of their ids are also less than the summary's id.
+    # Cutoff is the FIRST kept row's id, not the summary's. Every to_summarize
+    # row has id < to_keep[0].id; using the summary's id (appended last, so
+    # highest) would archive the kept rows too.
     archive_cutoff_id = to_keep[0].id
 
-    # Effective num_ctx for the summarization call: project override or
-    # global default. Matches what `_run_generation` would use for a
-    # normal turn, so a project that pinned a larger context window
-    # still gets the benefit when summarizing a long history.
+    # num_ctx for the summarization call: project override or global default —
+    # same as a normal turn, so a project pinning a larger window benefits
+    # when summarizing a long history.
     num_ctx = _resolve_num_ctx(db, conversation_id)
 
-    # When a non-primary host is selected, compact through that host's
-    # model + host so the summarizer reuses whatever Ollama instance just
-    # streamed the conversation (warm KV cache there, not on the local
-    # Ollama). Route through `_host_overrides` so the phase-20b
-    # remote-Ollama toggle is respected here too — a chat with the
-    # remote host selected but the toggle off summarizes locally on the
-    # chat's pinned model instead of trying to reach host1.
+    # On a non-primary host, compact through that host's model + host so the
+    # summarizer reuses the warm KV cache where the conversation just streamed.
+    # Route through `_host_overrides` so the remote-Ollama toggle is respected:
+    # remote host selected but toggle off → summarize locally on the pinned
+    # model rather than reaching the remote.
     overrides = _host_overrides(conversation, db)
     summarize_model = overrides["model"]
     summarize_host = overrides["ollama_host"]
@@ -766,9 +704,9 @@ async def compact_chat_endpoint(
             "Compaction model returned empty text.",
         )
 
-    # Insert the summary, then archive everything older than the kept
-    # window. The summary row's id is > every prior row's id (SQLite's
-    # rowid is monotonic), so it's NOT included in the archived range.
+    # Insert the summary, then archive everything older than the kept window.
+    # The summary's id is > every prior row's (monotonic rowid), so it's not
+    # in the archived range.
     queries.append_message(
         db, conversation_id, "summary", summary_text
     )
@@ -776,9 +714,8 @@ async def compact_chat_endpoint(
         db, conversation_id, archive_cutoff_id
     )
 
-    # Re-render the whole messages container. Cheaper than crafting an
-    # OOB delta for "the head N rows go away + a summary bubble appears"
-    # — one user action per page load, simpler wins.
+    # Re-render the whole messages container — simpler than an OOB delta for
+    # "head N rows go, summary bubble appears", and it's a rare user action.
     messages = queries.list_messages(db, conversation_id)
     blocks = render.group_messages_for_render(messages)
     archived_count = render.count_archived_blocks(messages)
@@ -802,13 +739,12 @@ async def archived_messages_endpoint(
 ) -> Response:
     """Render the archived (compacted-away) messages for inline disclosure.
 
-    Phase 18: powered by the ``<details>`` element on the summary bubble.
-    The fetch is lazy (``hx-trigger="toggle once``) so the chat panel
-    doesn't pay to render archived rows on every panel mount.
+    Backs the ``<details>`` on the summary bubble. The fetch is lazy
+    (``hx-trigger="toggle once``) so the panel doesn't render archived rows on
+    every mount.
 
-    Archived ``summary`` rows are intentionally hidden — they're stale
-    by definition (the next compact subsumed them) and surfacing them
-    would only confuse the viewer.
+    Archived ``summary`` rows are hidden — they're stale by definition (the
+    next compact subsumed them) and would only confuse the viewer.
 
     Raises:
         HTTPException 404: Unknown conversation.
@@ -840,12 +776,9 @@ async def set_chat_temperature_endpoint(
 ) -> Response:
     """Persist the sampling temperature for a conversation.
 
-    Called by the temperature ``<input>`` in ``_chat_panel.html`` via
-    ``hx-patch`` on the ``change`` event. Clamps to [0.0, 2.0] server-side
-    so a hand-crafted request can't push Ollama out of range.
-
-    Returns 204 No Content — the browser input already shows the typed
-    value, so no swap is needed.
+    Called by the temperature ``<input>`` via ``hx-patch`` on ``change``.
+    Clamps to [0.0, 2.0] server-side so a hand-crafted request can't push
+    Ollama out of range. Returns 204 — the input already shows the value.
 
     Raises:
         HTTPException 404: When the conversation doesn't exist.
@@ -869,12 +802,9 @@ async def set_chat_tool_iteration_cap_endpoint(
 ) -> Response:
     """Persist the single-agent tool-iteration cap for a conversation.
 
-    Called by the cap ``<input>`` in ``_chat_panel.html`` via
-    ``hx-patch`` on the ``change`` event. Clamps to [1, 10] server-side
-    so a hand-crafted request can't drive a runaway or no-op tool loop.
-
-    Returns 204 No Content — the browser input already shows the typed
-    value, so no swap is needed.
+    Called by the cap ``<input>`` via ``hx-patch`` on ``change``. Clamps to
+    [1, 10] server-side so a hand-crafted request can't drive a runaway or
+    no-op tool loop. Returns 204 — the input already shows the value.
 
     Raises:
         HTTPException 404: When the conversation doesn't exist.
@@ -898,16 +828,12 @@ async def set_chat_think_mode_endpoint(
     db: DB,
     think_mode: Annotated[str, Form()],
 ) -> Response:
-    """Persist the per-chat thinking mode (phase 25).
+    """Persist the per-chat thinking mode.
 
-    Called by the thinking ``<select>`` in ``_chat_panel.html`` via
-    ``hx-patch`` on ``change``. Values outside ``{'default', 'off'}`` are
-    coerced to ``'default'`` server-side so a hand-crafted request can't
-    persist a value that would later resolve to ``think=true`` and 400 a
-    non-thinking model.
-
-    Returns 204 No Content — the select already shows the chosen value, so
-    no swap is needed.
+    Called by the thinking ``<select>`` via ``hx-patch`` on ``change``. Values
+    outside ``{'default', 'off'}`` are coerced to ``'default'`` so a
+    hand-crafted request can't persist one that resolves to ``think=true`` and
+    400s a non-thinking model. Returns 204 — the select already shows the value.
 
     Raises:
         HTTPException 404: When the conversation doesn't exist.
@@ -923,12 +849,12 @@ async def set_chat_think_mode_endpoint(
 
 @router.get("/backup/status", response_class=HTMLResponse)
 def backup_status_endpoint() -> Response:
-    """Render the remote-backup status chip from current process-local state.
+    """Render the remote-backup status chip from process-local state.
 
-    Polled by the chip itself (~every 2s) only while a push is in flight; the
-    fragment stops re-arming its trigger once the backup settles, so the poll
-    self-stops. Cheap: no I/O — the template reads the in-memory status via the
-    ``backups_enabled`` / ``backup_status`` Jinja globals.
+    Polled by the chip (~every 2s) only while a push is in flight; the fragment
+    stops re-arming its trigger once the backup settles, so the poll self-stops.
+    No I/O — reads in-memory status via the ``backups_enabled`` /
+    ``backup_status`` Jinja globals.
     """
     return HTMLResponse(templates.get_template("_backup_chip.html").render())
 
@@ -938,14 +864,13 @@ async def backup_pull_endpoint(request: Request) -> Response:
     """Restore the chats DB + agent workspaces from the remote mirror.
 
     The "I switched machines" path: runs ``copy_agent_workspace.py --all`` (via
-    :func:`app.backup.pull_all`) to pull both halves down from host1. Because
-    that overwrites the live ``chats.db``, the app closes its shared WAL
-    connection around the pull, reopens it, then ``HX-Redirect``s the browser
-    to ``/projects`` so the freshly pulled state is shown.
+    :func:`app.backup.pull_all`). Because that overwrites the live ``chats.db``,
+    the app closes its shared WAL connection around the pull, reopens it, then
+    ``HX-Redirect``s to ``/projects`` to show the pulled state.
 
-    Refused (409) while a generation is still streaming — its producer task
-    holds the shared connection, so closing it mid-stream would break the
-    stream and risk the DB. Hidden/404 when backups aren't configured.
+    Refused (409) while a generation is streaming — its producer holds the
+    shared connection, so closing it mid-stream would break the stream and risk
+    the DB. 404 when backups aren't configured.
     """
     if not config.backups_enabled():
         raise HTTPException(
@@ -969,7 +894,7 @@ async def backup_pull_endpoint(request: Request) -> Response:
         ok, detail = await backup.pull_all()
         if ok:
             # Idempotent migrations on the pulled file, in case the mirror was
-            # written by a slightly older app version.
+            # written by an older app version.
             initialize_database()
     finally:
         # ALWAYS reopen — a failed/timed-out pull must not strand the app with
@@ -977,8 +902,8 @@ async def backup_pull_endpoint(request: Request) -> Response:
         app.state.db = open_connection()
 
     if ok:
-        # HX-Redirect (not an HTTP 3xx): the swap is skipped and the browser
-        # navigates, reloading the sidebar + panel against the pulled DB.
+        # HX-Redirect (not a 3xx): the swap is skipped and the browser
+        # navigates, reloading sidebar + panel against the pulled DB.
         return HTMLResponse("", headers={"HX-Redirect": "/projects"})
     return HTMLResponse(
         templates.get_template("_pull_chip.html").render(
@@ -993,15 +918,13 @@ async def backup_push_endpoint() -> Response:
 
     For state changed OUTSIDE a chat turn — e.g. a file dropped into the
     workspace by hand — that the automatic triggers (send / generation-complete
-    / ``write_file``) wouldn't otherwise catch. Fire-and-forget:
-    :func:`app.backup.request_backup` coalesces and runs the push in the
-    background, so this returns at once.
+    / ``write_file``) wouldn't catch. Fire-and-forget: ``request_backup``
+    coalesces and runs the push in the background, so this returns at once.
 
     Async (not sync) because ``request_backup`` schedules an
-    ``asyncio.create_task`` and so must run on the event loop, not the
-    threadpool. Returns the Phase 21 backup chip OOB in its now-pending state,
-    which re-arms the ``/backup/status`` poll → the user sees the spinner settle
-    to ok/offline/failed. 404 when backups aren't configured (button hidden).
+    ``asyncio.create_task`` and must run on the event loop, not the threadpool.
+    Returns the backup chip OOB in its pending state, re-arming the
+    ``/backup/status`` poll. 404 when backups aren't configured.
     """
     if not config.backups_enabled():
         raise HTTPException(

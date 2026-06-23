@@ -35,8 +35,8 @@ def project_files_endpoint(
 ) -> Response:
     """Render the project page with the Files tab active.
 
-    ``path`` is a workspace-relative directory; default ``"."`` lists the
-    workspace root. Containment + missing-directory cases are handled by
+    ``path`` is a workspace-relative directory (default ``"."`` = root).
+    Containment + missing-directory cases are handled by
     :func:`browse_workspace` and surface as in-page error text.
 
     Raises:
@@ -69,9 +69,9 @@ def project_file_view_endpoint(
 ) -> Response:
     """Render a single workspace file in the Files tab.
 
-    Markdown files get pre-rendered via the ``markdown`` library; all
-    other text files render as a ``<pre>`` block. Binary files surface a
-    "use Download" message rather than corrupted byte output.
+    Markdown is pre-rendered via the ``markdown`` library; other text renders
+    as a ``<pre>`` block. Binary files show a "use Download" message instead
+    of corrupted bytes.
 
     Raises:
         HTTPException 404: When the project does not exist.
@@ -98,14 +98,14 @@ def project_file_download_endpoint(
 ) -> Response:
     """Stream a workspace file to the browser as an attachment.
 
-    Validates containment (``..`` traversal / absolute paths are
-    rejected) and existence; uses ``Content-Disposition: attachment``
-    so browsers save instead of inlining.
+    Validates containment (rejects ``..`` traversal / absolute paths) and
+    existence; ``Content-Disposition: attachment`` makes browsers save
+    rather than inline.
 
     Raises:
         HTTPException 400: When file tools are not configured.
-        HTTPException 404: When the project does not exist, the path
-            escapes the workspace, or the file doesn't exist.
+        HTTPException 404: When the project does not exist, the path escapes
+            the workspace, or the file doesn't exist.
     """
     try:
         project = queries.get_project(db, project_id)

@@ -34,12 +34,11 @@ router = APIRouter()
 
 @router.get("/settings", response_class=HTMLResponse)
 def settings_endpoint(request: Request, db: DB) -> Response:
-    """Standalone settings page — RAG servers + default temperature + default tool cap.
+    """Settings page — RAG servers + default temperature/tool-cap/num-ctx/model.
 
     Direct browser hits return the full index shell with the settings
-    fragment preloaded in the main slot (so reload / bookmarks land on
-    the same view). HTMX requests get just the fragment, sized for a
-    cheap swap into ``#main``.
+    fragment preloaded (so reload / bookmarks land on the same view).
+    HTMX requests get just the fragment for a cheap swap into ``#main``.
     """
     servers = _rag_servers.list_servers(db)
     default_temperature = queries.get_default_temperature(db)
@@ -47,8 +46,6 @@ def settings_endpoint(request: Request, db: DB) -> Response:
     default_model = queries.get_default_model(db)
     default_num_ctx = queries.get_default_num_ctx(db)
     hosts = list_hosts()
-    # Surface the configured non-primary hosts (OLLAMA_EXTRA_HOSTS, or the
-    # legacy SLOWLY_OLLAMA_* fallback) to the settings template.
     # remote_configured gates the toggle vs the "set env vars first" hint;
     # extra_hosts feeds the read-only per-host labels.
     extra_hosts = extra_ollama_hosts()
@@ -75,22 +72,20 @@ def settings_endpoint(request: Request, db: DB) -> Response:
         request=request,
         name="index.html",
         context={
-            # Phase 17: settings is its own top-level layout. The
-            # unified sidebar (project list + Settings nav) renders
-            # alongside the settings fragment in the main slot.
+            # Settings is its own top-level layout: the unified sidebar
+            # (project list + Settings nav) renders alongside the settings
+            # fragment in the main slot.
             "layout": "settings",
             "project": None,
             "conversation": None,
             "active_chat_id": None,
             "settings_view": True,
-            # Phase 17b: unified sidebar needs the projects list.
             "projects": queries.list_projects(db),
             "active_project_id": None,
-            # Phase 24: always-visible sidebar reference lists.
+            # Always-visible sidebar reference lists.
             **_sidebar_reference_context(db),
-            # Passed under `rag_servers` so the index template's
-            # `{% set servers = rag_servers %}` adapter resolves it for
-            # the included _settings.html fragment.
+            # Aliased so the index template's `{% set servers = rag_servers %}`
+            # adapter resolves it for the included _settings.html fragment.
             "rag_servers": servers,
             **{k: v for k, v in settings_ctx.items() if k != "servers"},
         },
@@ -107,26 +102,21 @@ async def add_server_endpoint(
 ) -> Response:
     """Add a RAG server; return the new row for ``hx-swap="beforeend"``.
 
-    Probes the remote ``/health`` endpoint BEFORE inserting so a row
-    only lands in SQLite if the database the user named is actually
-    healthy. A failed probe returns a 502 with the reason as a plain-
-    text body, which the form's ``after-request`` JS pipes into the
-    inline error region.
+    Probes ``/health`` BEFORE inserting so a row only lands in SQLite if
+    the named database is reachable; a failed probe returns 502 plain text
+    that the form's ``after-request`` JS pipes into the inline error region.
 
-    A UNIQUE-constraint collision on the server name comes back from
-    SQLite as ``IntegrityError`` — we map it to a 409 with a short
-    plain-text body. HTMX's default behaviour is to NOT swap a non-2xx
-    response, so the existing list stays intact and the form keeps the
-    user's typed values (its `after-request` reset is guarded on
-    ``event.detail.successful``).
+    A UNIQUE-constraint collision on the name surfaces as ``IntegrityError``,
+    mapped to 409. HTMX won't swap a non-2xx response, so the list stays
+    intact and the form keeps the user's typed values.
 
-    On success we call ``refresh_query_rag_registration`` so the next
-    chat turn's tool spec reflects the newly-added source.
+    On success, ``refresh_query_rag_registration`` makes the next chat
+    turn's tool spec reflect the new source.
     """
     name_clean = name.strip()
     url_clean = url.strip()
-    # 400-char cap: maxlength="400" on the textarea is a client-side
-    # hint only; silently truncate here as belt-and-suspenders.
+    # The textarea's maxlength is a client-side hint only; truncate
+    # server-side as belt-and-suspenders.
     description_clean = description.strip()[:400]
 
     healthy, reason = await probe_rag_health(name_clean, url_clean)
@@ -147,7 +137,7 @@ async def add_server_endpoint(
         )
     refresh_query_rag_registration()
     # Append an OOB re-render of the sidebar "Sources" list so the new
-    # server shows up there immediately, not just in the settings list.
+    # server shows there immediately, not just in the settings list.
     row_html = templates.get_template("_rag_server_row.html").render(
         request=request, server=server
     )
@@ -160,18 +150,16 @@ async def add_server_endpoint(
     status_code=status.HTTP_200_OK,
 )
 def delete_server_endpoint(server_id: int, db: DB) -> Response:
-    """Delete a RAG server; return empty 200 for ``hx-swap="delete"``.
+    """Delete a RAG server; return 200 for ``hx-swap="delete"``.
 
-    Mirrors ``delete_chat_endpoint``'s shape: idempotent at the query
-    layer (missing ids are silently accepted), empty body so HTMX just
-    removes the row. The list-description refresh keeps the tool's
-    schema in sync with the (now-shrunk) set of source names.
+    Idempotent at the query layer (missing ids are silently accepted).
+    The registration refresh keeps the tool's schema in sync with the
+    now-shrunk set of source names.
     """
     _rag_servers.delete_server(db, server_id)
     refresh_query_rag_registration()
-    # The row vanishes via hx-swap="delete" (target removal ignores the
-    # body); the OOB fragment in the body still applies, dropping the
-    # server from the sidebar "Sources" list in the same response.
+    # hx-swap="delete" removes the row and ignores the body, but the OOB
+    # fragment still applies, dropping the server from the sidebar list.
     return HTMLResponse(_sidebar_reference_oob(db))
 
 
@@ -184,10 +172,9 @@ def get_server_endpoint(
 ) -> Response:
     """Return one RAG server row, in view or edit mode.
 
-    Backs the inline description editor: the row's edit pencil GETs with
-    ``?edit=1`` to swap the row into a textarea form; the form's Cancel
-    button GETs without the param to swap back to view mode. Both target
-    the row's own ``<li>`` with ``hx-swap="outerHTML"``.
+    Backs the inline editor: the edit pencil GETs with ``?edit=1`` to swap
+    in a form; Cancel GETs without the param to swap back. Both target the
+    row's ``<li>`` with ``hx-swap="outerHTML"``.
 
     A missing id (e.g. another tab deleted the row) returns 404 so HTMX
     leaves the stale row in place rather than blanking it.
@@ -213,20 +200,13 @@ async def update_server_endpoint(
 ) -> Response:
     """Update a server's name, URL, and description; return the view-mode row.
 
-    When ``name`` and ``url`` are both provided (the full-edit form path),
-    re-probes the server health before writing — same guarantee as the add
-    form: a row only stays in SQLite if the underlying database is reachable
-    and healthy. A failed probe returns 502 plain text; a name collision
-    returns 409.
+    With both ``name`` and ``url`` (full-edit path), re-probes health before
+    writing — same guarantee as the add form. A failed probe returns 502;
+    a name collision returns 409. With only ``description``, updates that
+    field alone (no re-probe).
 
-    When only ``description`` is provided (legacy / description-only path),
-    updates just the description field — no re-probe required.
-
-    Truncates description to 400 chars server-side (belt-and-suspenders
-    against clients that bypass the ``maxlength`` attribute).
-
-    A missing id returns 404 so a stale row from another tab's delete
-    isn't replaced with anything.
+    Truncates description to 400 chars server-side. A missing id returns
+    404 so a stale row from another tab's delete isn't replaced.
     """
     description_clean = description.strip()[:400]
     name_clean = name.strip() if name else None
@@ -253,8 +233,8 @@ async def update_server_endpoint(
     if server is None:
         return Response(content="", status_code=status.HTTP_404_NOT_FOUND)
     refresh_query_rag_registration()
-    # OOB-refresh the sidebar too: a renamed server changes the chip
-    # label, an edited description changes its hover title.
+    # OOB-refresh the sidebar: a rename changes the chip label, an edited
+    # description changes its hover title.
     row_html = templates.get_template("_rag_server_row.html").render(
         request=request, server=server, editing=False
     )
@@ -271,14 +251,11 @@ async def set_default_temperature_endpoint(
 ) -> Response:
     """Persist the global default sampling temperature for new chats.
 
-    Called by the default-temperature ``<input>`` in ``_settings.html``
-    via ``hx-patch`` on the ``change`` event. Clamps to [0.0, 2.0]
-    server-side so a hand-crafted request can't store an out-of-range
-    value. Only affects chats created after the change; existing chats
-    keep their own per-chat temperature.
+    Driven by the ``<input>`` in ``_settings.html`` (``hx-patch`` on
+    ``change``). Clamps to [0.0, 2.0] server-side against hand-crafted
+    requests. Only affects chats created after the change.
 
-    Returns 204 No Content — the browser input already shows the typed
-    value, so no swap is needed.
+    Returns 204 — the input already shows the typed value, no swap needed.
     """
     queries.set_default_temperature(db, temperature)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -294,14 +271,11 @@ async def set_default_tool_iteration_cap_endpoint(
 ) -> Response:
     """Persist the global default per-turn tool-iteration cap for new chats.
 
-    Called by the default-tool-cap ``<input>`` in ``_settings.html``
-    via ``hx-patch`` on the ``change`` event. Clamps to [1, 10]
-    server-side so a hand-crafted request can't store an out-of-range
-    value. Only affects chats created after the change; existing chats
-    keep their own per-chat cap.
+    Driven by the ``<input>`` in ``_settings.html`` (``hx-patch`` on
+    ``change``). Clamps to [1, 10] server-side against hand-crafted
+    requests. Only affects chats created after the change.
 
-    Returns 204 No Content — the browser input already shows the typed
-    value, so no swap is needed.
+    Returns 204 — the input already shows the typed value, no swap needed.
     """
     queries.set_default_tool_iteration_cap(db, tool_iteration_cap)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -317,14 +291,12 @@ async def set_default_num_ctx_endpoint(
 ) -> Response:
     """Persist the global default Ollama context window for new chats.
 
-    Called by the default-num-ctx ``<input>`` in ``_settings.html`` via
-    ``hx-patch`` on the ``change`` event. Clamps to
-    [NUM_CTX_MIN, NUM_CTX_MAX] server-side so a hand-crafted request
-    can't store an out-of-range value. Takes effect on the next turn
-    of any chat that doesn't have a project-level override.
+    Driven by the ``<input>`` in ``_settings.html`` (``hx-patch`` on
+    ``change``). Clamps to [NUM_CTX_MIN, NUM_CTX_MAX] server-side against
+    hand-crafted requests. Takes effect on the next turn of any chat
+    without a project-level override.
 
-    Returns 204 No Content — the browser input already shows the typed
-    value, so no swap is needed.
+    Returns 204 — the input already shows the typed value, no swap needed.
     """
     queries.set_default_num_ctx(db, num_ctx)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -338,19 +310,16 @@ async def set_remote_ollama_enabled_endpoint(
     db: DB,
     enabled: Annotated[str, Form()] = "0",
 ) -> Response:
-    """Persist the app-wide Remote Ollama enable flag (phase 20b).
+    """Persist the app-wide Remote Ollama enable flag.
 
-    Called by the checkbox in ``_settings.html`` via ``hx-post`` on the
-    ``change`` event. HTMX submits the checkbox's ``value`` only when
-    the box is checked; when unchecked the field is absent. The form
-    field uses ``hx-vals="js:{enabled: this.checked ? '1' : '0'}"`` so
-    both states arrive as an explicit "1" / "0" instead of relying on
-    the absence pattern — keeps the endpoint dumb and idempotent.
+    Driven by the checkbox in ``_settings.html`` (``hx-post`` on
+    ``change``). The field uses ``hx-vals="js:{enabled: this.checked ?
+    '1' : '0'}"`` so both states arrive as an explicit "1"/"0" rather
+    than relying on checkbox absence — keeps the endpoint dumb and
+    idempotent.
 
-    Returns 204 No Content — the checkbox UI already shows the user's
-    choice, no swap needed. The next chat panel render reflects the
-    new state automatically (dropdown filtered, header indicator
-    re-resolved against the toggle).
+    Returns 204 — the checkbox already shows the choice, no swap needed.
+    The next chat panel render reflects the new state automatically.
     """
     queries.set_remote_ollama_enabled(db, enabled == "1")
     return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -1,21 +1,17 @@
 """HTTP routes that return HTML fragments for HTMX.
 
-Originally a single ``app/routes.py`` module. Split into per-area
-sub-modules — each owning an ``APIRouter`` — to keep route bodies
-near each other by topic. The package's ``router`` is the union of all
-sub-routers, mounted by ``main.py``.
+Split into per-area sub-modules, each owning an ``APIRouter``. The package's
+``router`` is the union of all sub-routers, mounted by ``main.py``.
 
 Sub-modules:
     :mod:`app.routes.chats`    — chat panel + sidebar + messages + stream
-                                 + per-chat settings (temperature, tool cap,
-                                 Ollama host), plus ``/`` and
-                                 ``/models``.
+                                 + per-chat settings, plus ``/`` and ``/models``.
     :mod:`app.routes.projects` — projects index + CRUD + chats/settings tabs.
     :mod:`app.routes.files`    — files tab routes (list, view, download).
     :mod:`app.routes.settings` — global settings page (RAG server CRUD +
                                  default-* settings).
 
-HTTP error mapping is the same as Phase 6:
+HTTP error mapping:
     ``OllamaUnavailable`` → 503
     ``OllamaProtocolError`` → 502
     ``LookupError`` (unknown id) → 404
