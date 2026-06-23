@@ -1,21 +1,17 @@
-"""Phase 12c: the ``query_rag`` tool and its HTTP client.
+"""The ``query_rag`` tool and its HTTP client.
 
 Hits a configured RAG server's ``/chunks`` endpoint and returns retrieved
-passages formatted as a readable citation block the chat model can quote
-back at the user.
+passages as a citation block the chat model can quote back to the user.
 
-The list of valid ``source`` names — with per-source descriptions — is
-discovered at runtime from the ``rag_servers`` table (see
-``app.rag_servers``); the settings route handlers call
+Valid ``source`` names (with descriptions) are discovered at runtime from
+the ``rag_servers`` table; settings route handlers call
 ``refresh_query_rag_registration()`` after each CRUD write so the model
-sees an up-to-date list on the next chat turn — no restart required.
-When zero servers are configured, ``query_rag`` is removed from the
-registry entirely so the model is never tempted to call a tool that
-cannot possibly succeed.
+sees an up-to-date list next turn — no restart required. With zero servers
+configured, ``query_rag`` is removed from the registry so the model can't
+call a tool that cannot succeed.
 
-This module is imported (via ``app.routes``) at app startup so the
-``@tool`` decorator registers ``query_rag`` in ``app.tools.TOOLS`` before
-any code reads from the registry.
+Imported (via ``app.routes``) at startup so the ``@tool`` decorator
+registers ``query_rag`` before any code reads the registry.
 """
 
 from contextlib import closing
@@ -27,34 +23,28 @@ from app.connection import open_connection
 from app.rag_servers import RagServer
 from app.tools import RAG_TOOL_NAME, Source, ToolResult, tool
 
-# ---------------------------------------------------------------------------
-# Hardcoded caps — keep RAG output from blowing the model's context window.
-# A pathological retrieval could otherwise return 5 chunks each containing
-# tens of kilobytes of text; trimming here costs the model some recall but
-# protects the whole conversation from getting choked off.
-# ---------------------------------------------------------------------------
+# Caps that keep RAG output from blowing the model's context window: a
+# pathological retrieval could return 5 multi-kilobyte chunks. Trimming
+# costs some recall but protects the conversation from getting choked off.
 _TOP_K = 5
 _PER_CHUNK_TEXT_CAP = 800
 _TOTAL_OUTPUT_CAP = 4000
 
-# Retrieval should be fast (sparse FTS5 + dense ANN over local SQLite on
-# the RAG server side). 30s total / 5s connect leaves headroom for slow
-# private-network routes between the chat app and the RAG box, while still
-# failing fast on a truly down server.
+# Retrieval is fast (FTS5 + ANN over local SQLite), so 30s total / 5s
+# connect leaves headroom for slow private-network routes while still
+# failing fast on a down server.
 _RAG_TIMEOUT = httpx.Timeout(30.0, connect=5.0)
 
 
 def _list_sources() -> list[RagServer]:
-    """Walk the rag_servers table for the current set of configured sources.
+    """Read the rag_servers table for the configured sources.
 
-    Opens a private connection rather than reusing the app's shared one
-    because this helper is called from
-    ``refresh_query_rag_registration()``, which runs synchronously
-    inside a route handler — it doesn't have the FastAPI request scope
-    handy, and the work is small (one SELECT). ``contextlib.closing``
-    wraps ``open_connection()`` because ``sqlite3.Connection.__exit__``
-    only commits/rolls back — it does NOT close. Without ``closing``
-    the handle would leak until GC.
+    Uses a private connection, not the app's shared one: the caller
+    (``refresh_query_rag_registration()``) runs synchronously inside a
+    route without the FastAPI request scope handy, and the work is one
+    SELECT. ``closing`` wraps ``open_connection()`` because
+    ``sqlite3.Connection.__exit__`` commits/rolls back but does NOT close,
+    so the handle would otherwise leak until GC.
 
     Returns:
         RagServer rows in stable insertion order.
@@ -64,40 +54,35 @@ def _list_sources() -> list[RagServer]:
 
 
 def _format_chunks(items: list[dict], used_dense: bool) -> str:
-    """Render the RAG response as a readable, length-capped citation block.
+    """Render the RAG response as a length-capped citation block.
 
     Each chunk becomes::
 
         [N] <title> (§<section>)
             <text>...
 
-    Sections that are ``None`` are omitted from the header. Per-chunk
-    text is truncated to ``_PER_CHUNK_TEXT_CAP`` characters with an
-    ellipsis; the final concatenated string is hard-capped to
-    ``_TOTAL_OUTPUT_CAP``. When ``used_dense`` is False, prepend a note
-    so the model knows recall may be degraded (the RAG server fell back
-    to keyword-only retrieval because its embedding service is down).
-    The note is worded to keep the model *using* the passages below it —
-    earlier phrasing ("embedding service unreachable") read like a hard
-    failure and made the model refuse to quote perfectly valid sparse
-    hits, claiming "service limitations" (see Phase 19 follow-up).
+    ``None`` sections are omitted from the header. Per-chunk text is
+    truncated to ``_PER_CHUNK_TEXT_CAP``; the joined string is hard-capped
+    to ``_TOTAL_OUTPUT_CAP``. When ``used_dense`` is False (the RAG server
+    fell back to keyword-only retrieval), prepend a note so the model knows
+    recall may be degraded — worded to keep the model *using* the passages,
+    since blunter phrasing made models refuse to quote valid sparse hits.
 
     Args:
-        items: Raw ``items`` list from the RAG server's JSON response.
-            Each entry is expected to have ``title``, ``section``, and
-            ``text`` keys; missing keys degrade gracefully.
-        used_dense: Whether the retrieval used dense embeddings. False
-            means sparse-only fallback was used.
+        items: Raw ``items`` from the RAG server's JSON response. Entries
+            should have ``title``/``section``/``text`` keys; missing keys
+            degrade gracefully.
+        used_dense: Whether retrieval used dense embeddings. False means
+            sparse-only fallback.
 
     Returns:
-        A formatted citation block, or ``"(no matching chunks)"`` if
+        A formatted citation block, or ``"(no matching chunks)"`` when
         ``items`` is empty and there's no sparse-only note to show.
     """
     parts: list[str] = []
     if not used_dense:
-        # Surface degraded-retrieval state so the model can hedge its
-        # answer — but word it so the model still USES the passages below.
-        # The blunt "embedding service unreachable" wording made models
+        # Surface degraded retrieval so the model can hedge, but word it so
+        # the model still USES the passages — blunter phrasing made models
         # treat valid sparse hits as a failure and refuse to quote them.
         parts.append(
             "(Note: semantic ranking is temporarily unavailable, so these"
@@ -113,15 +98,13 @@ def _format_chunks(items: list[dict], used_dense: bool) -> str:
             header += f" (§{section})"
         text = (item.get("text") or "").strip()
         if len(text) > _PER_CHUNK_TEXT_CAP:
-            # Reserve 3 chars for the ellipsis so the visible length
-            # stays at _PER_CHUNK_TEXT_CAP exactly.
+            # Reserve 3 chars for the ellipsis to land at the cap exactly.
             text = text[: _PER_CHUNK_TEXT_CAP - 3] + "..."
         parts.append(f"{header}\n    {text}\n")
     out = "\n".join(parts).strip()
     if len(out) > _TOTAL_OUTPUT_CAP:
         out = out[: _TOTAL_OUTPUT_CAP - 3] + "..."
-    # "(no matching chunks)" is what falls out when items=[] AND
-    # used_dense=True (no sparse-only note to fill the void).
+    # Falls out empty when items=[] and used_dense=True (no note to show).
     return out or "(no matching chunks)"
 
 
@@ -137,25 +120,22 @@ async def query_rag(source: str, query: str) -> ToolResult:
     """
     # The Args:source description above is the static fallback; the live
     # source list (with descriptions) is injected by
-    # refresh_query_rag_registration() so the model sees an up-to-date
-    # "Available sources: ..." list on every chat turn.
+    # refresh_query_rag_registration() each chat turn.
 
     if not query.strip():
-        # Defensive: an empty query is rejected here rather than sent on
-        # to the RAG server, where it'd produce a 400 anyway.
+        # Reject an empty query here rather than send a guaranteed 400.
         return ToolResult(text="Tool query_rag: 'query' cannot be empty.")
 
-    # Look up the source name → URL mapping fresh on each call so a
-    # newly-added server is usable immediately (no caching to stale).
-    # ``closing`` because sqlite3.Connection's context manager only
-    # commits/rolls back — not closes. See ``_list_sources``.
+    # Resolve source name → URL fresh each call so a newly-added server is
+    # usable immediately. ``closing`` because sqlite3's context manager
+    # commits/rolls back but doesn't close — see ``_list_sources``.
     with closing(open_connection()) as conn:
         servers = _rag_servers_module.list_servers(conn)
     by_name = {s.name: s for s in servers}
     server = by_name.get(source)
     if server is None:
-        # Pass the configured names back so the model can self-correct
-        # on the next tool call instead of guessing blindly.
+        # Pass the configured names back so the model self-corrects on its
+        # next call instead of guessing.
         names = ", ".join(by_name.keys()) or "(none configured)"
         return ToolResult(
             text=(
@@ -164,9 +144,8 @@ async def query_rag(source: str, query: str) -> ToolResult:
             )
         )
 
-    # The stored URL is the source-prefixed base (e.g.
-    # ".../arxiv"); we tack on /chunks ourselves so the rag_servers
-    # row stays usable for other endpoints a future tool might add.
+    # The stored URL is the source-prefixed base (e.g. ".../arxiv"); append
+    # /chunks here so the row stays usable for other future endpoints.
     url = f"{server.url.rstrip('/')}/chunks"
     try:
         async with httpx.AsyncClient(timeout=_RAG_TIMEOUT) as client:
@@ -174,9 +153,8 @@ async def query_rag(source: str, query: str) -> ToolResult:
                 url, params={"q": query, "top_k": _TOP_K}
             )
     except httpx.HTTPError:
-        # Network-level failure (DNS, connect, timeout, read error).
-        # Include the configured source list so the model can self-correct
-        # on its next tool call rather than guessing a source name.
+        # Network-level failure (DNS, connect, timeout, read). Include the
+        # source list so the model self-corrects rather than guessing.
         names = ", ".join(by_name.keys()) or "(none configured)"
         return ToolResult(
             text=(
@@ -185,10 +163,9 @@ async def query_rag(source: str, query: str) -> ToolResult:
             )
         )
 
-    # Status code branches: 503 is the documented "indexes not built"
-    # signal; >=500 is server-side trouble; >=400 covers any client-side
-    # rejection (we already validated `query` non-empty, so 400 here
-    # would be a contract bug on the RAG side rather than ours).
+    # 503 is the documented "indexes not built" signal; >=500 is
+    # server-side trouble; >=400 is a client-side rejection (we validated
+    # `query`, so a 400 here is a RAG-side contract bug, not ours).
     if response.status_code == 503:
         return ToolResult(
             text=(
@@ -211,12 +188,12 @@ async def query_rag(source: str, query: str) -> ToolResult:
     try:
         body = response.json()
         items = body.get("items") or []
-        # `used_dense` defaults to True so a server that doesn't
-        # surface this flag (older RAG impls) is treated as full-recall.
+        # Default True so an older server that omits this flag is treated
+        # as full-recall.
         used_dense = bool(body.get("used_dense", True))
     except ValueError:
-        # response.json() raises ValueError on a non-JSON body —
-        # surface it without dumping the raw body into the chat.
+        # response.json() raises ValueError on a non-JSON body — surface it
+        # without dumping the raw body into the chat.
         return ToolResult(
             text=f"RAG source '{source}' returned non-JSON response."
         )
@@ -237,13 +214,13 @@ async def query_rag(source: str, query: str) -> ToolResult:
 def build_source_description(servers: list[RagServer]) -> str:
     """Build the ``source`` parameter description for the query_rag tool spec.
 
-    Used by ``refresh_query_rag_registration`` (global spec) and by
+    Used by ``refresh_query_rag_registration`` (global spec) and
     ``app.generation._run_generation`` (per-chat filtered spec) so the
-    bullet format stays in one place.
+    bullet format lives in one place.
 
     Args:
-        servers: The servers to include. Callers filter to the relevant
-            subset before calling (all configured, or chat-enabled only).
+        servers: Servers to include; callers filter to the relevant subset
+            first (all configured, or chat-enabled only).
 
     Returns:
         A multi-line string listing each server with its description.
@@ -255,10 +232,9 @@ def build_source_description(servers: list[RagServer]) -> str:
     return "\n".join(lines)
 
 
-# Snapshot the ToolSpec the @tool decorator built above so we can
-# re-register query_rag after a pop (see refresh_query_rag_registration).
-# parameters_schema stays shared by design — the refresh function mutates
-# it in place to reflect the current source list.
+# Snapshot the ToolSpec the @tool decorator built so we can re-register
+# query_rag after a pop (see refresh_query_rag_registration).
+# parameters_schema stays shared by design — refresh mutates it in place.
 from app.tools import TOOLS as _TOOLS  # noqa: E402
 _QUERY_RAG_SPEC = _TOOLS[RAG_TOOL_NAME]
 
@@ -266,29 +242,26 @@ _QUERY_RAG_SPEC = _TOOLS[RAG_TOOL_NAME]
 def refresh_query_rag_registration() -> None:
     """Sync ``query_rag``'s TOOLS entry to the current rag_servers state.
 
-    Removes the tool entirely when no servers are configured, so the
-    chat model isn't tempted to call a tool that can't possibly succeed.
-    Re-adds and re-describes it when at least one server exists, folding
-    each server's description into the ``source`` parameter hint so the
-    model can pick intelligently.
+    Removes the tool when no servers are configured, so the model isn't
+    tempted to call something that can't succeed. Otherwise re-adds it and
+    folds each server's description into the ``source`` parameter hint so
+    the model can pick intelligently.
 
-    Called by the settings route handlers after CRUD operations and by
-    the lifespan startup hook so the registry stays in sync without
-    requiring a restart.
+    Called by the settings route handlers after CRUD and by the lifespan
+    startup hook, keeping the registry in sync without a restart.
     """
-    # Imported lazily at module level above (_TOOLS), but we re-import
-    # locally so tests that patch app.tools.TOOLS see the right object.
+    # Re-import locally (despite module-level _TOOLS) so tests that patch
+    # app.tools.TOOLS see the right object.
     from app.tools import TOOLS
 
     servers = _list_sources()
     if not servers:
-        # No sources configured → remove the tool so the model never
-        # sees a tool it cannot successfully invoke.
+        # No sources → drop the tool so the model can't invoke it.
         TOOLS.pop(RAG_TOOL_NAME, None)
         return
 
-    # Re-add after a prior pop (or on first call). The spec object is
-    # the same one the @tool decorator built — name/description/func stay intact.
+    # Re-add after a prior pop (or on first call); the spec is the same
+    # one @tool built, so name/description/func stay intact.
     if RAG_TOOL_NAME not in TOOLS:
         TOOLS[RAG_TOOL_NAME] = _QUERY_RAG_SPEC
 
