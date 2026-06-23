@@ -39,7 +39,7 @@ Current feature set:
   `query_rag` (searches all configured RAG servers), and `fetch_github_file`.
   Tool calls render as tool-card UI.
 - **Projects → chats.** Projects sit above chats, each with a per-project
-  workspace subdir under `FILE_TOOL_ROOT`, a default model, and a ≤200-char
+  workspace subdir under `FILE_TOOL_ROOT`, a default model, and a ≤2000-char
   system prompt injected on Normal turns. URL spine: `/projects/{id}/chats/{id}`.
 - **Manual compaction.** A Compact button summarizes old turns into a `summary`
   row; originals are soft-archived (`messages.archived_at`). Generation reads
