@@ -1,6 +1,6 @@
 # slollillama
 
-A local chat application for Mac that uses a locally-running [Ollama](https://ollama.com) instance as the inference engine. No cloud calls — all inference runs on your machine.
+A local-first chat application that uses a locally-running [Ollama](https://ollama.com) instance as the inference engine. No cloud calls — all inference runs on your own machines. Developed on macOS; also runs on Linux (the production deployment is a Linux systemd service).
 
 Built with FastAPI + HTMX + SQLite. Conversation history persists across restarts.
 
@@ -8,7 +8,7 @@ Built with FastAPI + HTMX + SQLite. Conversation history persists across restart
 
 ## Prerequisites
 
-- **Python 3.13** — the virtualenv is pinned to 3.13.13
+- **Python 3.12** — the virtualenv is built against 3.12
 - **Ollama** running locally (default: `http://localhost:11434`)
 - At least one model pulled in Ollama (e.g. `ollama pull llama3.1:8b`)
 
@@ -19,7 +19,7 @@ Built with FastAPI + HTMX + SQLite. Conversation history persists across restart
 ### 1. Create and activate the virtualenv
 
 ```bash
-python3.13 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
 ```
 
@@ -42,11 +42,11 @@ The defaults work out of the box if Ollama is running on its default port:
 
 ```
 OLLAMA_HOST=http://localhost:11434
-DB_PATH=~/Library/Application Support/ollama_slowly/chats.db
+DB_PATH=./data/chats.db
 ```
 
 - **`OLLAMA_HOST`** — base URL of the local Ollama HTTP API. Change this if you run Ollama on a non-standard port or host.
-- **`DB_PATH`** — path to the SQLite database file. The `~` expands to your home directory. The directory is created automatically on first run.
+- **`DB_PATH`** — path to the SQLite database file (relative to the repo root, or an absolute path; `~` expands to your home directory). The directory is created automatically on first run.
 - **`FILE_TOOL_ROOT`** — (optional) absolute path to a directory the assistant may read, write, and search via the file tools. When unset, those tools (`read_file`, `write_file`, `list_directory`, `search_files`) are removed from the registry. Each project gets its own subdirectory underneath this root.
 - **`OLLAMA_EXTRA_HOSTS`** — (optional) JSON array of additional Ollama machines the in-app host picker can route a chat to, e.g. `[{"name":"studio","url":"http://studio:11434","default_model":"llama3.1:70b"}]`. The primary `OLLAMA_HOST` is always the default; see `.env.example` for the full format.
 
@@ -127,6 +127,8 @@ app/
   rag_health.py      # TTL-cached /health probe for RAG servers
   ollama.py          # httpx client for Ollama /api/chat, /api/tags, /api/show
   generation.py      # Background-task producer driving the SSE stream
+  backup.py          # Remote backup/sync (push) + status
+  copy_agent_workspace.py  # Standalone pull/restore script (DB + workspaces)
   render.py          # Render-shaped views + tool-card OOB HTML helpers
   templates.py       # Jinja2 instance + markdown filter
   dependencies.py    # FastAPI dependency functions (db, ollama client)
@@ -152,10 +154,13 @@ docs/code_reviews/   # Dated code reviews
 - **Persistent conversations** — chats and messages stored in SQLite, survive restarts
 - **Projects** — organize chats into named projects; each project has its own workspace directory, a default model and Ollama host, an optional system prompt (≤2000 chars, injected on each turn), and a read-only Files tab to browse workspace files
 - **Per-chat model selection** — pick any tool-capable model from your local Ollama instance; click the model chip in the chat header to unload it from Ollama memory
+- **Per-chat controls** — adjust the temperature and the tool-iteration cap independently for each chat
+- **Per-chat thinking toggle** — for reasoning-capable models, a header **Think** chip and composer select turn the model's thinking on or off (`default`/`off`); the toggle is hidden for models without the capability
 - **Streaming responses** — assistant replies stream token-by-token via SSE
 - **Reload-safe generation** — a page reload during a reply attaches a new consumer to the in-flight stream instead of cancelling it
 - **Manual chat compaction** — summarize the older portion of a chat to shrink the Ollama prompt; originals are soft-archived and viewable through a disclosure in the summary bubble
 - **Tool calling** — extensible tool system; a tool-capable model is offered the full registry every turn. Built-in tools: `current_time`, `fetch_github_file`, `query_rag` (RAG retrieval), and a workspace file suite (`read_file`, `write_file`, `list_directory`, `search_files`) gated on `FILE_TOOL_ROOT`
 - **RAG support** — register external retrieval servers from `/settings`; `query_rag` searches every configured server, and the sidebar shows each server's read-only health state (green/grey/red), refreshed in the background on each send
 - **Multi-machine Ollama hosts** — pick which Ollama machine runs a chat from the header host picker; configure extra machines via `OLLAMA_EXTRA_HOSTS` (the primary `OLLAMA_HOST` is always the default). Each chat remembers its model per machine
+- **Remote backup/sync** — when `REMOTE_PATH` + `REMOTE_DB_PATH` are set, the app pushes a consistent copy of the database and workspaces to a remote mirror on each change (single-flight, debounced, offline-safe); a header status chip surfaces each push, and restore is manual and pull-only
 - **Fully local** — no telemetry, no cloud API calls, works offline
