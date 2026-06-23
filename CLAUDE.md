@@ -6,90 +6,68 @@ Guidance for Claude Code when working in this repo.
 
 **slollillama** — a local-only chat app that talks to a locally-running
 Ollama instance. No cloud calls; everything runs on-device. FastAPI + HTMX + Jinja
-+ SQLite, served via uvicorn at `http://localhost:8000`. See `README.md` for
-end-user setup and `docs/plans/PLAN.md` for the build-time roadmap.
++ SQLite, served via uvicorn (`http://localhost:8000` for local dev; the
+deployed service runs on `:8070`). See `README.md` for end-user setup.
 
 ## Where the source of truth lives
 
 | Question | Read this |
 |---|---|
-| What are we building and why? | `docs/plans/PLAN.md` |
-| What's the latest shipped phase? | `docs/plans/phase20-remote-backup-sync.md` + retro |
-| What did we learn from prior phases? | `docs/retros/` (per-phase, 6 through 19) |
-| How to write a phase retro? | `docs/retros/RETRO_INSTRUCTIONS.md` |
 | Accumulated conventions + gotchas | `docs/CONVENTIONS.md` |
+| Detailed design notes + history | `docs/plans/` + `docs/retros/` |
 | Recent code reviews + cleanup notes | `docs/code_reviews/` |
 | Test strategy + how to run | `tests/README.md` |
 | End-user setup | `README.md` |
 
-Plans and retros live in `docs/plans/` / `docs/retros/`. Note: `docs/` is
-gitignored (`.gitignore` line 42), so these are local reference artifacts, not
+Note: `docs/` is gitignored, so these are local reference artifacts, not
 committed to version control.
 
 ## Current state
 
-`PLAN.md` is frozen at Phase 10; phases 11+ are off-PLAN extensions, each
-under its own `docs/plans/phase<N>-*.md` (+ retro). Phases 0–11 shipped v1.
-Highlights since:
+A single-user local chat app over Ollama. **809 tests passing**, 0 failing.
+Current feature set:
 
-- **Phase 12 (tool-calling + RAG).** `@tool` decorator + registry, server-side
-  tool loop, tool-card UI, resumable generation, capability-filtered model
-  dropdown with a generation-side fallback.
-- **Phases 13–14 REMOVED in Phase 16.** Retros remain as history; code does not.
-- **Phase 15 / 15b (per-chat chips).** `chat_tool_settings` / `chat_rag_settings`
-  gate tools + RAG per chat. `query_rag` gated solely by per-server chips.
-- **Phase 16 (user-invoked agents).** Named agents (`app/agents/`) picked from
-  the chat header. Agent = model + prompt + tool allowlist + `think` via
-  `_agent_overrides`. Roster: **Research** + **Content Generator**; both `think=False`.
-- **Phase 17 (projects).** Projects above chats; per-project workspace subdir
-  under `FILE_TOOL_ROOT`, default model/agent, ≤200-char system prompt injected
-  on Normal turns. URL spine `/projects/{id}/chats/{id}`. `app/queries/` and
-  `app/routes/` refactored into packages.
-- **Phase 18 (manual compaction).** Compact button summarizes old turns into a
-  `summary` row; originals soft-archived (`messages.archived_at`). Generation
-  uses `list_active_messages`. `KEEP_RECENT = 2`.
-- **Phase 19 (sidebar RAG chips).** RAG chips moved to sidebar "Sources" section
-  with TTL-cached health state (green/grey/red, 60 s, `app/rag_health.py`).
-  Fire-and-forget refresh on send. Composer drops RAG checkboxes; new chats
-  default all-on.
-- **Post-19.** `fetch_github_file` tool; clickable model chip unloads from
-  Ollama; inline RAG server name/URL editing.
-- **Phase 20 (remote backup/sync).** `app/backup.py` pushes the DB +
-  workspaces to a remote mirror (host1) on send / generation-complete /
-  successful `write_file`. Single-flight + debounced fire-and-forget; offline-
-  safe. WAL-consistent DB copy via the SQLite backup API (never the live
-  `-wal`/`-shm`). Daily server-side snapshot. Push-only; restore is manual.
-  Gated on `REMOTE_DB_PATH` + `REMOTE_PATH` both set.
-- **Phase 21 (backup status chip).** Chat-header chip surfacing the Phase 20
-  push: spinner while pushing, then green/grey/red (`ok`/`offline`/`failed`).
-  Send-triggered, self-stopping `/backup/status` poll; hidden when backups off.
-- **Phase 22 (pull/push from mirror).** Two header buttons beside the backup
-  chip. **Pull** runs `copy_agent_workspace.py --all` to restore the DB +
-  workspaces (switch-machines path); `POST /backup/pull` closes `app.state.db`,
-  pulls, reopens, then `HX-Redirect`s to `/projects`. Confirm-gated; refused
-  (409) mid-generation. **Push** (`POST /backup/push`) fires
-  `request_backup("manual")` for state changed outside a chat turn (e.g. a
-  hand-added workspace file) and OOB-re-arms the backup chip's status poll; no
-  confirm (non-destructive). Both hidden when backups off. `app/backup.py`.
-- **Phases 23–24 (off-PLAN).** Per-chat tool/RAG chips removed (tool-capable
-  models get the full registry every turn; `query_rag` searches all servers);
-  sidebar "Sources" became a read-only reference panel; the host picker was
-  generalized to a multi-host registry (`app/hosts/`, `chat_host_models`).
-  NOTE: the `app/agents/` directory referenced elsewhere in this file is GONE.
-- **Phase 25 (per-chat thinking toggle).** `conversations.think_mode`
-  (`'default'`/`'off'`) + `set_conversation_think_mode`. `_resolve_think`
-  maps it to Ollama's `think` flag (`off`→`False`, else `None`; never `True`,
-  so it can't 400 a non-thinking model) inside `_host_overrides`, covering
-  send + regenerate. Header **Think** chip (`_chat_panel.html`), gated on
-  `ollama.model_supports_thinking` (a `/api/show` `"thinking"`-capability
-  probe) so it only shows for reasoning models. `PATCH /chats/{id}/think-mode`.
-  The composer has a matching gated Think select: `/models` options carry
-  `data-thinking` (from `ollama.list_thinking_capable_models`, cached like the
-  tool list), and `app.js` (`syncComposerThink`) shows/hides the chip as the
-  model changes. `create_project_chat` accepts a `think_mode` form field.
-
-**803 tests passing**, 0 failing; coverage 100% on `app/backup.py` (note:
-`app/copy_agent_workspace.py`, a standalone pull script, is uncovered by design).
+- **Chat over multiple Ollama hosts.** A multi-host registry (`app/hosts/`,
+  `chat_hosts` table) lets a chat target any configured Ollama host. The model
+  dropdown is capability-filtered, with a generation-side fallback.
+- **Streaming generation.** Server-side SSE of HTML fragments. Generation is
+  resumable: the producer task outlives the HTTP request, so a reload replays
+  the event log rather than dropping the turn.
+- **Tool calling + RAG.** `@tool` decorator + registry; a server-side tool loop
+  (capped per chat, default 5 iterations). Tool-capable models get the full
+  registry every turn. Built-in tools: `current_time`, workspace file tools,
+  `query_rag` (searches all configured RAG servers), and `fetch_github_file`.
+  Tool calls render as tool-card UI.
+- **Projects → chats.** Projects sit above chats, each with a per-project
+  workspace subdir under `FILE_TOOL_ROOT`, a default model, and a ≤200-char
+  system prompt injected on Normal turns. URL spine: `/projects/{id}/chats/{id}`.
+- **Manual compaction.** A Compact button summarizes old turns into a `summary`
+  row; originals are soft-archived (`messages.archived_at`). Generation reads
+  `list_active_messages`; `KEEP_RECENT = 2`.
+- **Sidebar RAG reference.** A read-only "Sources" panel lists configured RAG
+  servers with TTL-cached health state (green/grey/red, 60 s, `app/rag_health.py`),
+  refreshed fire-and-forget on send. RAG server name/URL are editable inline.
+- **Per-chat thinking toggle.** `conversations.think_mode` (`'default'`/`'off'`)
+  → Ollama's `think` flag via `_resolve_think` (`off`→`False`, else `None`;
+  never `True`, so it can't 400 a non-thinking model). A header **Think** chip
+  and a composer Think select appear only for reasoning-capable models (probed
+  via `/api/show`). `PATCH /chats/{id}/think-mode`.
+- **Per-chat controls.** Temperature and tool-iteration cap are adjustable per
+  chat (`PATCH /chats/{id}/...`). Clicking the model chip unloads the model from
+  Ollama.
+- **Remote backup/sync.** `app/backup.py` pushes the DB + workspaces to a remote
+  mirror on send / generation-complete / successful `write_file`. Single-flight,
+  debounced, fire-and-forget, offline-safe. WAL-consistent DB copy via the
+  SQLite backup API (never the live `-wal`/`-shm`); daily server-side snapshot.
+  Push-only. Gated on `REMOTE_DB_PATH` + `REMOTE_PATH` both set.
+  - A chat-header **backup status chip** surfaces the push (spinner →
+    green/grey/red = `ok`/`offline`/`failed`), via a self-stopping
+    `/backup/status` poll; hidden when backups are off.
+  - **Pull** (`POST /backup/pull`) restores DB + workspaces from the mirror
+    (`copy_agent_workspace.py --all`): closes the DB, pulls, reopens, redirects
+    to `/projects`. Confirm-gated; refused (409) mid-generation.
+  - **Push** (`POST /backup/push`) fires a manual backup for state changed
+    outside a chat turn (e.g. a hand-added workspace file); no confirm.
 
 ## Working rules (override Claude defaults where they conflict)
 
@@ -99,13 +77,12 @@ Highlights since:
 - **Python style.** Google-style docstrings (`Args:` / `Returns:` / `Raises:`)
   on functions and classes. Type hints everywhere. Inline comments explain the
   *why*, not the *what*.
-- **Plans live in `docs/plans/`**, retros in `docs/retros/` — searchable and
-  reviewable (note `docs/` is gitignored, so they're local, not committed). For
-  handoff plans, include concrete code, exact diffs, and test specs (see
-  `phase8-frontend-design.md`, `phase12-tool-calling-detail.md`). Plan-mode
-  review pass before code.
-- **Test after each phase.** Use `pytest --cov` to find gaps before writing
-  speculative tests.
+- **Plan before non-trivial work.** Materialize a plan in `docs/plans/`; do a
+  plan-mode review pass before writing code. For handoff plans, include concrete
+  code, exact diffs, and test specs.
+- **Test your changes.** Use `pytest --cov` to find gaps before writing
+  speculative tests. Run `pytest` (all green, no coverage regressions) before
+  declaring work done.
 - **Smoke-test UI changes in a real browser**, not just curl or pytest. The
   test client doesn't run JS, fire mutation observers, or evaluate CSS
   cascades — past misses include SSE-after-placeholder-removed,
@@ -116,7 +93,7 @@ Highlights since:
 
 ## Tech stack (locked)
 
-- **Python 3.13** (`.venv/` at project root)
+- **Python 3.12** (`.venv/` at project root)
 - **FastAPI** + **uvicorn[standard]** — backend + ASGI server
 - **httpx** — HTTP client for Ollama + RAG servers
 - **Jinja2** + **HTMX** + **htmx-ext-sse** — server-rendered fragments + SSE
@@ -136,12 +113,15 @@ app/
   config.py            # .env-backed accessors
   connection.py        # SQLite opener (WAL, foreign_keys)
   db.py                # Schema init + idempotent migrations
+  _time.py             # Time helpers
+  format.py            # Formatting helpers
+  hosts/               # Multi-host Ollama registry
   queries/             # All SQL; Role literal; dataclasses; helpers
     _models.py         # Message, Conversation, Project dataclasses + Role
     conversations.py   # Conversation CRUD
     messages.py        # Message CRUD; list_active_messages; archive helpers
     projects.py        # Project CRUD + slugify_project_name
-    chat_state.py      # Per-chat tool/RAG chip state queries
+    chat_hosts.py      # Per-chat host/model selection queries
     settings.py        # app_settings key/value store
   dependencies.py      # `DB` / `OllamaClient` Annotated aliases
   ollama.py            # /api/chat (stream) + /api/tags + /api/show
@@ -151,15 +131,15 @@ app/
   rag_health.py        # TTL-cached /health probe; get_health_map
   templates.py         # Jinja2 instance + markdown filter
   routes/              # Thin HTTP layer — HTML or SSE-of-HTML
-    _helpers.py        # Shared helpers: chip states, sidebar RAG context
-    chats.py           # Chat CRUD, send, stream, compact, agent, tool chips
+    _helpers.py        # Shared helpers: _host_overrides, _resolve_think, sidebar ctx
+    chats.py           # Chat CRUD, send, stream, regenerate, compact, backup
     projects.py        # /projects/* and /projects/{id}/files routes
     settings.py        # /settings route
     files.py           # Workspace-browse helpers used by routes/projects.py
-  generation.py        # SSE producer; per-agent overrides
-                       #   (model/prompt/tools/think)
+  generation.py        # SSE producer; host/think overrides
   render.py            # Render-shaped views + tool-card OOB helpers
-  agents/              # AgentSpec + AGENTS registry + prompts
+  backup.py            # Remote backup/sync (push) + status
+  copy_agent_workspace.py  # Standalone pull script (DB + workspaces)
   tools/               # @tool decorator + registry
     builtins.py        # current_time + workspace file tools
     rag.py             # query_rag tool
@@ -168,7 +148,7 @@ templates/             # Jinja fragments
 static/                # Pico, HTMX, htmx-ext-sse, Material Symbols, style.css
 tests/                 # Per-module unit tests + integration journeys
 docs/
-  plans/               # PLAN.md + per-phase plans
+  plans/               # Design notes + per-phase plans
   retros/              # Per-phase retrospectives
   code_reviews/        # Dated cleanup reviews
   CONVENTIONS.md       # Distilled lessons — conventions, gotchas, patterns
@@ -178,7 +158,7 @@ docs/
 
 `source .venv/bin/activate` → `pip install -r requirements.txt` →
 `cp .env.example .env` (defaults work if Ollama is on `:11434`) →
-`uvicorn main:app --reload` for local dev. Tests: `pytest` (~2s, hermetic, no
+`uvicorn main:app --reload` for local dev. Tests: `pytest` (hermetic, no
 real Ollama). Coverage: `pytest --cov=app --cov=main --cov-report=term-missing`.
 DB lives at `~/Library/Application Support/ollama_slowly/chats.db` by default
 (created on first run); configurable via `DB_PATH` in `.env`.
@@ -199,15 +179,15 @@ endpoint returns an HTML fragment (HTMX swaps it in) or an SSE stream of named
 events (`token` / `tool-call` / `tool-result` / `title` / `done` / `error`)
 carrying HTML payloads. Chat-send is split into POST (save user message, spawn
 `asyncio.Task` via `start_generation`, return assistant placeholder) + GET
-(attach as consumer via `consume_generation`). `start_generation` always
-spawns the single-agent producer `_run_generation`; when a named agent is
-active, the route passes the agent's model/prompt/tool-allowlist/`think` as
-overrides via `_agent_overrides`. The producer task is owned by the module-
-level `live_generations` dict, NOT the HTTP request — a reload cancels the
-consumer but the producer keeps running, so the next consumer replays the
-event log from index 0. Each turn persists its own message row
-(`role` ∈ `user` / `assistant` / `tool_call` / `tool_result` / `summary`);
-tool execution caps at 5 iterations per turn.
+(attach as consumer via `consume_generation`). `start_generation` spawns the
+producer `_run_generation`; the route passes the chat's selected host/model,
+system prompt, and `think` flag as overrides via `_host_overrides` /
+`_resolve_think`. The producer task is owned by the module-level
+`live_generations` dict, NOT the HTTP request — a reload cancels the consumer
+but the producer keeps running, so the next consumer replays the event log from
+index 0. Each turn persists its own message row (`role` ∈ `user` / `assistant`
+/ `tool_call` / `tool_result` / `summary`); tool execution caps per chat
+(default 5 iterations).
 
 ## Key gotchas (one-liners; deep dives in `docs/CONVENTIONS.md`)
 
@@ -227,17 +207,6 @@ tool execution caps at 5 iterations per turn.
   commits/rolls back but does NOT close. Without `closing`, the handle leaks.
 - **Tests pin contracts (`data-*` / `hx-*` attrs), not implementations** (DOM
   tree shape). Substring assertions are surprisingly robust.
-- **Agent `think=True` 400s on a non-thinking model.** Ollama rejects
-  `think: true` without the capability; `think: false` is safe anywhere.
-  Set True only when the agent's model is thinking-capable.
-
-## When making changes
-
-- **Read the relevant retro first** if touching a covered area — each has a
-  "Notes for future phases" section.
-- **Skip ahead with intent.** If asked for work that belongs to a later phase,
-  surface it and confirm before proceeding.
-- **Materialize a plan in `docs/plans/`** before non-trivial work; plan-mode
-  review pass before code.
-- **Ask before committing** — always, even for trivial diffs.
-- **Run `pytest` before declaring a phase done.** All green; no coverage regressions.
+- **`think: true` 400s on a non-thinking model.** Ollama rejects `think: true`
+  without the capability; `think: false` is safe anywhere. `_resolve_think`
+  never sends `True` — it sends `False` or omits the flag.
