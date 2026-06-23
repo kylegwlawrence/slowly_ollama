@@ -1,9 +1,8 @@
 """Settings stored in the ``app_settings`` table.
 
-Holds the global default values that new chats inherit (temperature,
-model, tool-cap, num_ctx) plus generic ``get_setting`` / ``set_setting``
-helpers other modules use for one-shot flags (e.g. the workspace v2
-migration marker).
+Holds the global defaults new chats inherit (temperature, model, tool-cap,
+num_ctx) plus generic ``get_setting`` / ``set_setting`` helpers other modules
+use for one-shot flags (e.g. the workspace v2 migration marker).
 """
 
 import sqlite3
@@ -20,8 +19,7 @@ def get_setting(
         default: Returned when no row exists for the key.
 
     Returns:
-        The stored value as a string, or ``default`` when the key
-        hasn't been set.
+        The stored value as a string, or ``default`` when unset.
     """
     row = conn.execute(
         "SELECT value FROM app_settings WHERE key = ?;", (key,)
@@ -32,9 +30,7 @@ def get_setting(
 def set_setting(
     conn: sqlite3.Connection, key: str, value: str
 ) -> None:
-    """Upsert one app_settings row.
-
-    Wraps the write in ``with conn:`` so the upsert lands atomically.
+    """Upsert one app_settings row (atomic via ``with conn:``).
 
     Args:
         conn: Open SQLite connection.
@@ -56,10 +52,9 @@ _DEFAULT_TEMPERATURE_FALLBACK = 0.2
 def get_default_temperature(conn: sqlite3.Connection) -> float:
     """Return the global default sampling temperature for new chats.
 
-    Default (no row): ``0.2``. The stored value is clamped to the
-    [0.0, 2.0] range Ollama accepts; a malformed row (non-numeric,
-    written by a hand-crafted request) falls back to ``0.2`` rather
-    than raising, so a corrupt setting can never break chat creation.
+    Defaults to ``0.2`` (no row). Clamps the stored value to [0.0, 2.0]; a
+    malformed row falls back to ``0.2`` rather than raising, so a corrupt
+    setting can't break chat creation.
 
     Args:
         conn: Open SQLite connection.
@@ -79,9 +74,8 @@ def set_default_temperature(
 ) -> None:
     """Persist the global default sampling temperature for new chats.
 
-    Clamps to [0.0, 2.0] before storing so an out-of-range value can't
-    be read back later. Stored as a string (the app_settings value
-    column is text).
+    Clamps to [0.0, 2.0] before storing (as a string — the value column
+    is text).
 
     Args:
         conn: Open SQLite connection.
@@ -106,8 +100,7 @@ def get_default_model(conn: sqlite3.Connection) -> str | None:
 def set_default_model(conn: sqlite3.Connection, model: str | None) -> None:
     """Persist the global default model for new chats.
 
-    Passing ``None`` or an empty string clears the setting so no
-    model is pre-selected by the global default.
+    ``None`` or empty string clears the setting (no global pre-selection).
 
     Args:
         conn: Open SQLite connection.
@@ -131,9 +124,8 @@ _DEFAULT_TOOL_ITERATION_CAP_FALLBACK = 5
 def get_default_tool_iteration_cap(conn: sqlite3.Connection) -> int:
     """Return the global default per-turn tool-iteration cap for new chats.
 
-    Default (no row): ``5``. The stored value is clamped to the [1, 10]
-    range the app enforces; a malformed row falls back to ``5`` rather
-    than raising, so a corrupt setting can never break chat creation.
+    Defaults to ``5`` (no row). Clamps to [1, 10]; a malformed row falls
+    back to ``5`` rather than raising.
 
     Args:
         conn: Open SQLite connection.
@@ -153,9 +145,7 @@ def set_default_tool_iteration_cap(
 ) -> None:
     """Persist the global default per-turn tool-iteration cap for new chats.
 
-    Clamps to [1, 10] before storing so an out-of-range value can't be
-    read back later. Stored as a string (the app_settings value column
-    is text).
+    Clamps to [1, 10] before storing (as a string — the value column is text).
 
     Args:
         conn: Open SQLite connection.
@@ -165,11 +155,9 @@ def set_default_tool_iteration_cap(
     set_setting(conn, _DEFAULT_TOOL_ITERATION_CAP_KEY, str(clamped))
 
 
-# Ollama's own default for `num_ctx` is 2048 — far too small for real
-# conversations. 16384 matches what most local 7-13B models comfortably
-# fit and what tool-using sessions typically need. NUM_CTX_MIN/MAX bound
-# the clamp on read and write: 512 is below any usable chat context, and
-# 1_048_576 (1M) is a future-proof ceiling well above any current model.
+# Ollama's own num_ctx default (2048) is too small for real conversations;
+# 16384 fits most local 7-13B models and tool-using sessions. NUM_CTX_MIN/MAX
+# bound the clamp: 512 is below any usable context, 1M a future-proof ceiling.
 _DEFAULT_NUM_CTX_KEY = "default_num_ctx"
 _DEFAULT_NUM_CTX_FALLBACK = 16384
 NUM_CTX_MIN = 512
@@ -184,10 +172,8 @@ def clamp_num_ctx(num_ctx: int) -> int:
 def get_default_num_ctx(conn: sqlite3.Connection) -> int:
     """Return the global default Ollama context window for new chats.
 
-    Default (no row): ``16384`` (see ``_DEFAULT_NUM_CTX_FALLBACK``). The
-    stored value is clamped to the [NUM_CTX_MIN, NUM_CTX_MAX] range; a
-    malformed row falls back to the default rather than raising, so a
-    corrupt setting can never break chat creation.
+    Defaults to ``16384`` (no row). Clamps to [NUM_CTX_MIN, NUM_CTX_MAX];
+    a malformed row falls back to the default rather than raising.
 
     Args:
         conn: Open SQLite connection.
@@ -205,9 +191,8 @@ def get_default_num_ctx(conn: sqlite3.Connection) -> int:
 def set_default_num_ctx(conn: sqlite3.Connection, num_ctx: int) -> None:
     """Persist the global default Ollama context window for new chats.
 
-    Clamps to [NUM_CTX_MIN, NUM_CTX_MAX] before storing so an out-of-
-    range value can't be read back later. Stored as a string (the
-    app_settings value column is text).
+    Clamps to [NUM_CTX_MIN, NUM_CTX_MAX] before storing (as a string — the
+    value column is text).
 
     Args:
         conn: Open SQLite connection.
@@ -222,16 +207,11 @@ _REMOTE_OLLAMA_ENABLED_KEY = "remote_ollama_enabled"
 def get_remote_ollama_enabled(conn: sqlite3.Connection) -> bool:
     """Return whether the Remote Ollama agent is enabled app-wide.
 
-    Default (no row): ``True``. Storing the key explicitly with value
-    ``"0"`` disables the Remote agent everywhere — it's filtered out of
-    the chat-header dropdown and existing chats with
-    ``active_host="remote"`` degrade to Normal on their next turn.
-    Defaulting to ``True`` preserves the post-phase-20a behavior on
-    upgrade: if you've already set the env vars and used the agent, the
-    DB row simply doesn't exist yet and everything keeps working.
-
-    A malformed row (anything other than ``"1"`` / ``"0"``) is treated
-    as the default — same forgiveness as the other typed accessors here.
+    Defaults to ``True`` (no row), so an upgrade with the env vars already
+    set keeps working. Storing ``"0"`` disables the agent everywhere: it's
+    dropped from the chat-header dropdown and chats with
+    ``active_host="remote"`` degrade to Normal on their next turn. A
+    malformed row is treated as the default.
 
     Args:
         conn: Open SQLite connection.
@@ -247,8 +227,7 @@ def set_remote_ollama_enabled(
 ) -> None:
     """Persist the app-wide Remote Ollama enable flag.
 
-    Stored as ``"1"`` / ``"0"`` since the ``app_settings.value`` column
-    is text.
+    Stored as ``"1"`` / ``"0"`` (the value column is text).
 
     Args:
         conn: Open SQLite connection.

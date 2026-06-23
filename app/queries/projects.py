@@ -34,20 +34,16 @@ def _row_to_project(row: sqlite3.Row) -> Project:
 def slugify_project_name(name: str) -> str:
     """Convert a project name to a filesystem-safe workspace slug.
 
-    Lowercases, replaces runs of non-``[a-z0-9]`` with a single hyphen,
-    strips leading/trailing hyphens, caps at 60 chars. Falls back to
-    ``"project"`` when the result would be empty (e.g. the name was all
-    punctuation).
-
-    The caller (``create_project``) is responsible for ensuring uniqueness
-    against existing ``workspace_subdir`` values — on collision it appends
-    ``-2``, ``-3``, ... until unique.
+    Lowercases, collapses runs of non-``[a-z0-9]`` to a single hyphen, strips
+    edge hyphens, caps at 60 chars. Falls back to ``"project"`` when empty
+    (e.g. an all-punctuation name). Uniqueness is the caller's job
+    (``create_project`` appends ``-2``, ``-3``, ... on collision).
 
     Args:
-        name: Human-readable project name (caller supplies; not modified).
+        name: Human-readable project name (not modified).
 
     Returns:
-        A best-effort slug suitable for use as a single path segment.
+        A best-effort slug usable as a single path segment.
     """
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:60]
     return slug or "project"
@@ -60,9 +56,9 @@ def list_projects(conn: sqlite3.Connection) -> list[Project]:
         conn: Open SQLite connection.
 
     Returns:
-        All projects ordered by ``name COLLATE NOCASE ASC``. The projects-
-        index page surfaces this order; alphabetical is a more stable choice
-        than created_at since the user thinks of projects by name.
+        All projects ordered by ``name COLLATE NOCASE ASC`` — the index
+        page's order; alphabetical is more stable than created_at since the
+        user thinks of projects by name.
     """
     rows = conn.execute(
         f"SELECT {_PROJECT_COLS} FROM projects"
@@ -97,9 +93,8 @@ def get_project_for_conversation(
 ) -> Project:
     """Return the project that owns ``conversation_id``.
 
-    Used by the generation producer (to scope file tools) and by the
-    backcompat ``/chats/{id}`` redirect (to compute the canonical project-
-    scoped URL).
+    Used by the generation producer (to scope file tools) and the backcompat
+    ``/chats/{id}`` redirect (to build the canonical project-scoped URL).
 
     Args:
         conn: Open SQLite connection.
@@ -142,19 +137,16 @@ def create_project(
 ) -> Project:
     """Insert a new project; slugify the workspace subdir from ``name``.
 
-    On slug collision (rare — two names that normalize to the same slug),
-    appends ``"-2"``, ``"-3"``, ... until unique. The ``name`` itself must
-    also be unique (UNIQUE constraint on the column); a duplicate raises
-    ``sqlite3.IntegrityError`` which the route layer catches and maps to 409.
+    On slug collision, appends ``"-2"``, ``"-3"``, ... until unique. ``name``
+    must also be unique (UNIQUE constraint); a duplicate raises
+    ``sqlite3.IntegrityError``, which the route maps to 409.
 
     Args:
         conn: Open SQLite connection.
-        name: Display name. Caller is responsible for ``.strip()`` /
-            length-validation.
+        name: Display name. Caller handles ``.strip()`` / length validation.
         description: Free-text description; may be empty.
-        default_model: Pre-fill for new chats. ``None`` means use the
-            global default.
-        default_agent: Pre-selection for new chats. ``None`` means Normal.
+        default_model: Pre-fill for new chats. ``None`` = global default.
+        default_agent: Pre-selection for new chats. ``None`` = Normal.
 
     Returns:
         The newly created Project.
@@ -166,10 +158,8 @@ def create_project(
     base = slugify_project_name(name)
     slug = base
     n = 2
-    # Find an unused slug. The loop's an upper bound of "how many
-    # projects could share a base slug"; we cap nowhere because a real
-    # user can't realistically create thousands of similarly-named
-    # projects.
+    # Find an unused slug. Uncapped — a real user won't create thousands of
+    # similarly-named projects.
     while (
         conn.execute(
             "SELECT 1 FROM projects WHERE workspace_subdir = ?;", (slug,)
@@ -203,30 +193,28 @@ def update_project(
 ) -> Project:
     """Update editable project fields. Each kwarg is optional.
 
-    ``default_model`` / ``default_agent`` / ``num_ctx`` use a sentinel
-    (``_UNSET``) to distinguish "not passed" from "set to NULL". A plain
-    ``None`` default would silently swallow the "clear this field"
-    intent, but the settings form must be able to clear a previously-set
-    override.
+    ``default_model`` / ``default_agent`` / ``num_ctx`` use the ``_UNSET``
+    sentinel to distinguish "not passed" from "set to NULL" — the settings
+    form must be able to clear a previously-set override, which a plain
+    ``None`` default couldn't express.
 
     Args:
         conn: Open SQLite connection.
         project_id: Id of the project to update.
         name: New display name (``None`` = leave alone).
         description: New description (``None`` = leave alone).
-        default_model: New default model, ``None`` to clear, or the
-            sentinel ``_UNSET`` (default) to leave alone.
-        default_agent: New default agent name, ``None`` to clear, or the
-            sentinel ``_UNSET`` (default) to leave alone.
-        num_ctx: New per-project Ollama context-window override (in
-            tokens), ``None`` to clear (inherit global), or the
-            sentinel ``_UNSET`` (default) to leave alone. Values are
-            clamped to [NUM_CTX_MIN, NUM_CTX_MAX].
-        system_prompt: New per-project system prompt (``""`` to clear),
-            or ``None`` (default) to leave alone. Clamped to 2000 chars.
+        default_model: New model, ``None`` to clear, or ``_UNSET`` (default)
+            to leave alone.
+        default_agent: New agent name, ``None`` to clear, or ``_UNSET``
+            (default) to leave alone.
+        num_ctx: New context-window override in tokens, ``None`` to clear
+            (inherit global), or ``_UNSET`` (default) to leave alone.
+            Clamped to [NUM_CTX_MIN, NUM_CTX_MAX].
+        system_prompt: New system prompt (``""`` to clear), or ``None``
+            (default) to leave alone. Clamped to 2000 chars.
 
     Returns:
-        The updated Project (or unchanged Project when no kwargs were passed).
+        The updated Project (unchanged when no kwargs were passed).
 
     Raises:
         LookupError: When the project does not exist.
@@ -250,15 +238,12 @@ def update_project(
         sets.append("num_ctx = ?")
         args.append(None if num_ctx is None else clamp_num_ctx(num_ctx))
     if system_prompt is not None:
-        # Clamp at 2000 chars defensively — the route also enforces this,
-        # but a direct programmatic caller should not be able to insert
-        # an unbounded prompt and surprise the model with a giant system.
+        # Clamp defensively — the route enforces this too, but a direct
+        # caller shouldn't be able to insert an unbounded prompt.
         sets.append("system_prompt = ?")
         args.append(system_prompt[:2000])
     if not sets:
-        # No-op update — return the current row rather than performing a
-        # bare ``UPDATE ... SET updated_at = ?`` which would falsely bump
-        # the timestamp.
+        # No-op: return the current row rather than bump updated_at for nothing.
         return get_project(conn, project_id)
     sets.append("updated_at = ?")
     args.append(_now_iso())
@@ -277,10 +262,9 @@ def update_project(
 def delete_project(conn: sqlite3.Connection, project_id: int) -> None:
     """Delete a project and (via FK cascade) every conversation it owns.
 
-    Idempotent: deleting a non-existent project is a no-op (mirrors
-    ``delete_conversation``). The on-disk workspace under
-    ``FILE_TOOL_ROOT/<workspace_subdir>`` is PRESERVED — the user can
-    recover files from a deleted project even though the row is gone.
+    Idempotent: a non-existent project is a no-op. The on-disk workspace
+    under ``FILE_TOOL_ROOT/<workspace_subdir>`` is PRESERVED, so files
+    survive even though the row is gone.
 
     Args:
         conn: Open SQLite connection.

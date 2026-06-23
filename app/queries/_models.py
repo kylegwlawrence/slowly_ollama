@@ -1,8 +1,7 @@
 """Dataclasses + the Role literal shared across the queries package.
 
-Lives in one place so the per-table CRUD submodules
-(``conversations``, ``messages``, ``projects``, ``chat_state``) can each
-import the shapes they need without circular imports.
+Centralized here so the per-table CRUD submodules can import the shapes
+they need without circular imports.
 """
 
 from dataclasses import dataclass, field
@@ -10,23 +9,19 @@ from datetime import datetime
 from typing import Literal
 
 
-# Role values are constrained at the type level here. The schema-level
-# CHECK was dropped in phase 12a (12a added tool_call/tool_result) and
-# SQLite can't ALTER CHECK constraints, so we enforce here in Python
-# instead. The Literal alias documents intent and lets a type checker
-# catch wrong-role bugs before they hit SQLite.
+# Role is enforced in Python, not the schema: the CHECK constraint was
+# dropped when tool_call/tool_result were added and SQLite can't ALTER a
+# CHECK. The Literal lets a type checker catch wrong-role bugs early.
 Role = Literal[
     "user",
     "assistant",
     "tool_call",
     "tool_result",
-    # Phase 18: synthetic row produced by the manual-compact endpoint.
-    # Its `content` is the model-generated summary of an earlier
-    # portion of the chat; serialized as a `system` message when sent
-    # to Ollama (see app.generation.build_history_payload). At most one
-    # active (archived_at IS NULL) summary row exists per chat at a time
-    # — re-compacting archives the prior summary alongside the newly-old
-    # turns.
+    # Synthetic row from the manual-compact endpoint. Its `content` is the
+    # model-generated summary of earlier turns, sent to Ollama as a `system`
+    # message (see app.generation.build_history_payload). At most one active
+    # (archived_at IS NULL) summary exists per chat; re-compacting archives
+    # the prior one.
     "summary",
 ]
 
@@ -38,26 +33,24 @@ class Conversation:
     Attributes:
         id: Auto-assigned primary key.
         name: Human-readable label shown in the sidebar.
-        model: Ollama model identifier (e.g. "llama3:latest").
-        name_locked: When True, the auto-titler must leave `name` alone.
-            Flipped to True by `rename_conversation` so a manual rename
-            always beats a later automated title refresh.
-        created_at: When the row was first inserted (UTC).
-        updated_at: When the row was last touched — bumped by rename, by
-            appending a message, or by replacing the last assistant message.
-            Used as the sort key for the sidebar so active chats float up.
-        active_host: Name of the selected Ollama host for this chat (a key in
-            `app.hosts.HOSTS`, e.g. "host2"), or None for the primary host.
-            Persisted so the picker + indicator survive reloads.
-        model: The primary-host model. A non-primary host's per-chat model
-            lives in the ``chat_host_models`` table (keyed by host name), not
-            on this dataclass — see ``app.queries.chat_hosts``.
-        project_id: The project this chat belongs to (phase 17). NOT NULL on
-            the schema side: the migration assigns every legacy chat to the
-            Default project before enforcing the FK.
-        think_mode: Per-chat thinking lever (phase 25). 'default' omits
-            Ollama's ``think`` key (the model decides); 'off' sends
-            ``think=false`` to suppress a reasoning model's <think> phase.
+        model: The primary-host Ollama model (e.g. "llama3:latest"). A
+            non-primary host's per-chat model lives in ``chat_host_models``,
+            not here — see ``app.queries.chat_hosts``.
+        name_locked: When True, the auto-titler leaves `name` alone. Flipped
+            by `rename_conversation` so a manual rename beats a later auto
+            title refresh.
+        created_at: When the row was inserted (UTC).
+        updated_at: When the row was last touched (rename, append message,
+            replace last assistant message). The sidebar's sort key, so
+            active chats float up.
+        active_host: Selected Ollama host (a key in `app.hosts.HOSTS`, e.g.
+            "host2"), or None for the primary host. Persisted so the picker
+            survives reloads.
+        project_id: Owning project. NOT NULL: the migration assigns legacy
+            chats to the Default project before enforcing the FK.
+        think_mode: Thinking lever. 'default' omits Ollama's ``think`` key
+            (model decides); 'off' sends ``think=false`` to suppress a
+            reasoning model's <think> phase.
     """
 
     id: int
@@ -70,34 +63,29 @@ class Conversation:
     created_at: datetime
     updated_at: datetime
     active_host: str | None = None
-    # Phase 25: per-chat thinking lever. 'default' omits Ollama's `think`
-    # key (model decides); 'off' sends think=false to suppress reasoning.
     think_mode: str = "default"
 
 
 @dataclass(frozen=True)
 class Project:
-    """One row of the ``projects`` table (phase 17).
+    """One row of the ``projects`` table.
 
     Attributes:
         id: Auto-assigned primary key.
-        name: Human-readable display name, unique across the projects table.
+        name: Display name, unique across the table.
         description: Free-text description (may be empty).
         workspace_subdir: Path segment under ``FILE_TOOL_ROOT`` — the
-            project's workspace lives at ``FILE_TOOL_ROOT/<subdir>/``.
-            Slugified from ``name`` at create time; never edited.
-        default_model: Pre-fill for the model dropdown on new chats in this
-            project. ``None`` means no project default (use the global one).
+            workspace lives at ``FILE_TOOL_ROOT/<subdir>/``. Slugified from
+            ``name`` at create time; never edited.
+        default_model: Pre-fill for the model dropdown on new chats.
+            ``None`` = use the global default.
         default_agent: Pre-selection for the agent dropdown on new chats.
-            ``None`` means Normal (no agent).
-        num_ctx: Per-project override for Ollama's ``num_ctx`` (context
-            window in tokens). ``None`` means inherit the global default
-            from ``app_settings``. Applied per turn, not seeded onto chats,
-            so changing it takes effect on the next message in any chat
-            belonging to this project.
-        system_prompt: Per-project system prompt prepended to Normal-chat
-            turns. Empty string = none. Capped at 2000 chars at the route
-            layer. Ignored on invoked-agent turns (the agent's own prompt
+            ``None`` = Normal (no agent).
+        num_ctx: Per-project override for Ollama's ``num_ctx`` (token context
+            window). ``None`` inherits the global default. Applied per turn,
+            so a change takes effect on the next message in any chat here.
+        system_prompt: Prepended to Normal-chat turns; ``""`` = none, capped
+            at 2000 chars. Ignored on invoked-agent turns (the agent's prompt
             wins).
         created_at, updated_at: ISO 8601 UTC timestamps.
     """
@@ -115,13 +103,11 @@ class Project:
 
 
 class _Unset:
-    """Sentinel marker for "argument intentionally omitted" in updaters.
+    """Sentinel for "argument intentionally omitted" in updaters.
 
-    Allows ``update_project`` to distinguish "this kwarg was not passed
-    (leave the field alone)" from "this kwarg was passed as ``None`` (set
-    the field to SQL NULL)". A plain ``None`` default cannot tell the two
-    apart, but clearing ``default_model`` / ``default_agent`` from the UI
-    must persist as NULL, not be silently ignored.
+    Lets ``update_project`` distinguish "kwarg not passed (leave alone)"
+    from "kwarg passed as ``None`` (set SQL NULL)" — clearing a field from
+    the UI must persist as NULL, not be silently ignored.
     """
 
 
@@ -135,14 +121,10 @@ class Message:
     Attributes:
         id: Auto-assigned primary key.
         conversation_id: Foreign key into `conversations`.
-        role: One of the values in the `Role` literal alias above.
-            Phase 12a widened this to include "tool_call" and
-            "tool_result"; validation now lives in Python (the schema
-            CHECK was dropped in the same phase).
+        role: One of the `Role` literal values (validated in Python).
         content: The message text.
-        created_at: When the row was first inserted (UTC). For a regenerated
-            assistant message the original timestamp is preserved so message
-            order is unchanged.
+        created_at: When the row was inserted (UTC). A regenerated assistant
+            message keeps its original timestamp so message order is stable.
     """
 
     id: int
@@ -150,14 +132,12 @@ class Message:
     role: Role
     content: str
     created_at: datetime
-    # Per-turn token counts reported by Ollama on the final stream chunk
-    # of an assistant message. NULL on non-assistant rows, on assistant
-    # rows persisted before this column existed, and on responses where
-    # Ollama didn't report counts (e.g. full prompt-cache hit). See
-    # `app.ollama.ChatChunk` for the source-of-truth interpretation.
+    # Per-turn token counts from Ollama's final stream chunk. NULL on
+    # non-assistant rows, rows older than this column, and responses where
+    # Ollama reported no counts (e.g. full prompt-cache hit). See
+    # `app.ollama.ChatChunk` for interpretation.
     prompt_tokens: int | None = None
     eval_tokens: int | None = None
-    # Phase 18: when set, the row was hidden from the prompt by the
-    # manual-compact endpoint. NULL = active. Set in
-    # `archive_messages_before`; never written by `append_message`.
+    # Set by `archive_messages_before` to hide the row from the prompt
+    # (manual compaction); NULL = active. Never written by `append_message`.
     archived_at: datetime | None = None

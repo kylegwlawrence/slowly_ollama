@@ -1,27 +1,19 @@
-"""Dataclasses for the persisted rows and the query functions that read /
-write them.
+"""Row dataclasses and the query functions that read / write them.
 
-Originally a single ``app/queries.py`` module; split into submodules at the
-1500-line mark so each table's CRUD lives near its dataclass. The package
-``__init__`` re-exports the full public surface, so ``from app.queries
-import X`` continues to work for every X the old module exposed.
+Split into per-table submodules; this ``__init__`` re-exports the full
+public surface so ``from app.queries import X`` works for every X.
 
 Submodules:
-    :mod:`app.queries._models` — shared dataclasses (Conversation, Message,
-        Project) + Role literal + _UNSET sentinel.
-    :mod:`app.queries.conversations` — CRUD for the conversations table.
-    :mod:`app.queries.messages` — CRUD for the messages table + token-count
-        helpers.
-    :mod:`app.queries.projects` — CRUD for the projects table + slugifier.
-    :mod:`app.queries.settings` — app_settings get/set + global default-*
-        helpers (temperature, model, tool cap, num_ctx).
+    :mod:`app.queries._models` — shared dataclasses + Role literal + sentinel.
+    :mod:`app.queries.conversations` — conversations CRUD.
+    :mod:`app.queries.messages` — messages CRUD + token-count helpers.
+    :mod:`app.queries.projects` — projects CRUD + slugifier.
+    :mod:`app.queries.settings` — app_settings + global default-* helpers.
     :mod:`app.queries.chat_hosts` — per-chat model for each non-primary host.
 
 Each function takes a ``sqlite3.Connection`` and wraps writes in
-``with conn:`` so a partial update never lands if anything raises mid-way.
-Timestamps are stored as ISO 8601 TEXT in UTC and converted to/from
-``datetime`` at the boundary so callers work with proper datetime values
-instead of strings.
+``with conn:`` so a partial update never lands. Timestamps are stored as
+ISO 8601 UTC TEXT and converted to/from ``datetime`` at the boundary.
 """
 
 from app.queries._models import (

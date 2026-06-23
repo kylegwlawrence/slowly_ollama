@@ -37,22 +37,18 @@ def append_message(
 ) -> Message:
     """Append a message to a conversation.
 
-    Bumps the parent conversation's `updated_at` in the same transaction
-    so the message count and the sidebar's sort key can never diverge.
+    Bumps the parent's `updated_at` in the same transaction so the message
+    count and the sidebar's sort key never diverge.
 
     Args:
         conn: Open SQLite connection.
         conversation_id: Id of the parent conversation.
-        role: One of the `Role` literal values (currently "user",
-            "assistant", "tool_call", "tool_result"). The type checker
-            enforces this — the SQLite CHECK was dropped in phase 12a.
+        role: One of the `Role` literal values (validated in Python).
         content: The message text.
-        prompt_tokens: Ollama's reported `prompt_eval_count` for the
-            turn that produced this message. Only meaningful on
-            assistant rows; pass None for user / tool_* rows and for
-            assistant rows where Ollama didn't report counts.
-        eval_tokens: Ollama's reported `eval_count` (tokens generated)
-            for this assistant turn.
+        prompt_tokens: Ollama's `prompt_eval_count` for the turn. Only
+            meaningful on assistant rows; pass None otherwise and when Ollama
+            reported no counts.
+        eval_tokens: Ollama's `eval_count` (tokens generated) for this turn.
 
     Returns:
         The newly inserted Message.
@@ -72,9 +68,8 @@ def append_message(
             (conversation_id, role, content, now,
              prompt_tokens, eval_tokens),
         ).fetchone()
-        # Bumping updated_at here (rather than via trigger) keeps all
-        # mutation in one Python codepath — easier to reason about and to
-        # search for "what touches updated_at" in the future.
+        # Bump updated_at in Python (not a trigger) to keep all mutation in
+        # one codepath that's easy to find when asking "what touches it?".
         conn.execute(
             "UPDATE conversations SET updated_at = ? WHERE id = ?;",
             (now, conversation_id),
@@ -92,8 +87,8 @@ def list_messages(
         conversation_id: Id of the conversation whose messages to fetch.
 
     Returns:
-        Messages ordered by `created_at ASC` (with `id ASC` as a stable
-        tiebreaker for messages stamped within the same microsecond).
+        Messages ordered by `created_at ASC`, `id ASC` (stable tiebreaker
+        for rows stamped in the same microsecond).
     """
     rows = conn.execute(
         "SELECT id, conversation_id, role, content, created_at,"
@@ -111,10 +106,9 @@ def list_active_messages(
 ) -> list[Message]:
     """Return non-archived messages in a conversation, oldest first.
 
-    Used by the generation layer (Phase 18): archived rows are excluded
-    from the prompt sent to Ollama so that the user's manual ``Compact``
-    action actually shrinks per-turn context. Rendering still uses
-    ``list_messages`` (the full list) so the chat panel can show a
+    Used by the generation layer: archived rows are excluded from the prompt
+    so the user's manual ``Compact`` actually shrinks per-turn context.
+    Rendering still uses ``list_messages`` (the full list) to show a
     ``▸ N archived messages`` disclosure.
 
     Args:
@@ -122,10 +116,9 @@ def list_active_messages(
         conversation_id: Id of the conversation whose active messages to fetch.
 
     Returns:
-        Messages with ``archived_at IS NULL`` ordered by ``created_at ASC``
-        (with ``id ASC`` as a stable tiebreaker). An active ``summary`` row,
-        when present, is included — it's the synthetic replacement the
-        Compact endpoint produced and is the row Ollama should see.
+        Messages with ``archived_at IS NULL``, ordered ``created_at ASC``,
+        ``id ASC``. An active ``summary`` row, if present, is included — it's
+        the synthetic replacement Ollama should see.
     """
     rows = conn.execute(
         "SELECT id, conversation_id, role, content, created_at,"
@@ -143,14 +136,12 @@ def archive_messages_before(
     conversation_id: int,
     cutoff_message_id: int,
 ) -> int:
-    """Mark every active row in ``conversation_id`` with id < cutoff as archived.
+    """Archive every active row in ``conversation_id`` with id < cutoff.
 
-    Phase 18: invoked by the manual-compact endpoint after the synthetic
-    ``summary`` row has been inserted. The cutoff is the summary row's id,
-    which (being the most recently inserted) is greater than every prior
-    row, so ``id < cutoff`` selects everything except the summary itself.
-    Bumps the conversation's ``updated_at`` so the sidebar's sort key
-    reflects the change.
+    Invoked by the manual-compact endpoint after inserting the synthetic
+    ``summary`` row. The cutoff is the summary's id (the newest), so
+    ``id < cutoff`` archives everything except the summary itself. Bumps
+    ``updated_at`` so the sidebar reflects the change.
 
     Args:
         conn: Open SQLite connection.
@@ -158,8 +149,8 @@ def archive_messages_before(
         cutoff_message_id: Archive rows with ``id < cutoff_message_id``.
 
     Returns:
-        Number of rows updated. Zero if nothing matched (idempotent
-        re-run, or a chat with no prior history).
+        Number of rows updated. Zero if nothing matched (idempotent re-run,
+        or no prior history).
     """
     now = _now_iso()
     with conn:
@@ -186,30 +177,27 @@ def replace_last_assistant_message(
     prompt_tokens: int | None = None,
     eval_tokens: int | None = None,
 ) -> Message:
-    """Replace the content of the most-recent assistant message in place.
+    """Replace the most-recent assistant message's content in place.
 
     Used by the regenerate flow. Keeps the original id and `created_at` so
-    the message stays in the same position when the conversation is
-    relisted. Bumps the conversation's `updated_at` since something
-    visible changed.
+    the message stays in position; bumps `updated_at` since content changed.
 
     Args:
         conn: Open SQLite connection.
-        conversation_id: Id of the conversation whose last assistant
-            message should be replaced.
+        conversation_id: Id of the conversation whose last assistant message
+            to replace.
         new_content: Replacement text.
 
     Returns:
-        The updated Message (same id, same created_at, new content).
+        The updated Message (same id and created_at, new content).
 
     Raises:
         LookupError: If the conversation has no assistant message yet.
     """
     with conn:
-        # SELECT-then-UPDATE is fine here because the app is single-user
-        # and one process; no concurrent writer can sneak a row in between.
-        # The ordering mirrors `list_messages` so "last assistant message"
-        # always means the same thing across the codebase.
+        # SELECT-then-UPDATE is safe: the app is single-process single-user,
+        # so no concurrent writer can sneak in. Ordering mirrors
+        # `list_messages` so "last assistant message" is consistent.
         latest = conn.execute(
             "SELECT id FROM messages"
             " WHERE conversation_id = ? AND role = 'assistant'"
@@ -241,19 +229,17 @@ def count_assistant_messages(
 ) -> int:
     """Return the number of assistant messages in a conversation.
 
-    Phase 11d's auto-titler uses this to decide whether to fire: it
-    runs only when this count is 1, 2, or 3 (the first three assistant
-    responses). After the third reply the title is considered "settled"
-    and won't refresh on subsequent turns.
+    The auto-titler uses this to decide whether to fire: only when the count
+    is 1, 2, or 3 (the first three replies). After that the title is
+    "settled" and won't refresh.
 
     Args:
         conn: Open SQLite connection.
         conversation_id: Id of the conversation to count messages for.
 
     Returns:
-        The count of `role = 'assistant'` rows. Returns 0 for unknown
-        conversation ids (no error — the caller's "if count not in 1..3"
-        check naturally skips).
+        The count of `role = 'assistant'` rows; 0 for unknown ids (the
+        caller's "if count not in 1..3" check naturally skips).
     """
     row = conn.execute(
         "SELECT COUNT(*) FROM messages"
