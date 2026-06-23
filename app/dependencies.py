@@ -1,9 +1,8 @@
 """FastAPI dependencies — getters for the shared resources on app.state.
 
-The lifespan in ``main.py`` opens the SQLite connection and the httpx
-client once at startup and stows them on ``app.state``. Routes use
-``Depends`` (or the ``DB`` / ``OllamaClient`` ``Annotated`` aliases below)
-to pull them out per request.
+The ``main.py`` lifespan opens the SQLite connection and the httpx client once
+at startup and stows them on ``app.state``. Routes pull them out per request
+via ``Depends`` or the ``DB`` / ``OllamaClient`` aliases below.
 """
 
 import sqlite3
@@ -16,9 +15,9 @@ from fastapi import Depends, Request
 def get_db(request: Request) -> sqlite3.Connection:
     """Return the shared SQLite connection from ``app.state``.
 
-    The connection is opened once by the lifespan; routes share it.
-    Safe across FastAPI's threadpool because Phase 3's
-    ``open_connection`` sets ``check_same_thread=False``.
+    Opened once by the lifespan and shared by all routes. Safe across
+    FastAPI's threadpool because ``open_connection`` sets
+    ``check_same_thread=False``.
     """
     return request.app.state.db
 

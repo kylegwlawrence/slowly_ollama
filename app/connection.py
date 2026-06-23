@@ -1,9 +1,8 @@
-"""Long-lived database connection factory for ollama_slowly.
+"""SQLite connection factory.
 
-Phase 3: opens a SQLite connection with the pragmas and settings the rest of
-the app expects. Phase 6 will hold one instance via FastAPI's lifespan and
-expose it as a dependency; until then, callers (e.g. tests) open and close
-their own.
+Opens a connection with the pragmas and settings the rest of the app
+expects. The FastAPI lifespan holds one instance for the app's lifetime;
+other callers (e.g. tests, one-shot tools) open and close their own.
 """
 
 import sqlite3
@@ -17,39 +16,29 @@ def open_connection(path: Path | None = None) -> sqlite3.Connection:
 
     Sets, in one place:
 
-    - ``PRAGMA foreign_keys = ON`` — per-connection in SQLite and OFF by
-      default; without it ``REFERENCES`` clauses become documentation-only
-      and ``ON DELETE CASCADE`` silently stops working.
-    - ``PRAGMA journal_mode = WAL`` — Write-Ahead Logging lets readers run
-      concurrently with the single writer, which matters once Phase 5
-      starts streaming assistant responses while the UI may read other
-      conversations. WAL is persistent on the file, so re-applying it on
-      later connections is a no-op.
-    - ``row_factory = sqlite3.Row`` — rows are addressable by column name
-      as well as by index. Phase 4's dataclass mapping reads cleaner with
-      this on.
-    - ``check_same_thread=False`` — allows the connection to be used from
-      threads other than the one that opened it. FastAPI runs sync
-      endpoints in a threadpool, so without this every cross-thread call
-      would raise. SQLite's default "serialized" threading mode keeps
-      concurrent calls safe: they queue, they don't corrupt. For a
-      single-user local app the per-call serialization is irrelevant.
+    - ``PRAGMA foreign_keys = ON`` — per-connection and OFF by default;
+      without it ``REFERENCES`` and ``ON DELETE CASCADE`` silently no-op.
+    - ``PRAGMA journal_mode = WAL`` — lets readers run concurrently with the
+      single writer (the UI reads while a response streams). WAL is
+      persistent on the file, so re-applying it later is a no-op.
+    - ``row_factory = sqlite3.Row`` — rows addressable by column name.
+    - ``check_same_thread=False`` — FastAPI runs sync endpoints in a
+      threadpool, so the connection is used across threads. SQLite's default
+      "serialized" mode keeps concurrent calls safe (they queue, they don't
+      corrupt); the per-call serialization is irrelevant for one local user.
 
     Args:
-        path: Where the database file lives. Defaults to the DB_PATH value
-            from .env (resolved fresh on each call); tests should pass an
-            explicit path.
+        path: Database file location. Defaults to the `DB_PATH` value from
+            `.env` (resolved fresh each call); tests should pass an explicit
+            path.
 
     Returns:
-        A configured ``sqlite3.Connection``. The caller owns its
-        lifecycle — typically Phase 6's FastAPI lifespan holds a single
-        instance for the duration of the app and closes it on shutdown.
+        A configured ``sqlite3.Connection``. The caller owns its lifecycle.
     """
     target = path if path is not None else db_path()
 
-    # check_same_thread=False relaxes Python's sqlite3 module guard; SQLite
-    # itself (in default "serialized" threading mode) remains responsible
-    # for concurrent-call safety on the connection object.
+    # check_same_thread=False relaxes Python's sqlite3 guard; SQLite itself
+    # (serialized threading mode) stays responsible for concurrent-call safety.
     conn = sqlite3.connect(target, check_same_thread=False)
 
     conn.execute("PRAGMA foreign_keys = ON;")

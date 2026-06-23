@@ -1,13 +1,11 @@
 """CRUD for the rag_servers table.
 
-Mirrors the conversations / messages query helpers in style: each function
-takes a ``sqlite3.Connection`` and wraps writes in ``with conn:`` for
-atomicity. RAG servers are user-configured at runtime via the /settings
-UI; the ``query_rag`` tool reads this table to validate the model's chosen
-``source`` argument and to look up the corresponding base URL.
+Each function takes a ``sqlite3.Connection`` and wraps writes in
+``with conn:`` for atomicity. RAG servers are configured at runtime via
+/settings; the ``query_rag`` tool reads this table to validate the model's
+``source`` argument and look up its base URL.
 
-Liveness probing lives in :mod:`app.rag_health` — the settings route imports
-``probe_rag_health`` from there to validate a server before insert/edit.
+Liveness probing lives in :mod:`app.rag_health`.
 """
 
 import sqlite3
@@ -23,23 +21,18 @@ class RagServer:
 
     Attributes:
         id: Auto-assigned primary key.
-        name: Short human/model-facing identifier (e.g. ``"arxiv"``).
-            Used as the ``source`` argument value in ``query_rag`` and
-            therefore must be UNIQUE — the schema enforces this and the
-            route handler converts the UNIQUE violation to a 409.
-        url: Full base URL up through the source prefix
-            (e.g. ``"http://10.0.0.5:8002/arxiv"``). The ``query_rag``
-            tool appends ``"/chunks"`` itself.
-        created_at: When the row was first inserted (UTC).
-        updated_at: When the row was last touched (UTC). Currently bumped
-            only at insert; included for symmetry with the conversations
-            table in case a future phase adds in-place edits.
-        description: User-supplied text describing the source contents,
-            e.g. ``"PubMed abstracts 2020–2024"``. Folded into the
-            ``query_rag`` tool's ``source`` parameter hint so the model
-            can pick the right source intelligently. Empty string for
-            legacy rows; rendered as ``(no description)`` in the UI and
-            in the tool spec.
+        name: Short identifier (e.g. ``"arxiv"``) used as the ``source``
+            arg in ``query_rag``. UNIQUE — the schema enforces it and the
+            route converts the violation to a 409.
+        url: Full base URL through the source prefix (e.g.
+            ``"http://10.0.0.5:8002/arxiv"``); ``query_rag`` appends
+            ``"/chunks"``.
+        created_at: First-insert time (UTC).
+        updated_at: Last-touched time (UTC).
+        description: Source summary (e.g. ``"PubMed abstracts 2020–2024"``),
+            folded into the ``query_rag`` ``source`` hint so the model can
+            pick the right source. '' for legacy rows; shown as
+            ``(no description)``.
     """
 
     id: int
@@ -56,11 +49,7 @@ class RagServer:
 
 
 def _row_to_server(row: sqlite3.Row) -> RagServer:
-    """Map a ``rag_servers`` row to the ``RagServer`` dataclass.
-
-    Parses ISO 8601 timestamps into ``datetime`` so callers don't deal
-    with raw strings.
-    """
+    """Map a ``rag_servers`` row to ``RagServer``, parsing ISO timestamps."""
     return RagServer(
         id=row["id"],
         name=row["name"],
@@ -79,9 +68,8 @@ def _row_to_server(row: sqlite3.Row) -> RagServer:
 def list_servers(conn: sqlite3.Connection) -> list[RagServer]:
     """Return every configured RAG server, oldest first.
 
-    Stable insertion order (``ORDER BY id ASC``) so the settings UI
-    doesn't reshuffle rows on each reload — adding a new server makes
-    it appear at the bottom of the list, where the form just submitted it.
+    ``ORDER BY id ASC`` keeps the settings UI stable across reloads — a new
+    server appears at the bottom, where the form just submitted it.
 
     Args:
         conn: Open SQLite connection.
@@ -103,26 +91,22 @@ def create_server(
 
     Args:
         conn: Open SQLite connection.
-        name: Unique source identifier (e.g. ``"arxiv"``). The model
-            uses this string as the ``source`` arg to ``query_rag``.
-        url: Full base URL up through the source prefix.
-        description: Human-readable summary of the source's contents.
-            Defaults to ``""`` so existing callers (tests, REPL) that
-            omit it keep working without changes.
+        name: Unique source identifier (e.g. ``"arxiv"``), used as the
+            ``source`` arg to ``query_rag``.
+        url: Full base URL through the source prefix.
+        description: Source summary. Defaults to ``""`` so callers that
+            omit it keep working.
 
     Returns:
-        The newly created RagServer, populated with its assigned id
-        and timestamps.
+        The newly created RagServer with its assigned id and timestamps.
 
     Raises:
         sqlite3.IntegrityError: ``name`` collides with an existing row
-            (UNIQUE constraint). The route handler converts this into
-            an HTTP 409.
+            (UNIQUE); the route converts this to a 409.
     """
     now = _now_iso()
     with conn:
-        # RETURNING (SQLite 3.35+) saves a follow-up SELECT for the
-        # auto-assigned id and the timestamps we just wrote.
+        # RETURNING saves a follow-up SELECT for the id + timestamps.
         row = conn.execute(
             "INSERT INTO rag_servers (name, url, description, created_at, updated_at)"
             " VALUES (?, ?, ?, ?, ?)"
@@ -135,16 +119,16 @@ def create_server(
 def get_server(conn: sqlite3.Connection, server_id: int) -> RagServer | None:
     """Fetch a single server row by id.
 
-    Backs the inline description editor's GET route, which re-renders
-    one row in view or edit mode without re-listing the whole table.
+    Backs the inline description editor's GET route, which re-renders one
+    row in view or edit mode without re-listing the table.
 
     Args:
         conn: Open SQLite connection.
         server_id: Id of the server to fetch.
 
     Returns:
-        The matching RagServer, or ``None`` if no row has that id (e.g.
-        another tab deleted it). The route maps ``None`` to a 404.
+        The matching RagServer, or ``None`` if no row has that id (the
+        route maps ``None`` to a 404).
     """
     row = conn.execute(
         "SELECT id, name, url, description, created_at, updated_at"
@@ -166,18 +150,17 @@ def update_server(
     Args:
         conn: Open SQLite connection.
         server_id: Id of the server to update.
-        name: New unique source identifier. Raises ``IntegrityError`` on
-            collision with another row; the route converts this to a 409.
+        name: New unique source identifier.
         url: New full base URL.
-        description: New human-readable summary of the source's contents.
+        description: New source summary.
 
     Returns:
         The updated RagServer, or ``None`` if no row has that id (the
         route maps ``None`` to a 404).
 
     Raises:
-        sqlite3.IntegrityError: ``name`` collides with a different existing
-            row (UNIQUE constraint).
+        sqlite3.IntegrityError: ``name`` collides with another row
+            (UNIQUE); the route converts this to a 409.
     """
     now = _now_iso()
     with conn:
@@ -198,7 +181,7 @@ def update_server_description(
     Args:
         conn: Open SQLite connection.
         server_id: Id of the server to update.
-        description: New human-readable summary of the source's contents.
+        description: New source summary.
 
     Returns:
         The updated RagServer, or ``None`` if no row has that id (the
@@ -218,10 +201,8 @@ def update_server_description(
 def delete_server(conn: sqlite3.Connection, server_id: int) -> None:
     """Delete a server row by id; idempotent.
 
-    Missing ids are silently accepted — the UI flow is "user clicks
-    delete on a row"; a stale id (e.g. another tab already deleted it)
-    shouldn't surface as an exception. Mirrors the same idempotent
-    behaviour as ``queries.delete_conversation``.
+    A missing id (e.g. another tab already deleted it) is silently
+    accepted rather than raised.
 
     Args:
         conn: Open SQLite connection.

@@ -1,8 +1,9 @@
-"""SQLite schema and database initialization for ollama_slowly.
+"""SQLite schema and database initialization.
 
-Phase 2 owns the schema and a one-shot `initialize_database` function. Phase 3
-will layer a shared long-lived connection on top; until then, this module
-opens a private connection only long enough to create the file and tables.
+Owns `_SCHEMA_SQL` (fresh-install schema) and `initialize_database`, which
+applies it plus a chain of idempotent migrations. Opens a private
+connection only long enough to create the file and tables; the long-lived
+app connection lives in `app.connection`.
 """
 
 import sqlite3
@@ -11,51 +12,39 @@ from pathlib import Path
 from app._time import now_iso
 from app.config import db_path
 
-# All schema lives in one string so the file reads top-to-bottom and so
-# `executescript` can apply it in a single call.
+# All schema in one string so `executescript` applies it in a single call.
 #
-# Design notes:
-# - id columns: plain INTEGER PRIMARY KEY — SQLite auto-assigns rowids;
-#   sufficient for a single-user local app.
-# - timestamps: ISO 8601 TEXT in UTC. Lexicographic sort = chronological sort,
-#   and values stay human-readable when poking around with the `sqlite3` CLI.
-#   Phase 4 query code is responsible for supplying these values; we
-#   deliberately do not use SQLite DEFAULT so all timestamp creation goes
-#   through one Python codepath.
-# - messages.conversation_id: FK with ON DELETE CASCADE so deleting a
-#   conversation cleans up its messages. Note: FK enforcement is OFF by
-#   default in SQLite — every connection must opt in via PRAGMA.
-# - messages.role: no CHECK constraint as of phase 12a. Validation lives in
-#   `app.queries.Role` (a typing.Literal). Tool-calling adds two new roles
-#   (`tool_call`, `tool_result`) and we expect more in future phases; the
-#   Python-level enum avoids painful SQLite ALTER TABLE migrations each time.
-# - composite index on messages(conversation_id, created_at): supports the
-#   primary read pattern, "give me this conversation's messages in order."
+# Conventions:
+# - id columns: plain INTEGER PRIMARY KEY (SQLite rowid); fine for one user.
+# - timestamps: ISO 8601 TEXT in UTC — lexicographic sort = chronological,
+#   stays readable in the sqlite3 CLI. Supplied by Python (no SQLite DEFAULT)
+#   so all timestamps go through one codepath.
+# - FKs use ON DELETE CASCADE, but enforcement is OFF by default in SQLite —
+#   every connection must opt in via PRAGMA.
+# - messages.role has no CHECK constraint; validation lives in
+#   `app.queries.Role` (a typing.Literal), avoiding an ALTER TABLE each time
+#   a new role is added.
 _SCHEMA_SQL = """
--- Phase 17: a project is the container above chats. Every conversation
--- belongs to exactly one project, and the project's `workspace_subdir`
--- (a slug under FILE_TOOL_ROOT) scopes the file tools to a per-project
--- directory. `default_model` / `default_agent` pre-fill the composer
--- for new chats in the project and are NOT applied retroactively to
--- existing chats.
+-- A project is the container above chats. Every conversation belongs to
+-- exactly one project; `workspace_subdir` (a slug under FILE_TOOL_ROOT)
+-- scopes the file tools to a per-project directory. `default_model` /
+-- `default_agent` pre-fill the composer for new chats only — not applied
+-- retroactively.
 CREATE TABLE IF NOT EXISTS projects (
     id                INTEGER PRIMARY KEY,
     name              TEXT NOT NULL UNIQUE,
     description       TEXT NOT NULL DEFAULT '',
-    -- Path segment under FILE_TOOL_ROOT (a slug). UNIQUE so projects
-    -- can't share a workspace. Set at create time; never edited.
+    -- Path segment under FILE_TOOL_ROOT (a slug). UNIQUE so projects can't
+    -- share a workspace. Set at create time; never edited.
     workspace_subdir  TEXT NOT NULL UNIQUE,
     -- NULL = no project default; new chats use the global default.
     default_model     TEXT,
     -- NULL = Normal (no agent) is the default; otherwise an agent name.
     default_agent     TEXT,
-    -- Per-project override for the Ollama `num_ctx` (context window in
-    -- tokens). NULL = inherit the global default from app_settings.
+    -- Ollama `num_ctx` override (context tokens). NULL = inherit global.
     num_ctx           INTEGER,
-    -- Per-project system prompt prepended to Normal-chat turns in this
-    -- project. Capped at 2000 chars at the route layer. Empty string =
-    -- no project prompt. Ignored on invoked-agent turns (the agent's
-    -- own system prompt wins).
+    -- System prompt prepended to Normal-chat turns (≤2000 chars, capped at
+    -- the route layer). '' = none. Ignored on agent turns (agent's wins).
     system_prompt     TEXT NOT NULL DEFAULT '',
     created_at        TEXT NOT NULL,
     updated_at        TEXT NOT NULL
@@ -65,41 +54,34 @@ CREATE TABLE IF NOT EXISTS conversations (
     id           INTEGER PRIMARY KEY,
     name         TEXT NOT NULL,
     model        TEXT NOT NULL,
-    -- Phase 11d: when 1, the auto-titler must leave the name alone.
-    -- Set to 1 by `rename_conversation` so a manual rename always wins
-    -- over a subsequent automated title refresh.
+    -- When 1, the auto-titler leaves the name alone. Set by
+    -- `rename_conversation` so a manual rename beats an automated refresh.
     name_locked  INTEGER NOT NULL DEFAULT 0,
-    -- Per-chat temperature passed to Ollama's options dict (0.0–2.0).
-    -- Ollama's own default is 0.8.
+    -- Ollama temperature option (0.0–2.0; Ollama's own default is 0.8).
     temperature  REAL NOT NULL DEFAULT 0.8,
-    -- Per-chat cap on tool-call iterations per turn (1–10).
+    -- Cap on tool-call iterations per turn (1–10).
     tool_iteration_cap INTEGER NOT NULL DEFAULT 5,
-    -- Phase 25: per-chat thinking mode. 'default' omits Ollama's `think`
-    -- key (the model decides); 'off' sends think=false to suppress a
-    -- reasoning model's <think> phase. TEXT (not bool) so a later phase can
-    -- add 'on' or graduated levels ('low'/'medium'/'high') without a
-    -- migration. The chat header only surfaces the control for models whose
-    -- /api/show capabilities include "thinking".
+    -- Thinking mode. 'default' omits Ollama's `think` key (model decides);
+    -- 'off' sends think=false to suppress a reasoning model's <think> phase.
+    -- TEXT (not bool) to leave room for 'on'/graduated levels without a
+    -- migration. Surfaced only for models whose /api/show lists "thinking".
     think_mode   TEXT NOT NULL DEFAULT 'default',
-    -- Name of the selected Ollama host for this chat (a key in
-    -- app.hosts.HOSTS, e.g. "host2"), or NULL for the primary host.
+    -- Selected host (a key in app.hosts.HOSTS, e.g. "host2"), or NULL for
+    -- the primary host. A non-primary host's model lives in
+    -- `chat_host_models`; `model` above is the primary-host model, NOT NULL
+    -- so a chat always has a valid fallback.
     active_host TEXT,
-    -- Per-chat model for a non-primary host lives in `chat_host_models`
-    -- (keyed by host name), not here. `model` above is the primary-host
-    -- model, kept NOT NULL so a chat always has a valid model to fall back to.
-    -- Phase 17: the project this chat belongs to. NOT NULL — every
-    -- chat lives in a project; the migration ensures a "Default"
-    -- project exists before this column is enforced.
+    -- Owning project. NOT NULL — the migration ensures a "Default" project
+    -- exists before enforcing this.
     project_id   INTEGER NOT NULL
         REFERENCES projects(id) ON DELETE CASCADE,
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL
 );
 
--- The role CHECK has been removed (phase 12a). Validation now lives
--- in app.queries.Role (a typing.Literal). SQLite can't ALTER an
--- existing CHECK, so this only takes effect for fresh DBs; existing
--- DBs are migrated by _migrate_messages_drop_role_check below.
+-- No role CHECK — validation lives in app.queries.Role. SQLite can't ALTER
+-- an existing CHECK, so this is fresh-DB only; legacy DBs are migrated by
+-- _migrate_messages_drop_role_check below.
 CREATE TABLE IF NOT EXISTS messages (
     id              INTEGER PRIMARY KEY,
     conversation_id INTEGER NOT NULL
@@ -107,38 +89,32 @@ CREATE TABLE IF NOT EXISTS messages (
     role            TEXT NOT NULL,
     content         TEXT NOT NULL,
     created_at      TEXT NOT NULL,
-    -- Per-turn token counts reported by Ollama on the final stream chunk.
-    -- NULL when the message isn't an assistant turn, when Ollama didn't
-    -- report counts (e.g. prompt-cache hit), or for pre-existing rows
-    -- from before this column existed. prompt_tokens is the input the
-    -- model just saw (system + history + new user msg); eval_tokens is
-    -- the output it generated. Use the most-recent turn's prompt_tokens
-    -- as "current context size" — summing across turns double-counts.
+    -- Per-turn token counts from Ollama's final stream chunk. NULL for
+    -- non-assistant turns, unreported counts (e.g. prompt-cache hit), or
+    -- pre-existing rows. prompt_tokens = input the model saw (system +
+    -- history + new user msg); eval_tokens = output generated. The latest
+    -- turn's prompt_tokens is "current context size" — summing double-counts.
     prompt_tokens   INTEGER,
     eval_tokens     INTEGER,
-    -- Phase 18: ISO 8601 UTC stamp set when the manual-compact endpoint
-    -- archives this row. NULL = active, included in the prompt sent to
-    -- Ollama. Non-NULL = hidden from the prompt; the row stays in the DB
-    -- so compaction is reversible. Rendering still shows archived rows
-    -- (faded, behind a disclosure) so the user can audit what was hidden.
+    -- ISO 8601 UTC stamp set when manual compaction archives this row.
+    -- NULL = active (sent to Ollama). Non-NULL = hidden from the prompt but
+    -- kept in the DB (reversible) and still rendered faded behind a
+    -- disclosure so the user can audit what was hidden.
     archived_at     TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_conversation_created
 ON messages (conversation_id, created_at);
 
--- Phase 18's `idx_messages_active` partial index is created inside the
--- archived_at migration helper (`_ensure_messages_archived_at_column`)
--- rather than here. Reason: on legacy DBs the `CREATE TABLE IF NOT
--- EXISTS` above is a no-op, so the `archived_at` column doesn't exist
--- yet at the time this script runs — referencing it in a partial-index
--- predicate would error. The migration helper adds the column and the
--- index in the right order, and runs idempotently on fresh DBs too.
+-- The `idx_messages_active` partial index lives in the archived_at
+-- migration helper, not here: on a legacy DB the CREATE TABLE above is a
+-- no-op, so `archived_at` doesn't exist yet and a partial-index predicate
+-- referencing it would error. The helper adds column + index in order and
+-- is idempotent on fresh DBs too.
 
--- Phase 12a: configured RAG endpoints. Each row is one source the
--- chat model can query via the query_rag tool. `url` is the FULL
--- base URL up through the source prefix (e.g.
--- "http://10.0.0.5:8002/arxiv"); the tool appends "/chunks" itself.
+-- Configured RAG endpoints, one per source queryable via query_rag. `url`
+-- is the FULL base URL through the source prefix (e.g.
+-- "http://10.0.0.5:8002/arxiv"); the tool appends "/chunks".
 CREATE TABLE IF NOT EXISTS rag_servers (
     id          INTEGER PRIMARY KEY,
     name        TEXT NOT NULL UNIQUE,
@@ -148,29 +124,19 @@ CREATE TABLE IF NOT EXISTS rag_servers (
     updated_at  TEXT NOT NULL
 );
 
--- Global key/value app settings. One row per setting (e.g.
--- `default_temperature`). Settings reuse this table — no schema
--- migration needed when adding new keys; they appear/disappear via
--- INSERT/DELETE. Purely additive on existing DBs (CREATE TABLE IF
--- NOT EXISTS).
+-- Global key/value app settings, one row per setting (e.g.
+-- `default_temperature`). New keys appear/disappear via INSERT/DELETE — no
+-- schema migration needed.
 CREATE TABLE IF NOT EXISTS app_settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
 
--- Phase 23 removed the per-chat tool/RAG chip tables (chat_tool_settings,
--- chat_rag_settings). A tool-capable model is now offered the full registry
--- every turn and query_rag searches every configured RAG server, so no
--- per-chat enablement state is persisted. Existing DBs keep the now-orphan
--- tables harmlessly — no destructive migration drops them.
-
--- Per-chat model for each non-primary Ollama host the chat has picked a
--- model for. One row per (conversation_id, host_name); host_name matches a
--- key in app.hosts.HOSTS (e.g. "host2"). A missing row means "use that
--- host's default model" (the host's `default_model` from config). The
--- primary host's model is NOT stored here — it lives in conversations.model.
--- Recording the host name (rather than a single conversations column) lets a
--- chat remember a distinct model per machine. Cascade-deletes with the chat.
+-- Per-chat model for each non-primary host the chat has picked one for. One
+-- row per (conversation_id, host_name); host_name is a key in
+-- app.hosts.HOSTS (e.g. "host2"). A missing row means "use that host's
+-- default model". The primary host's model lives in conversations.model, not
+-- here. Cascade-deletes with the chat.
 CREATE TABLE IF NOT EXISTS chat_host_models (
     conversation_id INTEGER NOT NULL
         REFERENCES conversations(id) ON DELETE CASCADE,
@@ -182,13 +148,12 @@ CREATE TABLE IF NOT EXISTS chat_host_models (
 
 
 def _ensure_name_locked_column(conn: sqlite3.Connection) -> None:
-    """Backfill the `name_locked` column on databases that pre-date 11d.
+    """Add `conversations.name_locked` on legacy DBs.
 
-    `CREATE TABLE IF NOT EXISTS` is a no-op when the table exists, even
-    with a different schema, so adding a column to the SQL above
-    doesn't reach existing databases. Apply the change via `ALTER TABLE
-    ADD COLUMN`, guarded by a `PRAGMA table_info` check so re-runs are
-    safe.
+    `CREATE TABLE IF NOT EXISTS` won't alter an existing table, so new
+    columns reach legacy DBs via `ALTER TABLE ADD COLUMN`, guarded by a
+    `PRAGMA table_info` check for idempotency. This is the shared pattern
+    for every `_ensure_*_column` helper below.
 
     Args:
         conn: Open SQLite connection.
@@ -204,7 +169,8 @@ def _ensure_name_locked_column(conn: sqlite3.Connection) -> None:
 
 
 def _ensure_conversations_temperature_column(conn: sqlite3.Connection) -> None:
-    """Backfill the ``temperature`` column on conversations tables that pre-date this phase.
+    """Add ``conversations.temperature`` on legacy DBs. See
+    :func:`_ensure_name_locked_column`.
 
     Args:
         conn: Open SQLite connection.
@@ -220,7 +186,8 @@ def _ensure_conversations_temperature_column(conn: sqlite3.Connection) -> None:
 
 
 def _ensure_conversations_tool_iteration_cap_column(conn: sqlite3.Connection) -> None:
-    """Backfill the ``tool_iteration_cap`` column on conversations tables that pre-date this phase.
+    """Add ``conversations.tool_iteration_cap`` on legacy DBs. See
+    :func:`_ensure_name_locked_column`.
 
     Args:
         conn: Open SQLite connection.
@@ -236,11 +203,11 @@ def _ensure_conversations_tool_iteration_cap_column(conn: sqlite3.Connection) ->
 
 
 def _ensure_conversations_think_mode_column(conn: sqlite3.Connection) -> None:
-    """Backfill the ``think_mode`` column on pre-phase-25 conversations tables.
+    """Add ``conversations.think_mode`` on legacy DBs.
 
-    Idempotent: checks ``PRAGMA table_info`` and only adds the column when
-    absent. New and back-filled rows default to ``'default'`` (Ollama's
-    ``think`` key omitted), preserving today's behaviour for existing chats.
+    Backfilled rows default to ``'default'`` (Ollama's ``think`` key
+    omitted), preserving existing behaviour. See
+    :func:`_ensure_name_locked_column`.
 
     Args:
         conn: Open SQLite connection.
@@ -258,10 +225,9 @@ def _ensure_conversations_think_mode_column(conn: sqlite3.Connection) -> None:
 def _ensure_default_project(conn: sqlite3.Connection) -> int:
     """Ensure at least one project exists; return the Default project's id.
 
-    Called as part of the projects migration. Idempotent: if any project
-    already exists, returns the id of the lowest-id one (deterministic for
-    tests); otherwise inserts a row named ``"Default"`` with
-    ``workspace_subdir = "default"`` and returns its id.
+    Idempotent: if any project exists, returns the lowest id (deterministic
+    for tests); otherwise inserts ``"Default"`` (``workspace_subdir =
+    "default"``) and returns its id.
 
     Args:
         conn: Open SQLite connection.
@@ -290,13 +256,12 @@ def _ensure_default_project(conn: sqlite3.Connection) -> int:
 def _ensure_conversations_project_id_column(
     conn: sqlite3.Connection, default_project_id: int
 ) -> None:
-    """Add ``conversations.project_id`` and backfill it on legacy DBs.
+    """Add ``conversations.project_id`` (NOT NULL FK) and backfill it.
 
-    SQLite can't ``ALTER COLUMN`` to add NOT NULL to an existing column,
-    so this uses the table-rewrite pattern: phase 1 adds the column as
-    nullable + backfills with ``default_project_id``; phase 2 rebuilds
-    the table with NOT NULL + FK ON DELETE CASCADE. Idempotent: detects
-    the new column's presence and exits early.
+    SQLite can't add a NOT NULL column to an existing table, so this uses
+    the table-rewrite pattern: step 1 adds it nullable + backfills with
+    ``default_project_id``; step 2 rebuilds the table with NOT NULL + FK ON
+    DELETE CASCADE. Idempotent: exits early if the column already exists.
 
     Args:
         conn: Open SQLite connection.
@@ -308,7 +273,7 @@ def _ensure_conversations_project_id_column(
     }
     if "project_id" in columns:
         return
-    # Phase 1: add the column as NULLable so we can backfill safely.
+    # Step 1: add nullable so we can backfill safely.
     conn.execute(
         "ALTER TABLE conversations ADD COLUMN project_id INTEGER;"
     )
@@ -316,9 +281,9 @@ def _ensure_conversations_project_id_column(
         "UPDATE conversations SET project_id = ? WHERE project_id IS NULL;",
         (default_project_id,),
     )
-    # Phase 2: table-rewrite to enforce NOT NULL + FK ON DELETE CASCADE.
-    # executescript wraps the whole sequence in BEGIN/COMMIT so the swap
-    # is atomic — if any step fails, the original table is preserved.
+    # Step 2: table-rewrite to enforce NOT NULL + FK. executescript wraps
+    # the swap in BEGIN/COMMIT so it's atomic — a failure preserves the
+    # original table.
     conn.executescript(
         """
         BEGIN;
@@ -349,13 +314,10 @@ def _ensure_conversations_project_id_column(
 
 
 def _ensure_projects_num_ctx_column(conn: sqlite3.Connection) -> None:
-    """Backfill the ``num_ctx`` column on projects tables that pre-date this phase.
+    """Add ``projects.num_ctx`` on legacy DBs.
 
-    Nullable INTEGER with no default — existing projects come back as NULL,
-    which the resolution helper reads as "inherit the global default".
-    Mirrors the ``_ensure_*_column`` pattern: ``PRAGMA table_info`` check
-    first so the ``ALTER TABLE`` is a no-op on fresh DBs where
-    ``_SCHEMA_SQL`` already created the column.
+    Nullable INTEGER, no default — existing projects read back as NULL
+    ("inherit the global default"). See :func:`_ensure_name_locked_column`.
 
     Args:
         conn: Open SQLite connection.
@@ -370,13 +332,10 @@ def _ensure_projects_num_ctx_column(conn: sqlite3.Connection) -> None:
 
 
 def _ensure_projects_system_prompt_column(conn: sqlite3.Connection) -> None:
-    """Backfill the ``system_prompt`` column on projects tables that pre-date this phase.
+    """Add ``projects.system_prompt`` on legacy DBs.
 
-    TEXT NOT NULL DEFAULT '' — existing projects come back as the empty
-    string, which the generation layer reads as "no project prompt".
-    Mirrors the other ``_ensure_*_column`` helpers: ``PRAGMA table_info``
-    check first so the ``ALTER TABLE`` is a no-op on fresh DBs where
-    ``_SCHEMA_SQL`` already created the column.
+    TEXT NOT NULL DEFAULT '' — existing projects read back as '' ("no
+    project prompt"). See :func:`_ensure_name_locked_column`.
 
     Args:
         conn: Open SQLite connection.
@@ -394,18 +353,15 @@ def _ensure_projects_system_prompt_column(conn: sqlite3.Connection) -> None:
 def _ensure_conversations_active_host_column(conn: sqlite3.Connection) -> None:
     """Ensure ``conversations.active_host`` exists, migrating from ``active_agent``.
 
-    Three cases, all idempotent (``PRAGMA table_info`` check first):
+    Three idempotent cases (``PRAGMA table_info`` check first):
 
-    1. Fresh / already-migrated DB — ``active_host`` present → no-op.
-    2. Phase 16–22 DB — has the misnamed ``active_agent`` column (the host
-       picker stored its selection there). Phase 23 renames it in place via
-       ``ALTER TABLE … RENAME COLUMN`` (SQLite ≥ 3.25; Python 3.13 ships much
-       newer), preserving every stored selection.
-    3. Pre-phase-16 DB — neither column exists. Add ``active_host`` as a
-       nullable column (NULL = the primary host).
+    1. ``active_host`` present → no-op.
+    2. Misnamed ``active_agent`` present (legacy host-picker store) →
+       ``RENAME COLUMN`` in place, preserving selections.
+    3. Neither present → add ``active_host`` nullable (NULL = primary host).
 
-    Runs BEFORE the project_id rebuild, which references ``active_host`` — so on
-    a legacy DB the column is already renamed by the time that step copies rows.
+    Runs BEFORE the project_id rebuild, which copies ``active_host`` — so on
+    a legacy DB the rename happens first.
 
     Args:
         conn: Open SQLite connection.
@@ -429,21 +385,17 @@ def _ensure_conversations_active_host_column(conn: sqlite3.Connection) -> None:
 def _ensure_chat_host_models(conn: sqlite3.Connection) -> None:
     """Migrate the legacy ``conversations.slowly_model`` column to ``chat_host_models``.
 
-    Replaces the hardcoded single ``slowly_model`` column with the generic
-    per-host store. ``CREATE TABLE IF NOT EXISTS`` for ``chat_host_models``
-    already ran in ``_SCHEMA_SQL`` on fresh DBs; this helper handles legacy DBs
-    that still carry ``slowly_model``:
+    Replaces the single ``slowly_model`` column with the generic per-host
+    store:
 
-    1. Ensure the ``chat_host_models`` table exists (idempotent — covers DBs
-       where ``_SCHEMA_SQL`` predates the table).
-    2. Backfill every chat with a non-NULL ``slowly_model`` into a
-       ``("host2", slowly_model)`` row. ``INSERT OR IGNORE`` makes a re-run a
-       no-op (the PK collides).
-    3. Drop the now-redundant ``slowly_model`` column. SQLite ≥ 3.35 supports
-       ``DROP COLUMN``; Python 3.13 ships ≥ 3.40.
+    1. Ensure ``chat_host_models`` exists (covers DBs whose ``_SCHEMA_SQL``
+       predates the table).
+    2. Backfill each non-NULL ``slowly_model`` into a ``("host2", model)``
+       row. ``INSERT OR IGNORE`` makes a re-run a no-op (PK collides).
+    3. Drop ``slowly_model``.
 
-    Idempotent on fresh DBs (no ``slowly_model`` column → steps 2-3 skip) and on
-    already-migrated DBs.
+    Idempotent on fresh DBs (no ``slowly_model`` → steps 2-3 skip) and on
+    already-migrated ones.
 
     Args:
         conn: Open SQLite connection.
@@ -470,11 +422,8 @@ def _ensure_chat_host_models(conn: sqlite3.Connection) -> None:
 
 
 def _ensure_rag_servers_description_column(conn: sqlite3.Connection) -> None:
-    """Backfill the ``description`` column on rag_servers tables that pre-date this phase.
-
-    Mirrors the ``_ensure_name_locked_column`` pattern: ``PRAGMA table_info``
-    check first so the ``ALTER TABLE`` is a no-op on fresh DBs where
-    ``_SCHEMA_SQL`` already created the column.
+    """Add ``rag_servers.description`` on legacy DBs. See
+    :func:`_ensure_name_locked_column`.
 
     Args:
         conn: Open SQLite connection.
@@ -490,12 +439,10 @@ def _ensure_rag_servers_description_column(conn: sqlite3.Connection) -> None:
 
 
 def _ensure_messages_token_count_columns(conn: sqlite3.Connection) -> None:
-    """Backfill ``prompt_tokens`` / ``eval_tokens`` on legacy messages tables.
+    """Add ``messages.prompt_tokens`` / ``eval_tokens`` on legacy DBs.
 
-    Nullable INTEGERs — existing rows come back as NULL (we don't have
-    counts for messages persisted before the column existed). Mirrors
-    the other ``_ensure_*_column`` helpers: ``PRAGMA table_info`` check
-    first so the ``ALTER TABLE`` is a no-op on fresh DBs.
+    Nullable INTEGERs — pre-existing rows read back as NULL (no counts
+    recorded). See :func:`_ensure_name_locked_column`.
 
     Args:
         conn: Open SQLite connection.
@@ -514,15 +461,12 @@ def _ensure_messages_token_count_columns(conn: sqlite3.Connection) -> None:
 
 
 def _ensure_messages_archived_at_column(conn: sqlite3.Connection) -> None:
-    """Backfill the ``archived_at`` column on legacy messages tables.
+    """Add ``messages.archived_at`` (and its partial index) on legacy DBs.
 
-    Phase 18. Nullable TEXT with no default — existing rows come back as
-    NULL (i.e. active, included in the prompt). Mirrors the other
-    ``_ensure_*_column`` helpers: ``PRAGMA table_info`` check first so the
-    ``ALTER TABLE`` is a no-op on fresh DBs where ``_SCHEMA_SQL`` already
-    created the column. Adds the partial index too if missing — both
-    schema bits travel together so a legacy DB ends up with the same
-    index a fresh one gets.
+    Nullable TEXT, no default — existing rows read back as NULL (active).
+    Also creates ``idx_messages_active`` if missing, so a legacy DB ends up
+    with the same index a fresh one gets. See
+    :func:`_ensure_name_locked_column`.
 
     Args:
         conn: Open SQLite connection.
@@ -534,9 +478,8 @@ def _ensure_messages_archived_at_column(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE messages ADD COLUMN archived_at TEXT;"
         )
-    # Partial index. ``CREATE INDEX IF NOT EXISTS`` is a no-op when the
-    # index already exists; included here so legacy DBs get the index
-    # the schema string creates on fresh installs.
+    # Partial index — here (not in _SCHEMA_SQL) so legacy DBs get it too,
+    # after the column above exists. IF NOT EXISTS makes it a no-op on rerun.
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_messages_active"
         " ON messages (conversation_id, created_at)"
@@ -545,36 +488,28 @@ def _ensure_messages_archived_at_column(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_messages_drop_role_check(conn: sqlite3.Connection) -> None:
-    """Drop the role CHECK from an existing messages table.
+    """Drop the legacy role CHECK from an existing messages table.
 
-    The original schema (phases 2-11) had `CHECK (role IN ('user',
-    'assistant'))` on `messages.role`. Phase 12a expands the allowed
-    roles to include `tool_call` and `tool_result`; the cleanest
-    approach is to drop the CHECK entirely and let the Python `Role`
-    literal enforce validity at the app layer.
-
-    SQLite has no `ALTER TABLE ... DROP CONSTRAINT`. The portable
-    workaround is to recreate the table without the CHECK and copy
-    rows over. Idempotent: re-running detects the absence of the
-    CHECK in `sqlite_master` and exits early.
+    The original schema had `CHECK (role IN ('user', 'assistant'))`, which
+    blocks the newer `tool_call` / `tool_result` roles. SQLite has no `DROP
+    CONSTRAINT`, so recreate the table without the CHECK and copy rows over;
+    validity is now enforced by the Python `Role` literal. Idempotent: exits
+    early when `sqlite_master` shows no CHECK.
 
     Args:
         conn: Open SQLite connection.
     """
-    # sqlite_master.sql holds the original CREATE TABLE text. If the
-    # word "CHECK" is missing, either the table doesn't exist yet
-    # (fresh DB — the CREATE TABLE in _SCHEMA_SQL already produced a
-    # CHECK-free table) or we already migrated. Either way: skip.
+    # sqlite_master.sql holds the CREATE TABLE text. No "CHECK" means either a
+    # fresh DB (already CHECK-free) or an already-migrated one — skip.
     row = conn.execute(
         "SELECT sql FROM sqlite_master"
         " WHERE type='table' AND name='messages';"
     ).fetchone()
     if row is None or "CHECK" not in (row[0] or ""):
         return
-    # Table-recreate dance: build messages_new with the new schema,
-    # copy data, drop the original, rename. executescript wraps the
-    # whole thing in BEGIN/COMMIT so the swap is atomic — if any
-    # step fails partway, the original table is preserved.
+    # Table-recreate: build messages_new, copy, drop, rename. executescript
+    # wraps it in BEGIN/COMMIT so the swap is atomic — a failure preserves the
+    # original.
     conn.executescript(
         """
         BEGIN;
@@ -600,89 +535,55 @@ def _migrate_messages_drop_role_check(conn: sqlite3.Connection) -> None:
 def initialize_database(path: Path | None = None) -> Path:
     """Create the database file and schema if they don't already exist.
 
-    Safe to call repeatedly: `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF
-    NOT EXISTS` are no-ops once the objects are present.
+    Safe to call repeatedly: the schema uses `IF NOT EXISTS` and the
+    migrations are idempotent.
 
     Args:
         path: Where to put the database. Defaults to the DB_PATH value from
-            .env (resolved fresh on each call). The parameter exists
-            primarily so tests can point at a tempfile.
+            .env (resolved fresh each call); tests pass a tempfile.
 
     Returns:
         The path the database was created at.
     """
     target = path if path is not None else db_path()
 
-    # parents=True creates Application Support/ and ollama_slowly/ as needed;
-    # exist_ok=True makes this a no-op after the first run.
+    # Create the parent dirs; no-op after the first run.
     target.parent.mkdir(parents=True, exist_ok=True)
 
-    # sqlite3.Connection's context manager commits/rolls back on exit but does
-    # NOT close the connection — close happens via CPython GC when `conn`
-    # falls out of scope at function return. Acceptable for a one-shot init;
-    # Phase 3 will manage a long-lived connection explicitly.
+    # The context manager commits/rolls back on exit but does NOT close — the
+    # connection is GC'd when it falls out of scope. Fine for a one-shot init.
     with sqlite3.connect(target) as conn:
-        # FK enforcement is per-connection. Setting it here documents intent
-        # for this init connection; every connection Phase 3+ opens must set
-        # it again, otherwise REFERENCES clauses become documentation-only.
+        # FK enforcement and row_factory are per-connection; set them for this
+        # init connection (the migration helpers index rows positionally, but
+        # Row is harmless). Production connections configure their own.
         conn.execute("PRAGMA foreign_keys = ON;")
-        # row_factory = Row so the projects migration helpers below can
-        # index lookup rows by name as well as by position. Local to this
-        # init connection; production connections set their own factory in
-        # ``app.connection``.
         conn.row_factory = sqlite3.Row
-        # executescript runs multiple `;`-separated statements; it issues an
-        # implicit COMMIT first so DDL applies cleanly.
         conn.executescript(_SCHEMA_SQL)
-        # One-shot migration for databases created before phase 11d.
+
+        # Migrations for legacy DBs. ORDER MATTERS where noted — the
+        # project_id rebuild recreates the conversations table from a fixed
+        # column list, so anything that column-rebuild must carry has to run
+        # before it, and anything it would drop has to run after.
         _ensure_name_locked_column(conn)
-        # Phase 12a: drop the role CHECK on the legacy messages table
-        # so tool_call / tool_result rows can be inserted.
+        # Before token-count/archived_at: the role-check drop recreates the
+        # messages table without those columns.
         _migrate_messages_drop_role_check(conn)
-        # Per-turn token counts: backfill the prompt_tokens / eval_tokens
-        # columns on messages tables created before this phase. Runs
-        # AFTER the role-check drop because that migration recreates
-        # the table without the new columns.
         _ensure_messages_token_count_columns(conn)
-        # Phase 18: backfill archived_at on messages tables created before
-        # manual compaction existed. Same ordering rationale — runs after
-        # the role-check recreate.
         _ensure_messages_archived_at_column(conn)
-        # RAG source descriptions: backfill the description column on
-        # rag_servers tables created before this phase.
         _ensure_rag_servers_description_column(conn)
-        # Per-chat temperature: backfill the temperature column on
-        # conversations tables created before this phase.
         _ensure_conversations_temperature_column(conn)
-        # Per-chat tool-iteration cap: backfill the tool_iteration_cap
-        # column on conversations tables created before this phase.
         _ensure_conversations_tool_iteration_cap_column(conn)
-        # Phase 23: ensure conversations.active_host exists, renaming the
-        # legacy active_host column in place (phase 16's host-picker store).
-        # MUST run before the project_id rebuild below, which copies
-        # active_host.
+        # Before the project_id rebuild, which copies active_host.
         _ensure_conversations_active_host_column(conn)
-        # Phase 17: ensure a "Default" project exists, then add
-        # conversations.project_id (NOT NULL FK) and backfill every
-        # legacy chat to point at Default.
         default_project_id = _ensure_default_project(conn)
         _ensure_conversations_project_id_column(conn, default_project_id)
-        # Phase 25: per-chat thinking mode. MUST run AFTER the project_id
-        # rebuild — that step recreates the conversations table from a fixed
-        # column list (legacy DBs) and would otherwise drop a think_mode added
-        # before it.
+        # After the project_id rebuild — it would otherwise drop a think_mode
+        # added beforehand (fixed column list).
         _ensure_conversations_think_mode_column(conn)
-        # Per-chat host model store: create chat_host_models and migrate any
-        # legacy conversations.slowly_model column into it. MUST run AFTER the
-        # project_id migration — that step rebuilds the conversations table
-        # (legacy DBs) and only preserves columns it knows about, so the
-        # slowly_model it carries over is what this step reads + drops.
+        # After the project_id rebuild — that step carries slowly_model
+        # forward, and this one reads then drops it.
         _ensure_chat_host_models(conn)
-        # Per-project Ollama context-window override: backfill the
-        # num_ctx column on projects tables created before this phase.
         _ensure_projects_num_ctx_column(conn)
-        # Per-project system prompt: backfill the system_prompt column
-        # on projects tables created before this phase.
         _ensure_projects_system_prompt_column(conn)
 
     return target

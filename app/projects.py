@@ -1,21 +1,15 @@
-"""Phase 17: per-project workspace path resolution + one-shot migration.
+"""Per-project workspace path resolution + Files-tab browsing helpers.
 
-The file tools (``app/tools/builtins.py``) confine reads / writes to a
-single directory. Pre-17 that was always ``FILE_TOOL_ROOT`` (set by .env).
-With projects, the active directory is per-turn:
-``FILE_TOOL_ROOT/<project.workspace_subdir>``.
+The file tools confine reads/writes to one directory. With projects, that
+directory is per-turn: ``FILE_TOOL_ROOT/<project.workspace_subdir>``. The
+generation producer sets it via the :data:`current_workspace_root`
+ContextVar before each tool call; the file tools read that var, falling
+back to ``FILE_TOOL_ROOT`` when no project is bound (tests, direct calls).
 
-The generation producer (``app/generation._run_generation``) sets the
-active workspace via the :data:`current_workspace_root` ContextVar before
-each tool call. The file tools read that var (with a fallback to
-``FILE_TOOL_ROOT`` for tests / direct invocation that aren't bound to a
-project).
-
-A one-shot ``migrate_legacy_workspace`` helper moves the pre-projects
-contents of ``FILE_TOOL_ROOT`` into ``FILE_TOOL_ROOT/default/`` so the
-new "Default" project naturally owns whatever the user had before phase
-17. The migration is gated by an ``app_settings`` flag so re-runs are
-no-ops.
+:func:`migrate_legacy_workspace` is a one-shot that moves pre-projects
+``FILE_TOOL_ROOT`` contents into ``default/`` so the Default project owns
+them. The rest of this module builds the view-shaped payloads the Files
+tab renders.
 """
 
 from __future__ import annotations
@@ -35,10 +29,9 @@ from app.tools.builtins import LIST_DIR_CAP
 logger = logging.getLogger(__name__)
 
 
-# Set by ``app.generation._run_generation`` before each turn's tool
-# calls; reset in the matching finally block. ``None`` means "fall back
-# to FILE_TOOL_ROOT" — used by direct test invocations of the file tools
-# that don't bind a project.
+# Set by the generation producer before each turn's tool calls; reset in the
+# matching finally block. ``None`` = fall back to FILE_TOOL_ROOT (direct test
+# invocations that don't bind a project).
 current_workspace_root: ContextVar[Path | None] = ContextVar(
     "current_workspace_root", default=None
 )
@@ -89,39 +82,30 @@ def migrate_legacy_workspace(
 ) -> None:
     """One-shot move of pre-projects ``FILE_TOOL_ROOT`` contents into ``default/``.
 
-    Before phase 17 the user's workspace files lived at the top of
-    ``FILE_TOOL_ROOT``; under projects the Default project owns
-    ``FILE_TOOL_ROOT/default/``. To keep existing files reachable from the
-    Default project, this helper walks the top-level entries of
-    ``FILE_TOOL_ROOT`` and moves anything that doesn't already match an
-    existing project's ``workspace_subdir`` (and isn't ``"default"``
-    itself) into the new ``default/`` directory.
+    Walks the top-level entries of ``FILE_TOOL_ROOT`` and moves anything
+    that isn't ``"default"`` or another project's ``workspace_subdir`` into
+    ``default/``, so the Default project owns the user's pre-projects files.
 
-    Gated by ``app_settings("workspace_v2_migrated")`` so subsequent boots
-    are no-ops. Logs everything it moves; warns on collisions and skips
-    rather than overwriting (a user-visible filename clash should never
-    silently lose data).
+    Gated by ``app_settings("workspace_v2_migrated")`` so later boots no-op.
+    On a name collision it skips rather than overwrites — never silently
+    lose a user's file.
 
     Args:
         db: Open SQLite connection (the lifespan-shared one).
         queries_mod: The ``app.queries`` module, passed in to avoid a
-            circular import (``queries`` doesn't import from this module
-            either, but the indirection keeps the helper testable).
+            circular import and keep the helper testable.
     """
     if queries_mod.get_setting(db, "workspace_v2_migrated") == "1":
         return
 
     root = file_tool_root()
     if root is None:
-        # No workspace configured — nothing to migrate. Still set the flag
-        # so we don't re-check on every boot.
+        # Nothing to migrate, but still set the flag so we don't re-check.
         queries_mod.set_setting(db, "workspace_v2_migrated", "1")
         return
 
-    # Names that should NOT be moved into ``default/``: the literal
-    # "default" dir itself, plus any other project's workspace_subdir
-    # (in case the user pre-created project rows by hand). Touching one
-    # of those would clobber an unrelated project's workspace.
+    # Names to leave alone: "default" plus every existing project's
+    # workspace_subdir — moving one would clobber that project's workspace.
     reserved = {p.workspace_subdir for p in queries_mod.list_projects(db)}
     reserved.add("default")
 
@@ -172,16 +156,16 @@ _FILE_VIEW_CAP = 100_000
 class WorkspaceEntry:
     """One row in the Files-tab directory listing.
 
+    Dirs get ``href_browse``; files get ``href_view`` / ``href_download``
+    and a ``size_display``. The unused hrefs are None.
+
     Attributes:
-        name: Display name of the file or directory.
-        is_dir: True for directories (which get a browse link, no
-            size, no download).
-        size_display: Pretty-printed byte count for files; empty
-            string for dirs.
-        href_browse: URL to descend into the directory (None for files).
-        href_view: URL to render the file in the Files tab (None for dirs).
-        href_download: URL to download the file as an attachment (None
-            for dirs).
+        name: Display name.
+        is_dir: True for directories.
+        size_display: Pretty-printed byte count for files; '' for dirs.
+        href_browse: URL to descend into a directory.
+        href_view: URL to render a file in the Files tab.
+        href_download: URL to download a file as an attachment.
     """
 
     name: str
@@ -197,15 +181,12 @@ class WorkspaceListing:
     """Result shape for :func:`browse_workspace`.
 
     Attributes:
-        available: False when FILE_TOOL_ROOT is unset (file tools off);
-            the template renders an "unavailable" message.
+        available: False when FILE_TOOL_ROOT is unset (file tools off).
         path: The workspace-relative directory being shown.
-        breadcrumbs: ``[(label, href), ...]`` from workspace root down to
-            the current directory.
-        entries: The listed children (dirs first, then files), capped.
-        error: A user-facing reason when the listing failed (e.g. the
-            path is outside the workspace, or doesn't exist). Mutually
-            exclusive with ``entries`` carrying useful data.
+        breadcrumbs: ``[(label, href), ...]`` from root to current dir.
+        entries: Listed children (dirs first, then files), capped.
+        error: User-facing reason the listing failed (path outside
+            workspace, not found); set instead of ``entries``.
     """
 
     available: bool
@@ -222,16 +203,15 @@ class WorkspaceFileView:
     Attributes:
         available: False when FILE_TOOL_ROOT is unset.
         path: The workspace-relative file path.
-        breadcrumbs: Crumbs from root down to (and including) the file.
-        text: UTF-8 contents (truncated at the cap), or None when the
-            file isn't displayable as text.
-        is_markdown: True for ``.md`` / ``.markdown`` extensions.
-        rendered_html: Pre-rendered HTML for markdown views (None for
-            plain text).
+        breadcrumbs: Crumbs from root down to and including the file.
+        text: UTF-8 contents (truncated at the cap), or None when not
+            displayable as text.
+        is_markdown: True for ``.md`` / ``.markdown``.
+        rendered_html: Pre-rendered HTML for markdown (None for plain text).
         size_display: Pretty-printed file size.
-        error: User-facing reason when the file can't be displayed (not
-            found, binary, etc.).
-        download_href: URL to download the original file as an attachment.
+        error: User-facing reason the file can't be displayed (not found,
+            binary, ...).
+        download_href: URL to download the original file.
     """
 
     available: bool
@@ -248,11 +228,8 @@ class WorkspaceFileView:
 def _project_workspace_or_none(project: Project) -> Path | None:
     """Return the project's workspace dir (creating it), or None when off.
 
-    Wrapper that combines :func:`project_workspace_root` and
-    :func:`ensure_project_workspace` so the Files-tab helpers can
-    pre-create the dir on first visit — the listing isn't an immediate
-    "directory not found" the first time a user clicks Files after
-    creating a project.
+    Pre-creates the dir so the Files tab doesn't show "directory not found"
+    the first time a user opens it on a new project.
     """
     root = project_workspace_root(project)
     if root is None:
@@ -270,23 +247,20 @@ def _build_breadcrumbs(
         project_id: The owning project's id (interpolated into URLs).
         rel_path: Workspace-relative path being shown (``"."`` for root).
         tab: ``"browse"`` (directory listing) or ``"view"`` (single file).
-            The browse tab's last crumb points at the directory itself;
-            the view tab's last crumb points at the file viewer for that
-            file.
+            The view tab's last crumb links to the file viewer rather than
+            a directory.
 
     Returns:
         Ordered crumbs starting with ``("workspace", root URL)``.
     """
-    # ``Path.parts`` includes a leading "." for "." or "" — filter it out
-    # so the crumb list doesn't start with a vestigial entry.
+    # Filter the leading "." that Path.parts yields for "." or "".
     parts = [p for p in Path(rel_path).parts if p not in (".", "")]
     crumbs: list[tuple[str, str]] = [
         ("workspace", f"/projects/{project_id}/files")
     ]
     accum = Path(".")
-    # For a directory view, every part is a clickable subdirectory link.
-    # For a file view, the last part is the file (rendered by view tab),
-    # so only the leading parts are directory links.
+    # On a file view the last part is the file (handled below), so only the
+    # leading parts are directory links.
     nav_parts = parts if tab == "browse" else parts[:-1]
     for part in nav_parts:
         accum = accum / part
@@ -343,8 +317,8 @@ def browse_workspace(project: Project, path: str) -> WorkspaceListing:
         )
     rel_target = "" if target == root else str(target.relative_to(root))
     entries: list[WorkspaceEntry] = []
-    # Sort: dirs first, then files; each group alphabetical (case-
-    # insensitive). Matches ``list_directory``'s ordering.
+    # Dirs first, then files; each group case-insensitive alphabetical.
+    # Matches ``list_directory``'s ordering.
     children = sorted(
         target.iterdir(), key=lambda p: (p.is_file(), p.name.lower())
     )[:LIST_DIR_CAP]
@@ -456,11 +430,10 @@ def read_workspace_file(project: Project, path: str) -> WorkspaceFileView:
     is_md = target.suffix.lower() in (".md", ".markdown")
     rendered = None
     if is_md:
-        # Reuse the chat renderer so workspace .md files typeset LaTeX exactly
-        # like assistant messages: it emits .arithmatex spans/divs (which
-        # static/app.js typesets with KaTeX on the #main swap) and shields math
-        # from the markdown parser. A bare markdown.markdown(... fenced_code,
-        # tables) skipped both, leaving raw \(...\) on the page.
+        # Reuse the chat renderer so workspace .md files typeset LaTeX like
+        # assistant messages — it emits .arithmatex spans (KaTeX-typeset by
+        # static/app.js) and shields math from the parser. A bare
+        # markdown.markdown() leaves raw \(...\) on the page.
         from app.templates import _render_markdown
 
         rendered = _render_markdown(text)

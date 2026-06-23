@@ -1,35 +1,30 @@
-"""Phase 20: automatic, fire-and-forget backup/sync of state to a remote host.
+"""Fire-and-forget backup/sync of state to a remote host.
 
 The app is local-only, but the user runs it on more than one machine and
-wants the chats database and agent workspaces to follow them. This module
-*pushes* both to a remote host (e.g. host1) whenever local state changes —
-when a message is sent, when generation completes, or when ``write_file``
-succeeds.
+wants the chats DB and agent workspaces to follow them. This module *pushes*
+both to a remote host whenever local state changes — on send, on
+generation-complete, or on a successful ``write_file``.
 
 Design (decisions locked with the user):
 
-  * **Mirror semantics.** Each push overwrites a single canonical copy on
-    the remote (``chats.db`` in one dir, the workspace tree in another),
-    so the remote is always "the latest". It does NOT create a new
-    timestamped folder per run — that would pile up thousands of folders
-    when triggered per-message. A cheap server-side snapshot is taken at
-    most once a day for safety (see ``_maybe_snapshot``).
-  * **Single-flight + debounce.** ``request_backup`` is fire-and-forget and
-    coalesces bursts: at most one push runs at a time, and a short quiet
-    period batches the flurry of triggers around a single chat turn into
-    one push.
-  * **Offline-safe.** When the remote config is unset, or the host is
+  * **Mirror semantics.** Each push overwrites one canonical remote copy
+    (``chats.db`` in one dir, the workspace tree in another), so the remote
+    is always the latest — no per-run timestamped folder, which would pile
+    up thousands when triggered per-message. A cheap server-side snapshot
+    runs at most once a day for safety (see ``_maybe_snapshot``).
+  * **Single-flight + debounce.** ``request_backup`` coalesces bursts: at
+    most one push at a time, and a short quiet period batches the triggers
+    around one chat turn into a single push.
+  * **Offline-safe.** When the remote config is unset or the host is
     unreachable, every path no-ops quietly. Backups must never error,
-    block, or hang the chat path — they ride on the event loop as a
-    background task.
+    block, or hang the chat path — they run as a background task.
   * **WAL-consistent.** The DB runs in WAL mode (``chats.db`` +
-    ``-wal``/``-shm``). rsync-ing the live files can copy a torn state, so
-    we first produce a consistent copy via SQLite's online backup API into
-    a temp file and push *that* — never the live sidecar files.
+    ``-wal``/``-shm``); rsync-ing the live files can copy a torn state, so
+    we push a consistent copy made via SQLite's backup API — never the
+    live sidecar files.
 
-Restore/pull is intentionally out of scope here (push only); use the pull-only
-``app/copy_agent_workspace.py`` (e.g. ``--all``) to seed a fresh machine — see
-``RESTORE.md``.
+Restore/pull is out of scope here (push only); use the pull-only
+``app/copy_agent_workspace.py --all`` to seed a fresh machine.
 """
 
 import asyncio
@@ -49,15 +44,14 @@ from app.queries.settings import get_setting, set_setting
 
 logger = logging.getLogger(__name__)
 
-# Quiet period (seconds) the debounce loop waits before each push so a
-# burst of triggers around one chat turn collapses into a single rsync.
-# Module-level so tests can drop it to 0.
+# Quiet period (seconds) before each push, so a burst of triggers around one
+# chat turn collapses into a single rsync. Module-level so tests can zero it.
 DEBOUNCE_SECONDS = 3.0
 
 # How often the cheap server-side snapshot of the mirror is taken.
 SNAPSHOT_INTERVAL = timedelta(days=1)
 
-# app_settings key holding the ISO timestamp of the last snapshot.
+# app_settings key for the ISO timestamp of the last snapshot.
 _LAST_SNAPSHOT_KEY = "backup_last_snapshot_at"
 
 # Same noise the manual copy script skips; keeps the mirror clean.
@@ -69,8 +63,8 @@ RSYNC_EXCLUDES = [
     "--exclude", ".coverage",
 ]
 
-# Non-interactive ssh: never hang on a host-key or password prompt; give
-# up fast when the remote is asleep / off the network.
+# Non-interactive ssh: never hang on a host-key or password prompt; give up
+# fast when the remote is asleep / off the network.
 _SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
 _RSYNC_SSH = "ssh -o BatchMode=yes -o ConnectTimeout=5"
 
@@ -81,19 +75,19 @@ _RSYNC_SSH = "ssh -o BatchMode=yes -o ConnectTimeout=5"
 
 # `_pending` is the dirty flag; `_task` is the lone in-flight debounce loop.
 # A burst of `request_backup` calls flips `_pending` and (re)starts the loop
-# only if one isn't already running — that's the single-flight guarantee.
+# only if one isn't already running — the single-flight guarantee.
 _pending = False
 _task: asyncio.Task | None = None
 
 
 # ---------------------------------------------------------------------------
-# Observable status (Phase 21: the UI chip)
+# Observable status (the UI chip)
 # ---------------------------------------------------------------------------
 
-# Process-local backup status, surfaced to the chat-header chip. Same pattern
-# as `generation.live_generations`: one piece of cross-request in-memory state
-# per concern, deliberately NOT on `app.state`.
-# Reflects the single global backup task, so every chat sees the same value.
+# Process-local backup status for the chat-header chip. Same pattern as
+# `generation.live_generations`: cross-request in-memory state, deliberately
+# NOT on `app.state`. Reflects the single global backup task, so every chat
+# sees the same value.
 #
 #   idle     no push has run yet this process (neutral resting state)
 #   pending  a push is scheduled (debounce window) — drives the spinner
@@ -110,11 +104,11 @@ _status_at: datetime | None = None
 def backup_status() -> tuple[BackupState, datetime | None]:
     """Return the current ``(state, changed-at)`` for the UI chip.
 
-    Process-local and synchronous (no I/O); reflects the single global backup
-    task. ``idle`` means no push has run yet this process. Never raises.
+    Process-local and synchronous (no I/O). ``idle`` means no push has run yet
+    this process. Never raises.
 
     Returns:
-        Tuple of the current :data:`BackupState` and the time it was last set
+        The current :data:`BackupState` and the time it was last set
         (``None`` while still ``idle``).
     """
     return _status, _status_at
@@ -130,24 +124,23 @@ def _set_status(state: BackupState) -> None:
 def request_backup(reason: str) -> None:
     """Schedule a coalesced remote push. Fire-and-forget; safe to call often.
 
-    No-ops immediately when backups aren't configured (see
-    :func:`app.config.backups_enabled`). Otherwise it marks state dirty and
-    ensures the debounce loop is running. Returns at once — callers never
-    pay push latency on the request path.
+    No-ops when backups aren't configured (see
+    :func:`app.config.backups_enabled`). Otherwise marks state dirty and
+    ensures the debounce loop is running, returning at once — callers never
+    pay push latency.
 
-    Must be called from within a running event loop (all call sites — the
-    send endpoint, the generation done-callback, the tool loop — are).
+    Must be called from within a running event loop (all call sites are).
 
     Args:
-        reason: Short tag for logs (``"send"`` / ``"generation-complete"``
-            / ``"write"``). Purely diagnostic.
+        reason: Short diagnostic tag for logs (``"send"`` /
+            ``"generation-complete"`` / ``"write"``).
     """
     global _pending, _task
     if not config.backups_enabled():
         return
     logger.debug("backup requested (%s)", reason)
-    # Mark pending synchronously so the chip's first poll (≤2s out) is certain
-    # to catch a spinner, even if the actual rsync later completes sub-second.
+    # Mark pending synchronously so the chip's first poll (≤2s out) catches a
+    # spinner even when the rsync later completes sub-second.
     _set_status("pending")
     _pending = True
     if _task is None or _task.done():
@@ -157,10 +150,10 @@ def request_backup(reason: str) -> None:
 async def _debounce_loop() -> None:
     """Drain the dirty flag, sleeping a quiet period before each push.
 
-    Clears ``_pending`` *before* sleeping so any trigger that arrives
-    during the sleep or the push re-arms the flag and earns another pass.
-    A push never raises out of here — a failed backup must not kill the
-    loop (or, via an unhandled task exception, spam the logs).
+    Clears ``_pending`` *before* sleeping so any trigger arriving during the
+    sleep or push re-arms the flag and earns another pass. A push never raises
+    out of here — a failed backup must not kill the loop or spam the logs via
+    an unhandled task exception.
     """
     global _pending
     while _pending:
@@ -181,9 +174,9 @@ async def _debounce_loop() -> None:
 async def _run_backup_once() -> None:
     """Push the DB and workspaces to their mirrors, then maybe snapshot.
 
-    Re-reads config each call (it may have changed since scheduling) and
-    skips any half whose host is unreachable. The periodic snapshot only
-    fires when at least one half actually pushed.
+    Re-reads config each call (it may have changed since scheduling) and skips
+    any half whose host is unreachable. The periodic snapshot fires only when
+    at least one half actually pushed.
     """
     db_remote = config.remote_db_path()
     ws_remote = config.remote_workspace_path()
@@ -215,7 +208,7 @@ async def _run_backup_once() -> None:
                 logger.debug("backup: %s unreachable; skipping", host)
         return reachable[host]
 
-    # Track each reachable half's outcome: None = host not reached (skipped).
+    # Each reachable half's outcome: None = host not reached (skipped).
     pushed = False
     db_ok: bool | None = None
     ws_ok: bool | None = None
@@ -240,11 +233,11 @@ async def _run_backup_once() -> None:
 
 
 async def _push_database(host: str, remote_dir: str) -> bool:
-    """Push a consistent copy of the DB to ``<host>:<remote_dir>/chats.db``.
+    """Push a consistent DB copy to ``<host>:<remote_dir>/chats.db``.
 
-    Produces the copy off the event loop via the SQLite backup API (so the
-    live ``-wal``/``-shm`` are never shipped mid-write), then rsyncs the
-    single file. Returns whether the push succeeded.
+    Makes the copy off the event loop via the SQLite backup API (so the live
+    ``-wal``/``-shm`` are never shipped mid-write), then rsyncs the single
+    file. Returns whether the push succeeded.
     """
     backup_file = await asyncio.to_thread(_write_consistent_db_copy)
     if backup_file is None:
@@ -261,10 +254,9 @@ async def _push_database(host: str, remote_dir: str) -> bool:
 async def _push_workspaces(host: str, remote_dir: str) -> bool:
     """Mirror the workspace tree to ``<host>:<remote_dir>/``.
 
-    No-ops when ``FILE_TOOL_ROOT`` is unset or missing on disk (nothing to
-    back up). Additive sync — no ``--delete`` — so a momentarily-empty or
-    misconfigured local root can never wipe the remote. Returns whether the
-    push succeeded.
+    No-ops when ``FILE_TOOL_ROOT`` is unset or missing (nothing to back up).
+    Additive sync — no ``--delete`` — so a momentarily-empty or misconfigured
+    local root can never wipe the remote. Returns whether the push succeeded.
     """
     ws_root = file_tool_root()
     if ws_root is None or not ws_root.exists():
@@ -281,14 +273,14 @@ async def _push_workspaces(host: str, remote_dir: str) -> bool:
 def _write_consistent_db_copy() -> Path | None:
     """Write a transactionally-consistent copy of the DB next to the original.
 
-    Uses :meth:`sqlite3.Connection.backup` on a fresh read connection: in
-    WAL mode the reader sees the last committed state, so the resulting
-    file is internally consistent without touching the app's shared
-    connection. Runs in a worker thread (it's blocking C).
+    Uses :meth:`sqlite3.Connection.backup` on a fresh read connection: in WAL
+    mode the reader sees the last committed state, so the copy is internally
+    consistent without touching the app's shared connection. Runs in a worker
+    thread (it's blocking C).
 
     Returns:
-        Path to ``chats.db.backup`` beside the live DB, or ``None`` when
-        the live DB doesn't exist yet.
+        Path to ``chats.db.backup`` beside the live DB, or ``None`` when the
+        live DB doesn't exist yet.
     """
     src_path = db_path()
     if not src_path.exists():
@@ -314,10 +306,10 @@ async def _maybe_snapshot(
 ) -> None:
     """Once per ``SNAPSHOT_INTERVAL``, snapshot each mirror server-side.
 
-    The snapshot is a ``cp -a`` on the remote into a sibling
-    ``<dir>_snapshots/<timestamp>`` folder — no re-upload, cheap. Records
-    the time only after both reachable halves are attempted, so a missed
-    day simply retries on the next push rather than silently skipping.
+    The snapshot is a remote ``cp -a`` into a sibling
+    ``<dir>_snapshots/<timestamp>`` folder — cheap, no re-upload. Records the
+    time only after both reachable halves are attempted, so a missed day
+    retries on the next push rather than silently skipping.
     """
     if not _snapshot_due():
         return
@@ -367,8 +359,8 @@ def _record_snapshot() -> None:
 def _parse_remote(spec: str) -> tuple[str, str] | None:
     """Split a ``host:/path`` spec into ``(host, path)``, or ``None``.
 
-    Mirrors ``copy_agent_workspace.parse_remote``: a spec is "remote" only
-    when it contains a colon.
+    Mirrors ``copy_agent_workspace.parse_remote``: a spec is remote only when
+    it contains a colon.
     """
     if ":" not in spec:
         return None
@@ -386,9 +378,9 @@ async def _host_reachable(host: str) -> bool:
 async def _run(cmd: list[str]) -> int:
     """Run a command off the event loop; return its exit code.
 
-    Captures output so a failure logs the stderr at debug level instead of
-    leaking to the console. Never raises for a non-zero exit — callers
-    branch on the returned code.
+    Captures output so a failure logs stderr at debug level instead of
+    leaking to the console. Never raises on a non-zero exit — callers branch
+    on the returned code.
     """
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -406,7 +398,7 @@ async def _run(cmd: list[str]) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Manual restore (Phase 22: the "Pull" button)
+# Manual restore (the "Pull" button)
 # ---------------------------------------------------------------------------
 
 # Hard ceiling on a manual pull so a hung ssh/rsync can't wedge the request
@@ -421,20 +413,20 @@ async def pull_all(timeout: float = PULL_TIMEOUT) -> tuple[bool, str | None]:
     Shells out to ``python copy_agent_workspace.py --all`` — pull-only and
     ``.env``-driven, the same command a user runs by hand to seed a fresh
     machine. Running it as a child process isolates that script's
-    ``sys.exit()`` error paths from the app.
+    ``sys.exit()`` paths from the app.
 
     The CALLER must ensure no live SQLite connection holds the local
-    ``chats.db`` open: the script overwrites it (see the route in
-    ``app/routes/chats.py``, which closes ``app.state.db`` around this call).
-    Never raises — failures come back as ``(False, detail)``.
+    ``chats.db`` open: the script overwrites it (the route in
+    ``app/routes/chats.py`` closes ``app.state.db`` around this call). Never
+    raises — failures come back as ``(False, detail)``.
 
     Args:
         timeout: Seconds to wait before killing a stalled pull.
 
     Returns:
         ``(ok, detail)``. ``ok`` is True on a clean restore. On failure
-        ``detail`` is a short human message (``"Mirror unreachable"`` or the
-        last line of the script's output) for the chip's error label.
+        ``detail`` is a short message (``"Mirror unreachable"`` or the last
+        line of the script's output) for the chip's error label.
     """
     script = Path(__file__).resolve().parent / "copy_agent_workspace.py"
     proc = await asyncio.create_subprocess_exec(
@@ -458,9 +450,9 @@ async def pull_all(timeout: float = PULL_TIMEOUT) -> tuple[bool, str | None]:
     text = out.decode(errors="replace") if out else ""
     logger.warning("backup pull failed (exit %s): %s", proc.returncode, text.strip())
     if "Cannot connect" in text:
-        # The script's SSH probe failed — the mirror is asleep/off-network.
-        # Match only this explicit message: the script also prints "Connection
-        # successful" on a REACHABLE host, so a looser check would misread a
+        # The script's SSH probe failed — mirror asleep/off-network. Match
+        # only this exact message: the script also prints "Connection
+        # successful" on a reachable host, so a looser check would misread a
         # reachable-but-rsync-failed pull as unreachable.
         return False, "Mirror unreachable"
     last = text.strip().splitlines()[-1:] or [f"exit {proc.returncode}"]

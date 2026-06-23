@@ -1,7 +1,7 @@
 """Shared formatting helpers.
 
-So the file tools (``app.tools.builtins``) and the Files-tab routes
-(``app.routes``) format byte counts the same way.
+Keeps byte-count formatting identical between the file tools
+(``app.tools.builtins``) and the Files-tab routes (``app.routes``).
 """
 
 

@@ -1,41 +1,34 @@
 #!/usr/bin/env python3
-"""
-Restore the agent workspaces and/or the chats database from a remote mirror.
+"""Restore the agent workspaces and/or the chats DB from a remote mirror.
 
 **Pull-only by design.** Pushing is the running app's job: ``app/backup.py``
-mirrors both the database and the workspaces to the remote on every chat turn,
-and it ships a *transactionally-consistent* copy of the DB via the SQLite
-backup API. Pushing the live ``chats.db`` by hand could ship a torn WAL state,
-and a manual workspace push would recreate the stray timestamped folders this
-script used to leave behind — so this tool never writes to the remote. It only
-reads the flat always-latest mirror back down.
+mirrors both DB and workspaces on every chat turn, shipping a
+transactionally-consistent DB copy via the SQLite backup API. A manual push
+could ship a torn WAL state or recreate stray timestamped folders, so this
+tool never writes to the remote — it only reads the flat always-latest mirror
+back down.
 
 Modes:
 
-  * **Workspaces (default).** Pull the workspace tree REMOTE_PATH → FILE_TOOL_ROOT.
-  * **Database (`--db`).** Pull ``chats.db`` REMOTE_DB_PATH → DB_PATH (and clear
-    any stale local ``-wal``/``-shm`` sidecars that belong to the old DB).
+  * **Workspaces (default).** Pull REMOTE_PATH → FILE_TOOL_ROOT.
+  * **Database (`--db`).** Pull ``chats.db`` REMOTE_DB_PATH → DB_PATH (and
+    clear stale local ``-wal``/``-shm`` sidecars from the old DB).
   * **Everything (`--all`).** Pull both — the seed-a-new-machine case.
 
 Add ``--snapshot`` to restore from the latest dated snapshot under
 ``<remote_dir>_snapshots/<timestamp>/`` instead of the live mirror.
 
+Defaults come from .env: REMOTE_PATH / FILE_TOOL_ROOT (workspaces) and
+REMOTE_DB_PATH / DB_PATH (database). Override endpoints with ``--source``
+(remote) and ``--dest`` (local); ``--all`` always uses .env.
+
 Usage:
     python app/copy_agent_workspace.py                  # restore workspaces
+    python app/copy_agent_workspace.py --snapshot       # latest workspace snapshot
     python app/copy_agent_workspace.py --db [--snapshot]
     python app/copy_agent_workspace.py --all [--snapshot]
 
-    Remote format : host:/path/to/dir   Local format : path/to/dir
-
-Defaults come from .env: REMOTE_PATH / FILE_TOOL_ROOT (workspaces) and
-REMOTE_DB_PATH / DB_PATH (database). Override the workspace/DB endpoints with
-``--source`` (remote) and ``--dest`` (local); ``--all`` always uses .env.
-
-Examples:
-    python app/copy_agent_workspace.py                  # latest workspace mirror
-    python app/copy_agent_workspace.py --snapshot       # latest dated workspace snapshot
-    python app/copy_agent_workspace.py --db             # latest DB mirror
-    python app/copy_agent_workspace.py --all            # restore everything
+    Remote format: host:/path/to/dir   Local format: path/to/dir
 """
 
 import argparse
@@ -96,10 +89,10 @@ def test_ssh_connection(host: str) -> bool:
 
 
 def find_latest_remote_folder(host: str, remote_base: str) -> str:
-    """Return the full path of the most recent YYYYMMDD_HHMMSS folder on host.
+    """Return the full path of the newest YYYYMMDD_HHMMSS folder on host.
 
     Used only by ``--snapshot``: ``app/backup.py`` drops dated snapshots into
-    ``<dir>_snapshots/<timestamp>/``, and this finds the newest one.
+    ``<dir>_snapshots/<timestamp>/``.
     """
     print("Finding latest snapshot on remote...")
     cmd = ["ssh", host, f"ls -t {remote_base} | grep -E '^[0-9]{{8}}_[0-9]{{6}}$' | head -1"]
@@ -116,13 +109,13 @@ def find_latest_remote_folder(host: str, remote_base: str) -> str:
 def pull_database(host: str, remote_dir: str, local_dest: str, snapshot: bool = False) -> None:
     """Rsync the mirrored ``chats.db`` from the remote into ``local_dest``.
 
-    The remote file is the consistent copy the app pushed via the SQLite backup
-    API, so it is a safe standalone database with no ``-wal``/``-shm`` sidecars.
+    The remote file is the consistent copy the app pushed via the SQLite
+    backup API — a safe standalone database with no ``-wal``/``-shm`` sidecars.
 
     Args:
         host: Remote hostname.
-        remote_dir: Remote directory holding ``chats.db`` (i.e. REMOTE_DB_PATH).
-        local_dest: Local path to write ``chats.db`` to (i.e. DB_PATH).
+        remote_dir: Remote dir holding ``chats.db`` (REMOTE_DB_PATH).
+        local_dest: Local path to write ``chats.db`` to (DB_PATH).
         snapshot: When True, pull from the latest dated snapshot under
             ``<remote_dir>_snapshots/<timestamp>/`` instead of the live mirror.
     """
@@ -158,9 +151,8 @@ def pull_database(host: str, remote_dir: str, local_dest: str, snapshot: bool = 
         print(f"ERROR: rsync failed with exit code {result.returncode}")
         sys.exit(1)
 
-    # The pulled file is a standalone consistent copy. Any leftover sidecars
-    # belong to the OLD local database; pairing them with the fresh file would
-    # corrupt it, so clear them.
+    # The pulled file is a standalone consistent copy. Leftover sidecars belong
+    # to the OLD local DB; pairing them with the fresh file would corrupt it.
     for suffix in ("-wal", "-shm"):
         sidecar = dest_path.with_name(dest_path.name + suffix)
         if sidecar.exists():
@@ -182,8 +174,8 @@ def pull_workspaces(host: str, remote_dir: str, local_dest: str, snapshot: bool 
 
     Args:
         host: Remote hostname.
-        remote_dir: Remote workspace dir (i.e. REMOTE_PATH).
-        local_dest: Local workspace root (i.e. FILE_TOOL_ROOT).
+        remote_dir: Remote workspace dir (REMOTE_PATH).
+        local_dest: Local workspace root (FILE_TOOL_ROOT).
         snapshot: When True, pull from the latest dated snapshot under
             ``<remote_dir>_snapshots/<timestamp>/`` instead of the live mirror.
     """
@@ -225,17 +217,17 @@ def pull_workspaces(host: str, remote_dir: str, local_dest: str, snapshot: bool 
 
 def _resolve_pull(source: str | None, dest: str | None, env_source: str, default_dest: str,
                   label: str) -> tuple[str, str, str]:
-    """Resolve + validate a pull's remote source and local dest.
+    """Resolve and validate a pull's remote source and local dest.
 
     Args:
         source: Explicit ``--source`` (remote host:/path), or None to use env.
         dest: Explicit ``--dest`` (local path), or None to use the default.
-        env_source: Name of the env var holding the remote default.
+        env_source: Env var holding the remote default.
         default_dest: Resolved local destination default.
         label: Mode name for error messages (e.g. ``"--db"``).
 
     Returns:
-        ``(host, remote_dir, local_dest)`` ready to hand to a ``pull_*`` helper.
+        ``(host, remote_dir, local_dest)`` for a ``pull_*`` helper.
     """
     source = source or os.getenv(env_source)
     dest = dest or default_dest
@@ -275,9 +267,9 @@ def _run_ws_pull(source: str | None, dest: str | None, snapshot: bool) -> None:
 def _run_all_pull(snapshot: bool) -> None:
     """Pull BOTH the database and the workspaces from their remote mirrors.
 
-    Uses the .env config directly (REMOTE_DB_PATH / DB_PATH and REMOTE_PATH /
-    FILE_TOOL_ROOT) rather than ``--source``/``--dest``, since there are two of
-    each.
+    Uses .env directly (REMOTE_DB_PATH / DB_PATH and REMOTE_PATH /
+    FILE_TOOL_ROOT) rather than ``--source``/``--dest``, since there are two
+    of each.
 
     Args:
         snapshot: Restore both halves from their latest dated snapshot instead

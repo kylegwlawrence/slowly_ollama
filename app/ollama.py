@@ -1,27 +1,26 @@
-"""Phase 5 (extended in 12f): async HTTP client wrapping the local Ollama server.
+"""Async HTTP client wrapping the local Ollama server.
 
 Operations, all async:
 
 - ``list_models`` — ``GET /api/tags``, returns every installed model name.
-- ``list_tool_capable_models`` (12f) — same, filtered by ``/api/show`` to
-  models whose capability list includes ``"tools"``. Cached per process.
-- ``model_supports_tools`` (12f) — membership check against the cache used
-  to gate the ``tools=`` payload at the generation layer.
+- ``list_tool_capable_models`` — same, filtered by ``/api/show`` to models
+  whose capabilities include ``"tools"``. Cached per process.
+- ``model_supports_tools`` — membership check against that cache, used to
+  gate the ``tools=`` payload at the generation layer.
 - ``stream_chat`` — ``POST /api/chat`` with ``stream=true``, yields
-  ``ChatChunk`` objects as Ollama emits them (NDJSON, one JSON object per
-  line).
-- ``maybe_tool_call`` — non-streaming ``POST /api/chat`` used to detect
-  whether the model wants to call a tool before opening the stream.
+  ``ChatChunk`` objects as Ollama emits them (NDJSON, one object per line).
+- ``maybe_tool_call`` — non-streaming ``POST /api/chat`` to detect whether
+  the model wants to call a tool before opening the stream.
 - ``generate_title`` — single-shot ``POST /api/chat`` that asks the chat's
   own model to summarise the conversation as a sidebar title.
 
-Two failure classes are surfaced so the UI can present different errors:
+Two failure classes let the UI present different errors:
 
-- ``OllamaUnavailable`` — transport problems: connect refused, timeout,
-  5xx, malformed URL. "Ollama isn't running."
-- ``OllamaProtocolError`` — Ollama responded, but with something we
-  can't parse: invalid JSON or an unexpected response shape. "Ollama
-  returned something I don't understand."
+- ``OllamaUnavailable`` — transport problems (connect refused, timeout,
+  5xx, malformed URL): "Ollama isn't running."
+- ``OllamaProtocolError`` — Ollama responded but with something we can't
+  parse (invalid JSON or unexpected shape): "Ollama returned something I
+  don't understand."
 """
 
 import asyncio
@@ -39,22 +38,18 @@ class OllamaUnavailable(Exception):
     """Raised when Ollama can't be reached or returns an HTTP error.
 
     Transport-layer failures: connect refused, timeout, non-2xx status,
-    malformed URL. Distinguish from ``OllamaProtocolError``, which
-    means Ollama answered but the payload wasn't what we expected.
-
-    The original httpx exception is preserved via ``__cause__`` so
-    callers can log it without losing detail.
+    malformed URL. Contrast ``OllamaProtocolError``, where Ollama answered
+    but the payload wasn't what we expected. The original httpx exception is
+    preserved via ``__cause__``.
     """
 
 
 class OllamaProtocolError(Exception):
     """Raised when Ollama responds with something we can't parse.
 
-    Bad JSON, a response missing required fields, or values of the
-    wrong type. Distinguish from ``OllamaUnavailable``, which means
-    Ollama couldn't be reached at all.
-
-    The original parse exception is preserved via ``__cause__``.
+    Bad JSON, missing required fields, or wrong-typed values. Contrast
+    ``OllamaUnavailable``, where Ollama couldn't be reached at all. The
+    original parse exception is preserved via ``__cause__``.
     """
 
 
@@ -63,21 +58,20 @@ class OllamaProtocolError(Exception):
 def _url(path: str, host: str | None = None) -> str:
     """Build the URL passed to the shared httpx client.
 
-    When ``host`` is None the path is returned unchanged — httpx merges
-    it with the client's ``base_url`` (the local ``OLLAMA_HOST``). When
-    ``host`` is set, an absolute URL is built that overrides ``base_url``
-    on a per-call basis, so a single shared client can target the local
-    Ollama for most operations and a remote one for agent turns.
+    With ``host`` None, returns ``path`` unchanged — httpx merges it with the
+    client's ``base_url`` (the local ``OLLAMA_HOST``). With ``host`` set,
+    builds an absolute URL that overrides ``base_url`` per call, so one shared
+    client can target the local Ollama for most operations and a remote one
+    for agent turns.
 
     Args:
-        path: The Ollama API path, leading slash included (e.g.
-            ``"/api/chat"``).
+        path: The Ollama API path, leading slash included (e.g. ``"/api/chat"``).
         host: Optional override base URL (e.g. ``"http://host1:11434"``).
             ``None`` falls through to the client's ``base_url``.
 
     Returns:
-        Either ``path`` unchanged or ``f"{host}{path}"`` with any
-        trailing slash on ``host`` stripped.
+        ``path`` unchanged, or ``f"{host}{path}"`` with any trailing slash on
+        ``host`` stripped.
     """
     if host is None:
         return path
@@ -89,21 +83,18 @@ class ChatChunk:
     """One streamed chunk of an assistant response.
 
     Attributes:
-        content: The piece of assistant text emitted in this chunk.
-            May be the empty string — Ollama emits an empty content on
-            the final ``done`` chunk.
-        done: ``True`` on the final chunk of the stream, ``False`` for
-            every intermediate chunk. Callers stop iterating once they
-            see ``done=True``.
-        prompt_tokens: Tokens Ollama evaluated for the input prompt for
-            this turn (system + history + new user message). Only set on
-            the final ``done`` chunk; ``None`` on intermediate chunks
-            and on responses where Ollama didn't report a count (e.g.
-            full prompt-cache hit). Use the most-recent turn's value
-            as "current context size" — summing across turns
+        content: Assistant text emitted in this chunk. May be empty —
+            Ollama emits empty content on the final ``done`` chunk.
+        done: ``True`` on the final chunk, ``False`` otherwise. Callers stop
+            iterating once they see ``done=True``.
+        prompt_tokens: Tokens Ollama evaluated for this turn's input prompt
+            (system + history + new user message). Set only on the ``done``
+            chunk; ``None`` on intermediate chunks and when Ollama didn't
+            report a count (e.g. full prompt-cache hit). Use the latest
+            turn's value as "current context size" — summing across turns
             double-counts shared history.
-        eval_tokens: Tokens the model generated in this turn. Only set
-            on the final ``done`` chunk; ``None`` otherwise.
+        eval_tokens: Tokens the model generated this turn. Set only on the
+            ``done`` chunk; ``None`` otherwise.
     """
 
     content: str
@@ -115,32 +106,26 @@ class ChatChunk:
 def create_client() -> httpx.AsyncClient:
     """Build an ``httpx.AsyncClient`` targeting the local Ollama server.
 
-    Reads ``OLLAMA_HOST`` from ``.env`` (via ``app.config``). The
-    returned client is not entered as a context manager — the caller is
-    responsible for closing it (typically Phase 6's FastAPI lifespan).
+    Reads ``OLLAMA_HOST`` from ``.env`` (via ``app.config``). The returned
+    client is not a context manager — the caller closes it (typically the
+    FastAPI lifespan).
 
-    Timeout policy: httpx's default is 5 seconds across all phases,
-    which is far too tight for a local chat model's first-token
-    latency on cold load (a 7B model can take 10-30 seconds to warm
-    up the first time it's used in a session). We loosen READ to 600
-    seconds (10 minutes) — long enough for any reasonable cold-start
-    and large context processing — and set CONNECT to 10 seconds. A
-    localhost connect is sub-second, but ``OLLAMA_HOST`` can point at a
-    remote machine over a private network (the split deployment in
-    ``docs/plans/phase23-split-deployment.md``), where the first connect
-    to an idle peer may be relayed or wait for the peer to wake — 10s
-    absorbs that without masking a genuinely wedged server.
-    Per-call overrides still win, e.g. ``generate_title`` passes
-    ``timeout=10`` to bound how long the SSE connection stays open after
-    the user-visible reply.
+    Timeout policy: httpx's 5s default is far too tight for a local chat
+    model's first-token latency on cold load (a 7B model can take 10-30s to
+    warm up). We set READ to 600s — ample for any cold-start or large-context
+    processing — and CONNECT to 10s. A localhost connect is sub-second, but
+    ``OLLAMA_HOST`` can point at a remote machine over a private network (the
+    split deployment), where the first connect to an idle peer may be relayed
+    or wait for it to wake; 10s absorbs that without masking a wedged server.
+    Per-call overrides still win — e.g. ``generate_title`` passes
+    ``timeout=10``.
 
     Returns:
-        A freshly built ``httpx.AsyncClient`` with ``base_url`` and a
-        chat-friendly default timeout configured.
+        A fresh ``httpx.AsyncClient`` with ``base_url`` and a chat-friendly
+        default timeout.
 
     Raises:
-        KeyError: If ``OLLAMA_HOST`` is not set in ``.env`` or the
-            environment.
+        KeyError: If ``OLLAMA_HOST`` is not set in ``.env`` or the environment.
     """
     return httpx.AsyncClient(
         base_url=ollama_host(),
@@ -161,32 +146,27 @@ async def list_models(
             set it to list a second host's models (the "host2" host picker).
 
     Returns:
-        Model names in the order Ollama returned them, e.g.
-        ``["llama3:latest", "qwen2.5:7b"]``. No sorting — the UI
-        decides how to present them.
+        Model names in Ollama's order, e.g.
+        ``["llama3:latest", "qwen2.5:7b"]``. Unsorted — the UI decides how
+        to present them.
 
     Raises:
-        OllamaUnavailable: Ollama is unreachable, the request timed
-            out, or the server returned a non-2xx status.
-        OllamaProtocolError: Ollama responded but the body wasn't
-            valid JSON or didn't have the expected shape.
+        OllamaUnavailable: Ollama unreachable, timed out, or non-2xx.
+        OllamaProtocolError: Body wasn't valid JSON or had the wrong shape.
     """
     try:
         response = await client.get(_url("/api/tags", host))
         response.raise_for_status()
     except (httpx.HTTPError, httpx.InvalidURL) as e:
-        # httpx.HTTPError is the umbrella for connection failures,
-        # timeouts, and status errors; httpx.InvalidURL covers a
-        # misconfigured OLLAMA_HOST. One wrapping exception lets the
-        # caller catch a single type instead of three.
+        # HTTPError is the umbrella for connection failures, timeouts, and
+        # status errors; InvalidURL covers a misconfigured OLLAMA_HOST. One
+        # wrapper lets the caller catch a single type.
         raise OllamaUnavailable(f"Ollama request failed: {e}") from e
 
     try:
-        # JSONDecodeError: body isn't JSON at all (e.g. an HTML error
-        # page from a proxy). KeyError: no "models" or "name" field.
-        # TypeError: "models" exists but isn't iterable, or a model
-        # entry isn't a dict. All three mean "wrong shape" → protocol
-        # error, not transport error.
+        # JSONDecodeError: body isn't JSON (e.g. an HTML proxy error page).
+        # KeyError: no "models"/"name" field. TypeError: "models" isn't
+        # iterable, or an entry isn't a dict. All three → wrong shape.
         return [model["name"] for model in response.json()["models"]]
     except (json.JSONDecodeError, KeyError, TypeError) as e:
         raise OllamaProtocolError(
@@ -195,30 +175,29 @@ async def list_models(
 
 
 # ---------------------------------------------------------------------------
-# Tool-capability filtering (phase 12f)
+# Tool-capability filtering
 # ---------------------------------------------------------------------------
 
 # Ollama advertises model capabilities ("completion", "tools", "embedding",
-# "vision", ...) on /api/show. We can't pass `tools=[...]` to a model that
-# doesn't have "tools" in its capability list — Ollama 400s. Phase 12f uses
-# the helpers below to (a) filter the composer dropdown to tool-capable
-# models only and (b) gate the tools= payload at the generation layer as
-# defense in depth for chats whose model has since lost tool support.
+# "vision", ...) on /api/show. Passing `tools=[...]` to a model without
+# "tools" 400s, so the helpers below (a) filter the composer dropdown to
+# tool-capable models and (b) gate the tools= payload at the generation layer
+# as defense in depth for chats whose model has since lost tool support.
 
-# 60s amortises the per-model /api/show round trips across composer
-# re-renders without making installed-model updates feel stale (a freshly
-# pulled model surfaces in the dropdown within a minute).
+# 60s amortises the per-model /api/show round trips across composer re-renders
+# without making installed-model updates feel stale (a freshly pulled model
+# surfaces within a minute).
 _CAPABILITY_TTL_SECONDS = 60.0
 
-# Module-level cache. Single-process uvicorn means a single writer; the
-# refresh runs on the event loop without external synchronisation. Shape
-# when populated: {"expires_at": float (monotonic), "names": list[str]}.
+# Module-level cache. Single-process uvicorn means one writer; the refresh
+# runs on the event loop without external synchronisation. Shape when
+# populated: {"expires_at": float (monotonic), "names": list[str]}.
 _capability_cache: dict | None = None
 
-# Phase 25: a sibling cache for the "thinking"-capable model set, used to mark
-# composer model options so the Think select can show/hide as the model changes.
-# Same shape + TTL as ``_capability_cache``; kept separate so the two probes
-# don't invalidate each other.
+# Sibling cache for the "thinking"-capable set, used to mark composer model
+# options so the Think select can show/hide as the model changes. Same shape +
+# TTL as ``_capability_cache``; separate so the two probes don't invalidate
+# each other.
 _thinking_cache: dict | None = None
 
 
@@ -227,29 +206,27 @@ async def list_tool_capable_models(
 ) -> list[str]:
     """Return installed models whose /api/show capabilities include 'tools'.
 
-    Fans /api/show out over the installed models with ``asyncio.gather``
-    so a cold call against ~10 models lands in roughly 150ms instead of
-    the ~500ms a sequential walk would cost. Results are cached for
+    Fans /api/show out over the installed models with ``asyncio.gather``, so a
+    cold call against ~10 models lands in ~150ms instead of the ~500ms a
+    sequential walk would cost. Results are cached for
     ``_CAPABILITY_TTL_SECONDS``; the next dropdown render is free.
 
     Args:
         client: An ``httpx.AsyncClient`` pointed at the Ollama host
             (typically from ``create_client``).
         host: Optional override base URL. ``None`` lists the primary host
-            (cached). When set (the "host2" host picker), the probe targets
-            that host and is NOT cached — the module cache is host-agnostic,
-            and mixing a second host's models into it would corrupt the
-            primary dropdown.
+            (cached). When set (the host picker), the probe targets that host
+            and is NOT cached — the module cache is host-agnostic, and mixing
+            a second host's models in would corrupt the primary dropdown.
 
     Returns:
-        Tool-capable model names in /api/tags order. Models whose
-        /api/show probe fails for any reason are silently dropped —
-        better to render a slightly short list than to fail the whole
-        dropdown because a single misbehaving model errors on /show.
+        Tool-capable model names in /api/tags order. Models whose /api/show
+        probe fails are silently dropped — better a slightly short list than
+        failing the whole dropdown over one misbehaving model.
 
     Raises:
-        OllamaUnavailable: /api/tags itself was unreachable or returned
-            a non-2xx status. Same contract as ``list_models``.
+        OllamaUnavailable: /api/tags was unreachable or non-2xx (same contract
+            as ``list_models``).
         OllamaProtocolError: /api/tags returned a body we couldn't parse.
     """
     global _capability_cache
@@ -268,12 +245,10 @@ async def list_tool_capable_models(
             caps = resp.json().get("capabilities") or []
             # Require BOTH "completion" and "tools". Ollama occasionally
             # reports `["embedding", "tools"]` for derived models (e.g.
-            # reranker spinoffs from chat bases) that can't actually be
-            # used as chat models — sending /api/chat to them produces a
-            # garbage response or a 400. Legitimate chat-with-tools
-            # models always advertise "completion"; embedders / rerankers
-            # do not. Requiring both is the cheapest reliable filter we
-            # have without maintaining a name-pattern denylist.
+            # reranker spinoffs) that can't serve as chat models — /api/chat
+            # to them gives garbage or a 400. Real chat-with-tools models
+            # always advertise "completion"; embedders/rerankers don't. The
+            # cheapest reliable filter short of a name-pattern denylist.
             return name if "completion" in caps and "tools" in caps else None
         except (
             httpx.HTTPError,
@@ -282,10 +257,9 @@ async def list_tool_capable_models(
             KeyError,
             TypeError,
         ):
-            # Either /api/show errored (HTTPError covers transport +
-            # status + timeout) or the body wasn't shaped like we
-            # expected. Drop this model rather than poisoning the
-            # whole result; the rest of the dropdown stays usable.
+            # /api/show errored (HTTPError covers transport + status +
+            # timeout) or the body was misshapen. Drop this model rather than
+            # poisoning the result; the rest of the dropdown stays usable.
             return None
 
     results = await asyncio.gather(*(_supports(n) for n in all_models))
@@ -305,11 +279,11 @@ async def list_thinking_capable_models(
 ) -> list[str]:
     """Return installed models whose /api/show capabilities include 'thinking'.
 
-    Phase 25 sibling to :func:`list_tool_capable_models`. The composer marks
-    each model option with this set so the Think select can show/hide as the
-    user changes models without a round trip. Same /api/show fan-out, TTL
-    cache, and host semantics — ``host=None`` is cached (primary host); a
-    non-primary ``host`` bypasses the cache (it's host-agnostic).
+    Sibling to :func:`list_tool_capable_models`. The composer marks each model
+    option with this set so the Think select can show/hide as the user changes
+    models without a round trip. Same /api/show fan-out, TTL cache, and host
+    semantics — ``host=None`` is cached (primary host); a non-primary ``host``
+    bypasses the host-agnostic cache.
 
     Args:
         client: An ``httpx.AsyncClient`` pointed at the Ollama host.
@@ -317,12 +291,11 @@ async def list_thinking_capable_models(
             (cached); when set, the probe targets that host and is NOT cached.
 
     Returns:
-        Thinking-capable model names in /api/tags order. Models whose
-        /api/show probe fails are silently dropped (same policy as the
-        tool-capable list).
+        Thinking-capable model names in /api/tags order. Probe failures are
+        silently dropped (same policy as the tool-capable list).
 
     Raises:
-        OllamaUnavailable: /api/tags itself was unreachable or non-2xx.
+        OllamaUnavailable: /api/tags was unreachable or non-2xx.
         OllamaProtocolError: /api/tags returned a body we couldn't parse.
     """
     global _thinking_cache
@@ -363,31 +336,29 @@ async def model_supports_tools(
 ) -> bool:
     """Best-effort check used to gate the ``tools=`` payload on a chat call.
 
-    The dropdown filter is the primary defense, but a chat row in SQLite
-    pins whatever model the user picked when it was created — if that
-    model later loses tool support (Ollama upgrade, model re-pulled
-    without the capability), we still need to avoid 400ing the next
-    message. This helper warms ``list_tool_capable_models`` and checks
+    The dropdown filter is the primary defense, but a SQLite chat row pins the
+    model the user picked at creation — if that model later loses tool support
+    (Ollama upgrade, re-pull without the capability), we still need to avoid
+    400ing the next message. Warms ``list_tool_capable_models`` and checks
     membership.
 
     Args:
         client: An ``httpx.AsyncClient`` pointed at the Ollama host.
         name: The model identifier to check (e.g. ``"llama3.1:8b"``).
         host: When set, probe this remote host with a single ``/api/show``
-            instead of consulting the local capability cache. The cache
-            is per-process and host-agnostic; mixing remote and local
-            entries would corrupt it. ``None`` keeps the existing
+            instead of the local cache (per-process and host-agnostic; mixing
+            remote and local entries would corrupt it). ``None`` keeps the
             cache-warmed local path.
 
     Returns:
-        True if the cache lists ``name`` as tool-capable. False if it
-        doesn't, OR if the probe failed (we'd rather skip ``tools=``
-        and degrade to plain chat than risk a 400).
+        True if the cache lists ``name`` as tool-capable. False otherwise, or
+        if the probe failed (better to skip ``tools=`` and degrade to plain
+        chat than risk a 400).
     """
     if host is not None:
-        # Direct one-shot probe against the remote host. The cache stays
-        # local-only — remote callers each pay one /api/show round-trip,
-        # which is the same cost the local path pays on a cache miss.
+        # One-shot probe against the remote host. The cache stays local-only —
+        # remote callers each pay one /api/show round-trip, the same cost the
+        # local path pays on a cache miss.
         try:
             resp = await client.post(
                 _url("/api/show", host), json={"model": name}
@@ -414,25 +385,22 @@ async def model_supports_thinking(
 ) -> bool:
     """Best-effort check: does ``name`` advertise the 'thinking' capability?
 
-    Phase 25 uses this to gate the per-chat thinking toggle in the chat
-    header — the control only renders for reasoning models. A single
-    ``/api/show`` round-trip, mirroring :func:`model_supports_tools` but
-    without the process cache: thinking-gating happens once per chat-panel
-    render, the same cost (and on the same path) as the ``is_model_loaded``
-    probe already there.
+    Gates the per-chat thinking toggle in the chat header — the control only
+    renders for reasoning models. A single ``/api/show`` round-trip, mirroring
+    :func:`model_supports_tools` but without the process cache: thinking-gating
+    happens once per chat-panel render, the same cost and path as the
+    ``is_model_loaded`` probe already there.
 
     Args:
         client: An ``httpx.AsyncClient`` pointed at the Ollama host.
         name: The model identifier to check (e.g. ``"qwen3.5:9b"``).
-        host: Optional override base URL. ``None`` probes the client's
-            ``base_url`` (the primary host); set it to probe a non-primary
-            host (the chat's selected host).
+        host: Optional override base URL. ``None`` probes the primary host;
+            set it to probe a non-primary host (the chat's selected host).
 
     Returns:
-        True if ``/api/show`` lists ``"thinking"`` in the model's
-        capabilities. False on any failure (transport, status, or an
-        unexpected body) — we'd rather hide the toggle than render it on a
-        model that can't think.
+        True if ``/api/show`` lists ``"thinking"``. False on any failure
+        (transport, status, or unexpected body) — better to hide the toggle
+        than render it on a model that can't think.
     """
     try:
         resp = await client.post(_url("/api/show", host), json={"model": name})
@@ -461,13 +429,13 @@ def reset_capability_cache() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Memory residency (post-phase-19 "unload" chip)
+# Memory residency (the "unload" chip)
 # ---------------------------------------------------------------------------
 #
 # Ollama lazy-loads each model on first use and keeps it resident for ~5 min
 # of idle (the default `keep_alive`). The header model chip exposes a manual
-# unload so the user can free VRAM without waiting for the idle timer, and
-# `/api/ps` lets us colour the chip to reflect the actual residency state.
+# unload to free VRAM without waiting for the idle timer, and `/api/ps` lets
+# us colour the chip to reflect actual residency.
 
 
 async def list_loaded_models(
@@ -476,25 +444,22 @@ async def list_loaded_models(
     """Return the names of models currently held in Ollama's memory.
 
     Wraps ``GET /api/ps`` — Ollama's "what's resident right now" endpoint.
-    Distinct from :func:`list_models`, which reports every *installed*
-    model regardless of memory state.
+    Distinct from :func:`list_models`, which reports every *installed* model
+    regardless of memory state.
 
     Args:
         client: An ``httpx.AsyncClient`` pointed at the Ollama host
             (typically from ``create_client``).
-        host: Optional override base URL. ``None`` queries the client's
-            ``base_url`` (the primary host); set it to probe a non-primary
-            host's residency (the header chip targets the selected host).
+        host: Optional override base URL. ``None`` queries the primary host;
+            set it to probe a non-primary host's residency (the header chip
+            targets the selected host).
 
     Returns:
-        Loaded model names in the order Ollama returned them. Empty
-        list when nothing is loaded.
+        Loaded model names in Ollama's order; empty when nothing is loaded.
 
     Raises:
-        OllamaUnavailable: Ollama is unreachable, the request timed
-            out, or the server returned a non-2xx status.
-        OllamaProtocolError: Ollama responded but the body wasn't
-            valid JSON or didn't have the expected shape.
+        OllamaUnavailable: Ollama unreachable, timed out, or non-2xx.
+        OllamaProtocolError: Body wasn't valid JSON or had the wrong shape.
     """
     try:
         response = await client.get(_url("/api/ps", host))
@@ -515,23 +480,20 @@ async def is_model_loaded(
 ) -> bool:
     """Best-effort check: is ``name`` resident in Ollama right now?
 
-    Wraps :func:`list_loaded_models` and swallows Ollama errors —
-    callers use this purely to colour the header chip, so a transient
-    /api/ps failure should default to "looks loaded" (the chip stays in
-    its normal colour) rather than fail the whole chat-panel render.
+    Wraps :func:`list_loaded_models` and swallows Ollama errors — callers use
+    this only to colour the header chip, so a transient /api/ps failure
+    defaults to "looks loaded" rather than failing the whole chat-panel render.
 
     Args:
         client: An ``httpx.AsyncClient`` pointed at the Ollama host.
         name: The model identifier to check (e.g. ``"llama3.1:8b"``).
         host: Optional override base URL. ``None`` checks the primary host;
-            set it so the header chip reflects residency on the chat's
-            selected non-primary host.
+            set it so the chip reflects residency on the chat's selected host.
 
     Returns:
-        True if /api/ps lists ``name``. False only when /api/ps
-        succeeded AND ``name`` was absent. On any failure, returns
-        True — better to show the chip as loaded and let the next
-        click correct it than to lie about residency.
+        True if /api/ps lists ``name``. False only when /api/ps succeeded AND
+        ``name`` was absent. On any failure, True — better to show the chip
+        loaded and let the next click correct it than to lie about residency.
     """
     try:
         return name in await list_loaded_models(client, host=host)
@@ -544,26 +506,22 @@ async def unload_model(
 ) -> None:
     """Ask Ollama to evict ``name`` from memory immediately.
 
-    Ollama's unload protocol: POST ``/api/generate`` (or ``/api/chat``)
-    with ``keep_alive: 0`` and no prompt. The server drops the model
-    from VRAM/RAM and replies with a small JSON ack. This is the same
-    mechanism Ollama uses for its own idle eviction, just triggered on
-    demand.
-
-    Unloading a model that isn't loaded is a no-op on Ollama's side and
-    still returns 200 — the caller doesn't need to check residency first.
+    Ollama's unload protocol: POST ``/api/generate`` with ``keep_alive: 0``
+    and no prompt. The server drops the model from VRAM/RAM and replies with a
+    small JSON ack — the same mechanism as its idle eviction, on demand.
+    Unloading an already-unloaded model is a no-op that still returns 200, so
+    the caller needn't check residency first.
 
     Args:
         client: An ``httpx.AsyncClient`` pointed at the Ollama host.
         name: The model identifier to evict (e.g. ``"llama3.1:8b"``).
         host: Optional override base URL. ``None`` unloads from the primary
-            host; set it to evict from the chat's selected non-primary host.
+            host; set it to evict from the chat's selected host.
 
     Raises:
-        OllamaUnavailable: Ollama is unreachable, the request timed out,
-            or the server returned a non-2xx status. The chip-flip in the
-            UI is best-effort; the caller decides whether to surface this
-            to the user.
+        OllamaUnavailable: Ollama unreachable, timed out, or non-2xx. The
+            UI chip-flip is best-effort; the caller decides whether to surface
+            this.
     """
     try:
         response = await client.post(
@@ -589,34 +547,27 @@ async def stream_chat(
 
     Args:
         client: An ``httpx.AsyncClient`` pointed at the Ollama host.
-        model: Identifier of an installed Ollama model (e.g.
-            ``"llama3:latest"``). Must be one of the names returned by
-            ``list_models``.
-        messages: Conversation history, oldest first. Each item is a
-            dict with ``"role"`` (``"user"`` or ``"assistant"``) and
-            ``"content"``. Phase 6 builds these from ``Message``
-            dataclasses.
+        model: Identifier of an installed model (e.g. ``"llama3:latest"``),
+            one of the names ``list_models`` returns.
+        messages: Conversation history, oldest first. Each item is a dict with
+            ``"role"`` (``"user"`` or ``"assistant"``) and ``"content"``.
         temperature: Sampling temperature (0.0–2.0). Passed in Ollama's
-            ``options`` dict; Ollama's own default is 0.8.
+            ``options``; its default is 0.8.
         think: When not ``None``, sets Ollama's ``think`` flag — ``False``
-            suppresses a thinking model's reasoning phase (safe on any
-            model), ``True`` requires a thinking-capable model (else Ollama
-            400s). ``None`` omits the key, leaving Ollama's default.
-        num_ctx: When not ``None``, sets Ollama's ``num_ctx`` option (the
-            total context window in tokens — system + history + user
-            input + generated reply all share this budget). ``None``
-            omits the key, leaving Ollama's own default of 2048.
+            suppresses a thinking model's reasoning phase (safe on any model),
+            ``True`` requires a thinking-capable model (else Ollama 400s).
+            ``None`` omits the key, leaving Ollama's default.
+        num_ctx: When not ``None``, sets ``num_ctx`` (total context window in
+            tokens — system + history + input + reply share this budget).
+            ``None`` omits the key, leaving Ollama's default of 2048.
 
     Yields:
-        One ``ChatChunk`` per line of Ollama's NDJSON stream. The final
-        chunk has ``done=True``; earlier chunks carry incremental text
-        in ``content``.
+        One ``ChatChunk`` per NDJSON line. The final chunk has ``done=True``;
+        earlier chunks carry incremental text in ``content``.
 
     Raises:
-        OllamaUnavailable: Ollama is unreachable, the request timed out
-            mid-stream, or the server returned a non-2xx status.
-        OllamaProtocolError: A line of the NDJSON stream wasn't valid
-            JSON.
+        OllamaUnavailable: Ollama unreachable, timed out mid-stream, or non-2xx.
+        OllamaProtocolError: A stream line wasn't valid JSON.
     """
     options: dict = {"temperature": temperature}
     if num_ctx is not None:
@@ -634,33 +585,28 @@ async def stream_chat(
             "POST", _url("/api/chat", host), json=payload
         ) as response:
             response.raise_for_status()
-            # Ollama emits newline-delimited JSON (NDJSON): one complete
-            # JSON object per line, each representing either an
-            # incremental token batch or the final `done` marker.
+            # NDJSON: one JSON object per line, each an incremental token
+            # batch or the final `done` marker.
             async for line in response.aiter_lines():
                 if not line.strip():
-                    # Skip stray blank lines defensively — the protocol
-                    # doesn't forbid them, even if Ollama doesn't emit
-                    # them in practice.
+                    # Skip stray blank lines defensively — the protocol allows
+                    # them even though Ollama doesn't emit them in practice.
                     continue
                 try:
                     data = json.loads(line)
                 except json.JSONDecodeError as e:
-                    # The malformed line is a protocol error (Ollama is
-                    # reachable but garbled), not a transport error.
-                    # Raising here breaks out of the async generator;
-                    # the outer httpx-handler doesn't catch
-                    # OllamaProtocolError so it propagates cleanly.
+                    # A garbled line is a protocol error, not transport.
+                    # Raising breaks out of the generator; the outer httpx
+                    # handler doesn't catch OllamaProtocolError, so it
+                    # propagates cleanly.
                     raise OllamaProtocolError(
                         f"Ollama emitted a non-JSON line: {line!r}"
                     ) from e
                 done = bool(data.get("done", False))
-                # prompt_eval_count / eval_count are only populated on
-                # the final chunk; pull them out so the producer can
-                # persist per-turn token counts. Ollama omits these
-                # entirely on full prompt-cache hits — treat missing as
-                # None rather than 0 so the UI can distinguish "no
-                # data" from "actually zero tokens evaluated."
+                # prompt_eval_count / eval_count are populated only on the
+                # final chunk; pull them out for per-turn token counts. Ollama
+                # omits them on full prompt-cache hits — treat missing as None,
+                # not 0, so the UI can tell "no data" from "zero tokens".
                 prompt_tokens = data.get("prompt_eval_count") if done else None
                 eval_tokens = data.get("eval_count") if done else None
                 yield ChatChunk(
@@ -685,46 +631,39 @@ async def maybe_tool_call(
 ) -> tuple[list[dict], str]:
     """Single non-streaming /api/chat to detect tool calls.
 
-    Used by phase 12d's tool-calling loop: before opening a streaming
-    response, ask Ollama (in one shot) whether the model wants to call
-    a tool. If yes, the loop handles the tool then re-asks; if no, the
-    loop falls through to ``stream_chat`` for the visible response.
+    Used by the tool-calling loop: before opening a streaming response, ask
+    Ollama in one shot whether the model wants a tool. If yes, the loop runs
+    the tool then re-asks; if no, it falls through to ``stream_chat`` for the
+    visible response.
 
-    Yes, this costs an extra round-trip per "final answer" turn — Ollama
-    is invoked once non-streaming to detect tool intent, then again
-    streaming for the actual reply. Acceptable for a local app; revisit
-    if the latency becomes annoying.
+    This costs an extra round-trip per "final answer" turn (one non-streaming
+    call to detect intent, then a streaming one for the reply). Acceptable for
+    a local app; revisit if the latency becomes annoying.
 
     Args:
         client: An ``httpx.AsyncClient`` pointed at the Ollama host.
         model: Identifier of an installed Ollama model.
-        messages: Conversation history in Ollama's wire format (already
-            includes any tool_call / tool_result rows mapped by
+        messages: Conversation history in Ollama wire format (already includes
+            any tool_call / tool_result rows mapped by
             ``_build_history_payload``).
-        tools: List of tool specs to advertise (Ollama's ``tools=`` body
-            shape). Pass ``None`` to omit the key entirely — required for
-            models that don't advertise tool capability (passing
-            ``tools=[]`` for those models still trips a 400 from Ollama).
+        tools: Tool specs to advertise (Ollama's ``tools=`` shape). Pass
+            ``None`` to omit the key — required for non-tool models, where
+            even ``tools=[]`` trips a 400.
         temperature: Sampling temperature (0.0–2.0). Passed in Ollama's
-            ``options`` dict; Ollama's own default is 0.8.
+            ``options``; its default is 0.8.
 
     Returns:
-        A 2-tuple ``(tool_calls, content)``:
-        - ``tool_calls``: list of ``{"name": str, "arguments": dict}``
-          dicts, unwrapped from Ollama's
-          ``{"function": {"name", "arguments"}}`` wire shape. Empty list
-          when the model didn't request a tool.
-        - ``content``: assistant text emitted alongside the tool call
-          (usually empty when ``tool_calls`` is non-empty; some models
-          add a brief explanatory sentence). Discarded by the loop in
-          12d — the visible response comes from a subsequent streaming
-          call.
+        ``(tool_calls, content)``:
+        - ``tool_calls``: ``{"name": str, "arguments": dict}`` dicts, unwrapped
+          from Ollama's ``{"function": {...}}`` wire shape. Empty when no tool
+          was requested.
+        - ``content``: assistant text alongside the tool call (usually empty
+          when ``tool_calls`` is non-empty). Discarded by the loop — the
+          visible response comes from a later streaming call.
 
     Raises:
-        OllamaUnavailable: Ollama is unreachable, the request timed out,
-            or the server returned a non-2xx status.
-        OllamaProtocolError: Ollama responded but the body wasn't valid
-            JSON or didn't have the expected shape.
+        OllamaUnavailable: Ollama unreachable, timed out, or non-2xx.
+        OllamaProtocolError: Body wasn't valid JSON or had the wrong shape.
     """
     options: dict = {"temperature": temperature}
     if num_ctx is not None:
@@ -732,14 +671,13 @@ async def maybe_tool_call(
     payload: dict = {
         "model": model,
         "messages": messages,
-        # Non-streaming — the whole assistant reply (or its tool_calls)
-        # comes back in one JSON object rather than NDJSON.
+        # Non-streaming — the whole reply (or its tool_calls) comes back in
+        # one JSON object rather than NDJSON.
         "stream": False,
         "options": options,
     }
-    # Only include `tools` when there's something to advertise. Some
-    # models 400 when given an empty list; passing None lets the caller
-    # gate cleanly without us second-guessing.
+    # Include `tools` only when there's something to advertise — some models
+    # 400 on an empty list, so the caller gates by passing None.
     if tools:
         payload["tools"] = tools
     if think is not None:
@@ -753,17 +691,15 @@ async def maybe_tool_call(
 
     try:
         body = response.json()
-        # `message` may be absent when the server returns an error-shaped
-        # body that still squeaked through raise_for_status. Defaulting
-        # to {} keeps the .get chains below honest.
+        # `message` may be absent if an error-shaped body slips past
+        # raise_for_status; defaulting to {} keeps the .get chains honest.
         message = body.get("message", {})
         raw_calls = message.get("tool_calls") or []
         content = message.get("content") or ""
-        # Ollama wraps each tool call as
-        #   {"function": {"name": "...", "arguments": {...}}}
-        # but the rest of the loop (run_tool, history persistence) wants
-        # the flatter {"name", "arguments"} shape. Unwrap here so the
-        # wire format only lives at this boundary.
+        # Ollama wraps each call as {"function": {"name", "arguments"}}, but
+        # the rest of the loop (run_tool, history persistence) wants the
+        # flatter {"name", "arguments"}. Unwrap here so the wire format lives
+        # only at this boundary.
         unwrapped = [
             {
                 "name": tc["function"]["name"],
@@ -788,42 +724,36 @@ async def summarize_conversation(
 ) -> str:
     """Ask ``model`` to summarize ``history`` into a compact briefing.
 
-    Phase 18: powers the manual ``Compact`` action. Single-shot,
-    non-streaming POST to ``/api/chat``. Uses the chat's own model — it's
-    already warm in Ollama's memory from the previous turn, so the
-    round-trip is cheap and we don't load a second model resident.
+    Powers the manual ``Compact`` action. Single-shot, non-streaming POST to
+    ``/api/chat``. Uses the chat's own model — already warm from the previous
+    turn, so the round-trip is cheap and no second model goes resident.
 
-    Unlike :func:`generate_title`, the model's output is returned with
-    only whitespace stripping — no quote unwrapping, no word cap, no
-    preamble heuristics. The summarization prompt is explicit enough
-    that smaller models reply cleanly; if a model's output ever needs
-    sanitizing, do it in the caller (the compact endpoint) so the
-    helper stays a thin Ollama wrapper.
+    Unlike :func:`generate_title`, the output is returned with only whitespace
+    stripping — no quote unwrapping, word cap, or preamble heuristics. The
+    prompt is explicit enough that smaller models reply cleanly; if output
+    ever needs sanitizing, do it in the caller so this stays a thin wrapper.
 
     Args:
         client: Async ``httpx.AsyncClient`` pointed at the Ollama host.
-        model: Identifier of an installed Ollama model. The caller should
-            pass the conversation's own model so the summarizer reuses the
-            warm KV cache.
-        history: Conversation rows in Ollama wire format (already mapped
-            by :func:`app.generation.build_history_payload`). This helper
-            does NOT filter — pass exactly the rows you want summarized.
+        model: Identifier of an installed model. Pass the conversation's own
+            model so the summarizer reuses the warm KV cache.
+        history: Conversation rows in Ollama wire format (already mapped by
+            :func:`app.generation.build_history_payload`). Not filtered here —
+            pass exactly the rows you want summarized.
         num_ctx: Per-project context-window override, mirroring
             :func:`stream_chat`. ``None`` omits the key (Ollama default).
 
     Returns:
-        The stripped summary text. The caller is expected to treat the
-        empty string as ``"skip — don't archive anything"``.
+        The stripped summary text. The caller treats an empty string as
+        "skip — don't archive anything".
 
     Raises:
-        OllamaUnavailable: Ollama is unreachable, the request timed out,
-            or the server returned a non-2xx status.
-        OllamaProtocolError: Ollama responded but the body wasn't valid
-            JSON or didn't have the expected shape.
+        OllamaUnavailable: Ollama unreachable, timed out, or non-2xx.
+        OllamaProtocolError: Body wasn't valid JSON or had the wrong shape.
     """
-    # The instruction is delivered as a final user turn, mirroring
-    # generate_title. Small local models follow a verb-first user
-    # instruction more reliably than a `system` directive.
+    # Delivered as a final user turn, mirroring generate_title — small local
+    # models follow a verb-first user instruction more reliably than a
+    # `system` directive.
     instruction = {
         "role": "user",
         "content": (
@@ -841,8 +771,8 @@ async def summarize_conversation(
         ),
     }
     # Low temperature: compaction is a recall task, not a generative one.
-    # Hardcoded (not the chat's own temperature) so a creatively-tuned
-    # chat doesn't get a creatively-summarized history.
+    # Hardcoded (not the chat's temperature) so a creatively-tuned chat
+    # doesn't get a creatively-summarized history.
     options: dict = {"temperature": 0.2}
     if num_ctx is not None:
         options["num_ctx"] = num_ctx
@@ -854,10 +784,9 @@ async def summarize_conversation(
     }
 
     try:
-        # 120s cap: the model is warm but the input may be the entire
-        # conversation, so the time-to-first-token can be longer than a
-        # title call. The default 300s read timeout on the shared client
-        # would also work; the explicit value documents intent.
+        # 120s cap: the model is warm, but the input may be the whole
+        # conversation, so time-to-first-token can exceed a title call. The
+        # shared client's 300s default would also work; this documents intent.
         response = await client.post(
             _url("/api/chat", host), json=payload, timeout=120.0
         )
@@ -882,42 +811,33 @@ async def generate_title(
 ) -> str:
     """Ask the chat's own model to summarize the conversation as a title.
 
-    Single-shot, non-streaming POST to ``/api/chat``. Reuses whatever
-    model the conversation is already using — it's warm in memory
-    from the assistant reply we just streamed, so the title roundtrip
-    is fast and we avoid having to load and keep a second model
-    resident.
+    Single-shot, non-streaming POST to ``/api/chat``. Reuses the conversation's
+    model — warm from the reply we just streamed, so the roundtrip is fast and
+    no second model goes resident.
 
     Args:
         client: An ``httpx.AsyncClient`` pointed at the Ollama host.
-        model: The Ollama model identifier to use for the title.
-            Phase 11d passes the conversation's own model; the chat
-            just used it successfully, so it's guaranteed installed
-            and warm.
+        model: The model identifier to use. Callers pass the conversation's
+            own model; the chat just used it, so it's installed and warm.
         history: The conversation so far — the same wire-format list
-            that ``stream_chat`` accepts (``[{"role", "content"}, ...]``).
-            The function appends a title-request user turn before
-            sending; callers don't need to.
+            ``stream_chat`` accepts. A title-request user turn is appended
+            here; callers needn't.
 
     Returns:
-        The model-generated title, stripped of surrounding quotes
-        and known preambles. Empty strings are possible if the model
-        misbehaves; the caller is expected to treat empty as "skip
-        the rename".
+        The generated title, stripped of surrounding quotes and known
+        preambles. May be empty if the model misbehaves; the caller treats
+        empty as "skip the rename".
 
     Raises:
-        OllamaUnavailable: Ollama is unreachable, the request timed
-            out, or the server returned a non-2xx status.
-        OllamaProtocolError: Ollama responded with JSON we couldn't
-            parse into the expected ``{"message": {"content": ...}}``
-            shape.
+        OllamaUnavailable: Ollama unreachable, timed out, or non-2xx.
+        OllamaProtocolError: JSON we couldn't parse into the expected
+            ``{"message": {"content": ...}}`` shape.
     """
-    # Instruction is delivered as a final user turn so the model treats
-    # it as the current request, not a system directive (small chat
-    # models often ignore `system` messages in practice). Verb-first
-    # ("Title this...") tends to behave better than "Summarize..." —
-    # smaller models parse the latter literally and echo the
-    # constraint phrasing in their reply.
+    # Delivered as a final user turn so the model treats it as the current
+    # request, not a system directive (small chat models often ignore
+    # `system`). Verb-first ("Title this...") behaves better than
+    # "Summarize..." — smaller models parse the latter literally and echo the
+    # constraint phrasing.
     title_request = {
         "role": "user",
         "content": (
@@ -930,23 +850,19 @@ async def generate_title(
         "model": model,
         "messages": [*history, title_request],
         "stream": False,
-        # Force thinking OFF for the title call regardless of the chat's
-        # think_mode. A title is a few tokens; a reasoning-capable model
-        # left to "think" first burns its budget on a hidden reasoning
-        # phase and blows the 10s cap below — silently skipping the
-        # rename. ``think: false`` is safe on any model (non-thinking
-        # models ignore it), so we send it unconditionally rather than
-        # probing the capability.
+        # Force thinking OFF regardless of the chat's think_mode. A title is a
+        # few tokens; a reasoning model left to "think" first burns its budget
+        # on a hidden reasoning phase and blows the 10s cap below — silently
+        # skipping the rename. ``think: false`` is safe on any model
+        # (non-thinking ones ignore it), so we send it unconditionally.
         "think": False,
     }
 
     try:
-        # 10s cap on the title request. The chat model is already warm
-        # (we just used it to stream the reply), so a few-token title
-        # response should come back in well under a second. The cap
-        # bounds how long the SSE connection stays open if Ollama
-        # wedges. On expiry httpx raises ReadTimeout (a subclass of
-        # httpx.HTTPError), which the caller catches as
+        # 10s cap. The model is warm (we just streamed the reply), so a
+        # few-token title should return in well under a second; the cap bounds
+        # how long the connection stays open if Ollama wedges. On expiry httpx
+        # raises ReadTimeout (an httpx.HTTPError), which the caller catches as
         # OllamaUnavailable → silent skip in _maybe_generate_title.
         response = await client.post(
             "/api/chat", json=payload, timeout=10.0
@@ -966,27 +882,24 @@ async def generate_title(
             f"Ollama returned an unexpected /api/chat shape: {e}"
         ) from e
 
-    # Defensive post-processing: tinyllama tends to wrap titles in
-    # quotes despite the instruction, sometimes adds a trailing period,
-    # and occasionally spits out a multi-line "reasoning" preamble.
-    # Strip those and cap length so a runaway response can't become a
-    # 5000-char sidebar row.
+    # Defensive post-processing: tinyllama tends to wrap titles in quotes
+    # despite the instruction, add a trailing period, and occasionally emit a
+    # multi-line "reasoning" preamble. Strip those so a runaway response can't
+    # become a giant sidebar row.
     text = text.strip()
 
-    # Take the first non-empty line — guards against the model
-    # emitting "Here is your title:\n\nFoo Bar".
+    # First non-empty line — guards against "Here is your title:\n\nFoo Bar".
     for line in text.splitlines():
         if line.strip():
             text = line.strip()
             break
 
-    # Strip a balanced set of common surrounding quote characters.
+    # Strip common surrounding quote characters.
     text = text.strip(' "“”‘’\'.')
 
-    # Strip preambles tinyllama loves to add despite the instructions.
-    # Each entry is checked case-insensitively at the start of the
-    # string. Order doesn't matter — only one match is stripped per
-    # run, and the loop is cheap.
+    # Strip preambles tinyllama adds despite the instructions, checked
+    # case-insensitively at the start. Order doesn't matter — only one match
+    # is stripped per run.
     preambles = (
         "title:",
         "chat title:",

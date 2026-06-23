@@ -1,22 +1,16 @@
 """RAG server liveness probing.
 
-The single-shot probe (``probe_rag_health``) moved here from
-``app/rag_servers.py`` so that module stays CRUD-only. The settings route uses
-it to validate a server before insert/edit — it surfaces the failure reason in
-the form so the user knows why a server was rejected.
-
-Phase 24 removed the TTL cache + parallel orchestrator (``get_health_map``)
-that only ever fed the sidebar's chat-gated Sources health panel; that panel was
-replaced by an always-visible, health-free reference list. Health is now a
-validate-on-write concern, not a render-time one.
+A single-shot ``probe_rag_health`` used by the settings route to validate a
+server before insert/edit, surfacing the failure reason in the form. Lives
+here (not in ``app/rag_servers.py``) to keep that module CRUD-only. Health
+is a validate-on-write concern, not a render-time one.
 """
 
 from urllib.parse import urlparse, urlunparse
 
 import httpx
 
-# Health endpoints are cheap (a status map, no FTS/ANN); two seconds to
-# connect, five total. Same values as the original implementation.
+# Health endpoints are cheap (a status map, no FTS/ANN): 2s to connect, 5s total.
 _HEALTH_TIMEOUT = httpx.Timeout(5.0, connect=2.0)
 _HEALTHY_STATUS = "ok"
 
@@ -42,21 +36,19 @@ def _health_url(base_url: str) -> str | None:
 async def probe_rag_health(name: str, base_url: str) -> tuple[bool, str]:
     """Probe ``/health`` for a named database; return ``(healthy, reason)``.
 
-    On success returns ``(True, "")``. On any failure returns
-    ``(False, <user-facing reason>)``. Never raises.
+    Never raises: ``(True, "")`` on success, ``(False, <user-facing
+    reason>)`` otherwise.
 
-    A non-2xx status alone is NOT treated as failure: the shared /health
-    endpoint returns 503 when ANY hosted database is unhealthy, but the
-    per-database map still reports each entry correctly. We read the map
-    regardless of HTTP status and judge only the specific ``name`` the
-    user typed.
+    HTTP status alone is NOT the verdict: the shared /health endpoint
+    returns 503 when ANY hosted database is unhealthy, so we read the
+    per-database map regardless of status and judge only the typed ``name``.
 
     Args:
-        name: Database name to look up under the /health ``databases`` map.
+        name: Database name to look up in the /health ``databases`` map.
         base_url: Full RAG base URL as typed (e.g. ``http://host1:8002/arxiv``).
 
     Returns:
-        Tuple of ``(healthy, reason)``. ``reason`` is empty on success.
+        ``(healthy, reason)``; ``reason`` is empty on success.
     """
     health_url = _health_url(base_url)
     if health_url is None:
