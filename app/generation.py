@@ -1,28 +1,21 @@
-"""Phase 12g: background-task generation that survives client disconnects.
+"""Background-task generation that survives client disconnects.
 
-Until this module existed, the LLM call ran inside the SSE response
-generator and was tied 1:1 to the HTTP connection. A page reload
-cancelled the task and lost the response — phase 12e.1's safety net
-caught the broken-chat case ("(response interrupted)") but couldn't
-preserve the actual reply.
+The LLM call runs in an asyncio.Task owned by a module-level registry,
+not by the HTTP connection — so a page reload can't cancel it or lose
+the response. The pieces:
 
-This module decouples generation from the HTTP connection:
-
-  * `start_generation(...)` registers a `GenerationState` for the
-    conversation and spawns an asyncio.Task running
-    `_run_generation`. The task is owned by the registry, not by any
-    one request.
-  * SSE endpoints become consumers: `consume_generation(state)`
-    yields every event the producer appends, replaying from index 0
-    for late consumers (reloads, second tabs).
-  * `consume_finished(db, conv_id)` is the fallback for the "reload
-    landed AFTER the generation finished" race — it yields a single
+  * `start_generation(...)` registers a `GenerationState` and spawns the
+    producer task `_run_generation`.
+  * SSE endpoints are consumers: `consume_generation(state)` yields every
+    event the producer appends, replaying from index 0 for late consumers
+    (reloads, second tabs).
+  * `consume_finished(db, conv_id)` is the fallback for when a reload's
+    GET /stream lands AFTER the generation finished — it yields a single
     done event from the persisted assistant row.
 
-Phase 12e.1's cheap-fix try/finally stays inside `_run_generation`
-for catastrophic failures (server shutdown via CancelledError /
-GeneratorExit, unhandled exceptions). On those paths a partial
-assistant row is still persisted before the exception resumes.
+`_run_generation`'s try/finally persists a partial assistant row on
+catastrophic exits (CancelledError / GeneratorExit on shutdown, unhandled
+exceptions) before the exception resumes.
 """
 
 import asyncio
@@ -56,17 +49,14 @@ from app.tools.rag import build_source_description
 logger = logging.getLogger(__name__)
 
 
-# Hard ceiling on how many tool rounds a single assistant turn can run
-# before we bail out. 5 matches the spec in PLAN.md / phase12 plans.
+# Hard ceiling on tool rounds per assistant turn before we bail out.
 _TOOL_ITERATION_CAP = 5
 
 
-# Phase 15: minimal system prompt injected ONLY on turns where tools are
-# actually available (see `_run_generation`). Local Ollama models tend to
-# under-call tools without an explicit policy, so document-grounded
-# questions get answered from the model's weights instead of retrieval.
-# This nudges grounded retrieval while still discouraging speculative
-# calls — the same balance the per-tool `current_time` description strikes.
+# Minimal system prompt injected ONLY on turns where tools are available
+# (see `_run_generation`). Local models tend to under-call tools without an
+# explicit policy, answering grounded questions from weights instead of
+# retrieval; this nudges retrieval while discouraging speculative calls.
 SINGLE_AGENT_SYSTEM_PROMPT = (
     "You have tools available. Call one only when its result would change "
     "your answer — prefer retrieval over memory for questions grounded in "
@@ -78,10 +68,9 @@ SINGLE_AGENT_SYSTEM_PROMPT = (
 class GenerationInProgress(Exception):
     """Raised by `start_generation` when the conv already has a live task.
 
-    Mapped to HTTP 409 by the route layer. The UI gate (placeholder
-    keeps the send button disabled) makes this rare, but the
-    exception is the defensive layer if a duplicate POST slips
-    through.
+    Mapped to HTTP 409 by the route layer. The UI gate (the placeholder
+    disables the send button) makes this rare; this is the defensive layer
+    if a duplicate POST slips through.
     """
 
 
@@ -92,17 +81,13 @@ class GenerationState:
     Attributes:
         conversation_id: The chat the generation belongs to.
         events: Append-only log of (event_name, html_payload) tuples.
-            Producer appends; consumers index into the list to
-            replay or tail. Order matches what the original 12d/12e
-            SSE stream would have yielded.
-        done: True once the producer has emitted its final event
-            (done OR error). Consumers exit their loop when this is
-            True and they've drained all events.
-        cond: Signal the producer fires after each append (and after
-            setting done). Consumers `await cond.wait()` between
-            drains.
-        task: The asyncio.Task driving the producer. Held so the
-            done-callback has a reference to inspect.
+            Producer appends; consumers index in to replay or tail.
+        done: True once the producer emitted its final event (done OR
+            error). Consumers exit once this is True and events are drained.
+        cond: Signalled by the producer after each append (and after setting
+            done). Consumers `await cond.wait()` between drains.
+        task: The producer asyncio.Task, held so the done-callback can
+            inspect it.
     """
 
     conversation_id: int
@@ -112,12 +97,9 @@ class GenerationState:
     task: asyncio.Task | None = None
 
 
-# Single-process registry. Keyed by conversation_id.
-#
-# A multi-worker uvicorn deployment would lose cross-worker visibility
-# of this dict — but the app is built for single-user, single-process
-# local use, so that's not a concern. See
-# `docs/plans/phase12g-resumable-generation.md` §Known limitations.
+# Single-process registry, keyed by conversation_id. A multi-worker uvicorn
+# deployment would lose cross-worker visibility of this dict, but the app is
+# single-user / single-process, so that's not a concern.
 live_generations: dict[int, GenerationState] = {}
 
 
@@ -136,10 +118,9 @@ def _sse(payload: str, event: str | None = None) -> str:
 async def _emit(state: GenerationState, event: str, payload: str) -> None:
     """Append one SSE event to the state and wake all consumers.
 
-    Holding `state.cond` for the append + notify makes the wake-up
-    atomic relative to the consumer's drain-and-wait — there's no
-    window where a consumer can see `len(events)` unchanged and then
-    miss the notify.
+    Holding `state.cond` across the append + notify makes the wake-up atomic
+    relative to the consumer's drain-and-wait: no window where a consumer
+    sees `len(events)` unchanged and then misses the notify.
     """
     async with state.cond:
         state.events.append((event, payload))
@@ -150,11 +131,7 @@ async def emit_ollama_error(
     state: GenerationState,
     exc: OllamaUnavailable | OllamaProtocolError,
 ) -> None:
-    """Emit an SSE ``error`` event describing an Ollama-layer failure.
-
-    Replaces four near-identical ``except`` blocks across
-    ``_run_generation``.
-    """
+    """Emit an SSE ``error`` event describing an Ollama-layer failure."""
     label = (
         "Ollama unavailable"
         if isinstance(exc, OllamaUnavailable)
@@ -176,15 +153,11 @@ def maybe_persist_partial(
 ) -> None:
     """Write a partial assistant row if the normal-path write didn't fire.
 
-    Phase 12e.1 safety net. The producer's outer ``finally`` calls
-    this exactly once on every exit path. When ``persisted_or_errored``
-    is True (normal completion OR an Ollama error already wrote/emitted)
-    this is a no-op. Otherwise we drop a ``(response interrupted)``
-    bubble — or the partial token buffer if any tokens streamed —
-    so the chat panel has *something* to render after a reload.
-
-    Pulled out for the same reason as ``emit_ollama_error``: keeping the
-    safety-net shape in one place so a duplicate finally-body can't drift.
+    The producer's outer ``finally`` calls this once on every exit path.
+    A no-op when ``persisted_or_errored`` is True (normal completion or an
+    Ollama error already wrote/emitted); otherwise drops a
+    ``(response interrupted)`` bubble — or the partial token buffer if any
+    streamed — so the chat panel has something to render after a reload.
     """
     if persisted_or_errored:
         return
@@ -200,10 +173,9 @@ def maybe_persist_partial(
 async def signal_done(state: GenerationState) -> None:
     """Mark the state done and wake every pending consumer.
 
-    Producer's last act on every exit path. ``notify_all`` is safe
-    when there are zero consumers; a future consumer that attaches
-    after this point still sees ``state.done`` and exits its drain
-    loop without waiting on the condition.
+    The producer's last act on every exit path. ``notify_all`` is safe with
+    zero consumers; a consumer that attaches later still sees ``state.done``
+    and exits its drain loop without waiting on the condition.
     """
     async with state.cond:
         state.done = True
@@ -215,26 +187,22 @@ async def consume_generation(
 ) -> AsyncIterator[str]:
     """Yield SSE events from a state, replaying from index 0 then tailing.
 
-    Used by the SSE endpoint to attach a consumer. New consumers
-    (e.g., a reloaded page) see every event that's already been
-    emitted; an early-attached consumer iterates in lock-step with
-    the producer. `cond` provides cross-task signalling so the
-    consumer doesn't busy-poll.
+    A new consumer (e.g. a reloaded page) sees every already-emitted event;
+    an early-attached one iterates in lock-step with the producer. `cond`
+    provides cross-task signalling so the consumer doesn't busy-poll.
     """
     pos = 0
     while True:
-        # Drain new events without holding the lock so the producer
-        # isn't blocked on us.
+        # Drain new events without holding the lock so we don't block the
+        # producer.
         while pos < len(state.events):
             event, payload = state.events[pos]
             yield _sse(payload, event=event)
             pos += 1
         if state.done:
             return
-        # Wait for the next event. Take the lock for the recheck —
-        # the producer takes the same lock when it notifies, so if
-        # we got here with the lock held there's no window in which
-        # we'd miss a signal that just fired.
+        # Recheck under the lock the producer notifies under, so there's no
+        # window where we'd miss a signal that just fired.
         async with state.cond:
             if state.done or pos < len(state.events):
                 continue
@@ -246,14 +214,13 @@ async def consume_finished(
 ) -> AsyncIterator[str]:
     """Emit a single done event for a finished/missing generation.
 
-    Used when a reload's GET /stream lands AFTER the generation
-    finished and was removed from the registry. The placeholder
-    rendered by the chat panel needs a `done` event to close
-    cleanly — otherwise the streaming-dots animation hangs forever.
+    Used when a reload's GET /stream lands AFTER the generation finished and
+    left the registry. The chat-panel placeholder needs a `done` event to
+    close cleanly, else the streaming-dots animation hangs forever.
 
-    Reads the last assistant row and yields it as the done event's
-    OOB-swap payload — same shape as the live happy-path done event,
-    so HTMX swaps the placeholder out to the persisted bubble.
+    Reads the last assistant row and yields it as the done event's OOB-swap
+    payload — same shape as the live happy-path done, so HTMX swaps the
+    placeholder out for the persisted bubble.
     """
     messages = queries.list_messages(db, conversation_id)
     for m in reversed(messages):
@@ -264,9 +231,8 @@ async def consume_finished(
             )
             yield _sse(final_html, event="done")
             return
-    # Defensive: no assistant row exists at all. Emit an empty
-    # assistant bubble OOB-swap so the placeholder at least closes —
-    # better a blank bubble than a forever-streaming placeholder.
+    # Defensive: no assistant row at all. Emit an empty assistant bubble
+    # OOB-swap so the placeholder closes — better blank than forever-streaming.
     yield _sse(
         f'<div class="message message--assistant" '
         f'hx-swap-oob="outerHTML:#assistant-stream-{conversation_id}"></div>',
@@ -288,33 +254,28 @@ async def start_generation(
     num_ctx: int | None = None,
     ollama_host: str | None = None,
 ) -> GenerationState:
-    """Register a GenerationState and spawn the producer task.
+    """Register a GenerationState and spawn the producer ``_run_generation``.
 
-    Runs the producer ``_run_generation``. A tool-capable model is always
-    offered the full tool registry (gated only on capability); the project's
-    system prompt, the selected Ollama host, and the chat's ``think`` flag are
-    threaded through.
+    A tool-capable model is always offered the full tool registry (gated
+    only on capability); the project's system prompt, the selected Ollama
+    host, and the chat's ``think`` flag are threaded through.
 
     Args:
         think: The Ollama ``think`` flag (True/False), or None to omit it
             (Ollama default). Passed straight through to the chat calls.
-        ollama_host: An optional remote Ollama base URL. When set, the
-            producer routes every chat call (probe + stream) at that host
-            instead of the shared client's local base_url. None keeps the
-            local-Ollama behavior.
+        ollama_host: Optional remote Ollama base URL. When set, the producer
+            routes every chat call (probe + stream) there instead of the
+            shared client's local base_url. None keeps local behavior.
 
     Raises:
-        GenerationInProgress: if a generation is already running for
-            this conversation. Raised SYNCHRONOUSLY before the first
-            ``await``, so callers' ``except GenerationInProgress``
-            still catches it before any dispatch work fires. The route
-            maps this to HTTP 409.
+        GenerationInProgress: when a generation is already running for this
+            conversation. Raised SYNCHRONOUSLY before the first ``await`` so
+            callers' ``except`` catches it before any dispatch work. The
+            route maps this to HTTP 409.
     """
-    # In-flight guard must fire BEFORE the first await — callers'
-    # try/except GenerationInProgress depends on it raising
-    # synchronously. Anything after `await` is a coroutine
-    # suspension point and the exception would arrive in a
-    # different control flow shape.
+    # The in-flight guard must raise BEFORE the first await — callers'
+    # try/except depends on it being synchronous; past an await the
+    # exception would surface in a different control-flow shape.
     existing = live_generations.get(conversation_id)
     if existing is not None and not existing.done:
         raise GenerationInProgress(
@@ -322,14 +283,10 @@ async def start_generation(
         )
 
     state = GenerationState(conversation_id=conversation_id)
-    # Register BEFORE create_task so the registry is populated by
-    # the time control returns to the caller. A done entry from a
-    # previous turn gets evicted here — it's no longer the live
-    # state for this conversation. Done entries remain in the
-    # registry until replaced (so a fresh GET /stream from a slow
-    # reload can still replay the recently-finished events), which
-    # is also why we evict on new-gen-start rather than on
-    # task-done.
+    # Register BEFORE create_task so the registry is populated by the time
+    # control returns. This evicts any done entry from a previous turn. Done
+    # entries linger until replaced (not removed on task-done) so a slow
+    # reload's GET /stream can still replay the recently-finished events.
     live_generations[conversation_id] = state
     state.task = asyncio.create_task(
         _run_generation(
@@ -354,16 +311,14 @@ async def start_generation(
 def _make_done_callback(conversation_id: int):
     """Build the per-conversation done-callback for a generation task.
 
-    Only responsibility now (phase 12g): surface any unhandled task
-    exception via logging — without this, an exception inside a
-    fire-and-forget task gets silently swallowed by asyncio.
+    Two jobs: surface any unhandled task exception via logging (asyncio
+    silently swallows exceptions in fire-and-forget tasks otherwise), and
+    request a remote backup now that the turn's rows are persisted.
 
-    The state is NOT removed from `live_generations` on done. It
-    stays until the next `start_generation` for this conversation
-    evicts it. This lets a slow reload that lands after the gen
-    finished still replay the event log via `consume_generation`,
-    which would otherwise have to fall through to the lossy
-    `consume_finished` path.
+    The state is NOT removed from `live_generations` on done — it stays
+    until the next `start_generation` evicts it, so a slow reload landing
+    after the gen finished can still replay the event log via
+    `consume_generation` instead of the lossy `consume_finished` path.
     """
     def cb(task: asyncio.Task) -> None:
         if not task.cancelled():
@@ -374,16 +329,15 @@ def _make_done_callback(conversation_id: int):
                     conversation_id,
                     exc_info=exc,
                 )
-        # Phase 20: the turn is over and its rows are persisted — push to
-        # the remote mirror. Fires on every completion path; debounced and
-        # a no-op when backups aren't configured.
+        # Turn over, rows persisted — push to the remote mirror. Fires on
+        # every completion path; debounced and a no-op when backups are off.
         backup.request_backup("generation-complete")
 
     return cb
 
 
 # ---------------------------------------------------------------------------
-# Producer (the body that was `_stream_assistant_reply` in phase 12e.1)
+# Producer
 # ---------------------------------------------------------------------------
 
 
@@ -392,19 +346,13 @@ def _build_history_payload(
 ) -> list[dict]:
     """Turn Message dataclasses into the wire format Ollama expects.
 
-    Identical semantics to `app.routes._build_history_payload` in
-    phase 12d; moved here because `_run_generation` is the only
-    caller after phase 12g.
-
     Args:
         history: Conversation Message rows to serialize.
-        system_prompt: When set, a ``{"role": "system", ...}`` message
-            is prepended so the model sees it before any turn. Used by
-            the tool-enabled generation path (phase 15) to nudge
-            retrieval; left ``None`` for title generation, which has no
-            business carrying a tool-use policy. Conversation rows never
-            store a ``system`` role, so prepending here can't duplicate
-            one already present in ``history``.
+        system_prompt: When set, prepended as a ``{"role": "system", ...}``
+            message so the model sees it before any turn. Used by the
+            tool-enabled path to nudge retrieval; ``None`` for title
+            generation. Conversation rows never store a ``system`` role, so
+            prepending here can't duplicate one in ``history``.
 
     Returns:
         A list of dicts in Ollama's ``/api/chat`` ``messages`` shape.
@@ -412,14 +360,11 @@ def _build_history_payload(
     out: list[dict] = []
     if system_prompt:
         out.append({"role": "system", "content": system_prompt})
-    # When we drop a corrupt tool_call row, we must ALSO drop the
-    # paired tool_result that follows it — otherwise Ollama sees a
-    # role="tool" message with no preceding assistant+tool_calls and
-    # rejects the whole chat with a 400. `_run_generation` writes
-    # call/result rows strictly interleaved (one result immediately
-    # after each call), so "skip the next tool_result" is the right
-    # pairing rule. A non-result row resets the flag so we never
-    # wrongly skip a future unrelated result.
+    # Dropping a corrupt tool_call row means ALSO dropping its paired
+    # tool_result — else Ollama sees a role="tool" message with no preceding
+    # assistant+tool_calls and 400s the whole chat. `_run_generation` writes
+    # call/result rows strictly interleaved, so "skip the next tool_result"
+    # is the right rule; a non-result row resets the flag.
     skip_next_result = False
     for m in history:
         if m.role == "tool_call":
@@ -443,10 +388,9 @@ def _build_history_payload(
             if skip_next_result:
                 skip_next_result = False
                 continue
-            # Decode the JSON envelope so the model sees plain text, not
-            # the {"text": ..., "sources": [...]} structure (phase 12h).
-            # Legacy pre-12h rows are plain text already; decode_tool_result
-            # round-trips them cleanly via its fallback.
+            # Decode the JSON envelope so the model sees plain text, not the
+            # {"text": ..., "sources": [...]} structure. Legacy plain-text
+            # rows round-trip cleanly via decode_tool_result's fallback.
             out.append({
                 "role": "tool",
                 "content": decode_tool_result(m.content).text,
@@ -455,15 +399,11 @@ def _build_history_payload(
             skip_next_result = False
             out.append({"role": m.role, "content": m.content})
         elif m.role == "summary":
-            # Phase 18: synthetic row produced by the manual-compact
-            # endpoint. Inject as a `system` message so the model treats
-            # it as background context, not a past turn it has to
-            # respond to. Multiple `system` messages are tolerated in
-            # the Ollama wire format; if the caller passes a turn-level
-            # system_prompt that's prepended above, this one falls
-            # AFTER it, which is the right precedence: agent / project
-            # instructions speak for the CURRENT turn, the summary
-            # speaks for what came BEFORE.
+            # Synthetic row from the manual-compact endpoint. Inject as a
+            # `system` message so the model treats it as background context,
+            # not a turn to respond to. It falls AFTER any turn-level
+            # system_prompt prepended above — the right precedence: project
+            # instructions speak for the CURRENT turn, the summary for BEFORE.
             skip_next_result = False
             out.append({
                 "role": "system",
@@ -471,17 +411,13 @@ def _build_history_payload(
             })
         else:
             # Unknown role — drop silently so legacy rows from removed
-            # features still serialize into a valid Ollama payload
-            # instead of shipping an invalid role.
+            # features still serialize into a valid payload.
             skip_next_result = False
     return out
 
 
-# Phase 18: public alias for the same function so out-of-module callers (the
-# manual-compact route in app.routes.chats) can use it by its public name
-# without reaching into a leading-underscore symbol. The internal call sites
-# inside this module + the existing test suite keep using the underscore name
-# — they share a function object, not just a name.
+# Public alias so out-of-module callers (the manual-compact route) can use the
+# function without reaching into a leading-underscore name. Same object.
 build_history_payload = _build_history_payload
 
 
@@ -493,12 +429,11 @@ async def _maybe_emit_title(
 ) -> None:
     """Fire the auto-titler after the 1st through 3rd assistant reply.
 
-    Phase 11d behavior, ported to the new producer architecture.
-    Emits zero or one `title` SSE event via `_emit` (consumers see
-    it before the final `done` event because we emit in order).
+    Emits zero or one `title` SSE event via `_emit` (consumers see it before
+    the final `done` because we emit in order).
 
     Silent skips (no event):
-      - The chat has been manually renamed (`name_locked`).
+      - The chat was manually renamed (`name_locked`).
       - The count is outside 1..3 (cap on title-refresh attempts).
       - Any Ollama failure (down, malformed reply, timeout).
       - The model returns empty text after stripping.
@@ -511,9 +446,8 @@ async def _maybe_emit_title(
     if not 1 <= count <= 3:
         return
 
-    # Phase 18: title generation runs on the ACTIVE history (post-compact)
-    # so the auto-titler reflects what the conversation effectively *is*
-    # right now — not a stale prefix that's been archived away.
+    # Title generation runs on the ACTIVE (post-compact) history so the
+    # title reflects what the conversation is now, not an archived prefix.
     full_history = queries.list_active_messages(db, conversation_id)
     try:
         title = await ollama.generate_title(
@@ -534,11 +468,9 @@ async def _maybe_emit_title(
         logger.debug("Title set_name_auto skipped for conv %d (locked?)", conversation_id)
         return
 
-    # Bare `hx-swap-oob="true"` tells HTMX to match by id and swap in
-    # place — the existing `#chat-{id}` row gets replaced with this
-    # renamed version when the SSE `title` event lands.
-    # Phase 17: pass the owning project so the rendered row's link URL
-    # is project-scoped (matches the canonical URL the user is on).
+    # Bare `hx-swap-oob="true"` matches by id and swaps in place — the
+    # existing `#chat-{id}` row is replaced when the `title` event lands.
+    # Pass the owning project so the row's link URL is project-scoped.
     try:
         project = queries.get_project_for_conversation(db, conversation_id)
     except LookupError:
@@ -555,11 +487,9 @@ async def _maybe_emit_title(
 def _turn_tool_specs(db: sqlite3.Connection) -> list[dict]:
     """All registered tool specs for a turn, gated only by configuration.
 
-    Every registered tool is offered to a tool-capable model — phase 23
-    removed the per-chat / per-agent allowlist (the chip gating of phases
-    15/15b). ``query_rag`` is the one conditional: it is included only when at
-    least one RAG server is configured, with its ``source`` description rebuilt
-    from every configured server.
+    Every registered tool is offered to a tool-capable model. ``query_rag``
+    is the one conditional: included only when at least one RAG server is
+    configured, with its ``source`` description rebuilt from every server.
 
     Args:
         db: Open SQLite connection (to read the configured RAG servers).
@@ -569,9 +499,9 @@ def _turn_tool_specs(db: sqlite3.Connection) -> list[dict]:
     """
     all_rag_servers = _rag_servers.list_servers(db)
     specs: list[dict] = []
-    # tool_specs_for_ollama() deep-copies each spec's parameters dict, so
-    # patching `source.description` below is local to this turn's spec list
-    # and never leaks back into the registry.
+    # tool_specs_for_ollama() deep-copies each spec's parameters, so patching
+    # `source.description` below is local to this turn and never leaks back
+    # into the registry.
     for spec in tool_specs_for_ollama():
         name = spec["function"]["name"]
         if name == RAG_TOOL_NAME:
@@ -601,25 +531,17 @@ async def _run_generation(
 ) -> None:
     """Producer body — runs the LLM and writes events to the state.
 
-    Ported from phase 12e.1's `_stream_assistant_reply` in routes.py.
-    Differences:
-      - No `yield`; this is a plain async function. Every
-        `yield _sse(payload, event=ev)` is now
-        `await _emit(state, ev, payload)`.
-      - Final block sets `state.done = True` and notifies one last
-        time so any pending consumers wake up to drain and exit.
-      - Phase 12e.1's safety-net try/finally is kept for
-        catastrophic failures (CancelledError / GeneratorExit on
-        the task during server shutdown, unhandled exceptions).
-
-    See the original docstring at `app/routes.py:878` (commit
-    `319dd40`) for loop semantics — they're unchanged.
+    A plain async function (no `yield`): instead of yielding SSE it calls
+    `await _emit(state, ev, payload)`. The outer try/finally persists a
+    partial assistant row and signals done on every exit path, including
+    catastrophic ones (CancelledError / GeneratorExit on shutdown, unhandled
+    exceptions).
     """
     working_history = list(history)
-    # Every registered tool is offered, gated only on model capability.
+    # Tools are offered, gated only on model capability.
     # `model_supports_tools` returns False on cache/network failure, which
-    # collapses to tools_payload = None (omits the key entirely). query_rag is
-    # included only when a RAG server is configured (see _turn_tool_specs).
+    # collapses tools_payload to None (omits the key). query_rag is included
+    # only when a RAG server is configured (see _turn_tool_specs).
     _enabled_specs = _turn_tool_specs(db)
     tools_payload = (
         _enabled_specs
@@ -628,20 +550,19 @@ async def _run_generation(
         else None
     )
 
-    # Phase 17: resolve the owning project up-front. Needed for two
-    # things: (1) the per-project workspace root for file tools, and
-    # (2) the per-project system prompt injected on Normal-chat turns.
+    # Resolve the owning project up-front, for two things: the per-project
+    # workspace root (file tools) and the per-project system prompt (Normal
+    # turns).
     try:
         _project = queries.get_project_for_conversation(db, conversation_id)
     except LookupError:
-        # Defensive: post-phase-17, every chat has a project. Degrade
-        # to None so the turn still runs without project-scoped extras.
+        # Defensive: every chat should have a project. Degrade to None so the
+        # turn still runs without project-scoped extras.
         _project = None
 
-    # System prompt = the project's prompt (when set) + the tool-use nudge
-    # (only when tools are actually sent). With neither, omit the system
-    # message entirely — keeps plain chat byte-identical to pre-project-prompt
-    # behavior for users who haven't set one.
+    # System prompt = project prompt (when set) + tool-use nudge (only when
+    # tools are sent). With neither, omit the system message entirely so
+    # plain chat stays byte-identical for users who haven't set one.
     parts: list[str] = []
     if _project is not None and _project.system_prompt:
         parts.append(_project.system_prompt)
@@ -656,24 +577,21 @@ async def _run_generation(
     call_index = 0
     in_flight: dict[str, dict] = {}
 
-    # Phase 12e.1 safety net: hoist `chunks` and the
-    # `persisted_or_errored` flag so the function-level try/finally
-    # below catches CancelledError / GeneratorExit at any phase and
-    # persists a partial assistant row before re-raising.
+    # Hoist `chunks` + `persisted_or_errored` so the function-level
+    # try/finally can persist a partial assistant row on a CancelledError /
+    # GeneratorExit at any phase before re-raising.
     chunks: list[str] = []
     persisted_or_errored = False
 
-    # Phase 17: scope the file tools to this chat's project workspace
-    # for the duration of the turn. The ContextVar set/reset wraps the
-    # whole producer body — file-tool calls inside this region see the
-    # per-project root via `current_workspace_root` (with fallback to
-    # FILE_TOOL_ROOT when the project workspace can't be resolved, e.g.
-    # FILE_TOOL_ROOT unset or the defensive None-project path above).
+    # Scope file tools to this chat's project workspace for the turn. The
+    # ContextVar wraps the whole producer body; tool calls inside see the
+    # per-project root via `current_workspace_root` (falling back to
+    # FILE_TOOL_ROOT when the workspace can't be resolved).
     if _project is not None:
         ws_root = project_workspace_root(_project)
         if ws_root is not None:
-            # Lazily create so a brand-new project's workspace exists
-            # by the time a tool tries to read/write within it.
+            # Create lazily so a brand-new project's workspace exists by the
+            # time a tool reads/writes within it.
             ws_root.mkdir(parents=True, exist_ok=True)
     else:
         ws_root = None
@@ -693,9 +611,9 @@ async def _run_generation(
                     host=ollama_host,
                 )
             except (OllamaUnavailable, OllamaProtocolError) as e:
-                # Set BEFORE the await — await is a cancellation point;
-                # the outer finally must see the flag if cancellation
-                # lands inside emit_ollama_error.
+                # Set BEFORE the await — await is a cancellation point, and
+                # the outer finally must see the flag if cancellation lands
+                # inside emit_ollama_error.
                 persisted_or_errored = True
                 await emit_ollama_error(state, e)
                 return
@@ -753,11 +671,10 @@ async def _run_generation(
 
                 result = await run_tool(name, arguments)
 
-                # Phase 20: a successful workspace write changes on-disk
-                # state mid-turn — push it. `run_tool` never raises, so
-                # success is the "Wrote N characters to ..." prefix the
-                # write_file tool returns. Debounce coalesces this with the
-                # generation-complete push into ~one rsync.
+                # A successful workspace write changes on-disk state mid-turn
+                # — push it. `run_tool` never raises, so success is the
+                # "Wrote " prefix write_file returns. Debounce coalesces this
+                # with the generation-complete push into ~one rsync.
                 if name == "write_file" and result.text.startswith("Wrote "):
                     backup.request_backup("write")
 
@@ -786,13 +703,12 @@ async def _run_generation(
 
                 del in_flight[row_id]
 
-            # Phase 18: read back only the active rows so a chat that was
-            # compacted earlier doesn't re-bloat its prompt on the next
-            # tool-loop iteration.
+            # Read back only the active rows so an earlier-compacted chat
+            # doesn't re-bloat its prompt on the next tool-loop iteration.
             working_history = queries.list_active_messages(db, conversation_id)
         else:
-            # Iteration cap hit: persist apology + emit done with
-            # frozen-row OOBs for any unpaired calls.
+            # Iteration cap hit: persist apology + emit done with frozen-row
+            # OOBs for any unpaired calls.
             message = queries.append_message(
                 db,
                 conversation_id,
@@ -826,14 +742,13 @@ async def _run_generation(
                     chunks.append(chunk.content)
                     await _emit(state, "token", html.escape(chunk.content))
                 if chunk.done:
-                    # Final chunk carries Ollama's reported token counts
-                    # for this turn (None if Ollama didn't report them,
-                    # e.g. on a full prompt-cache hit).
+                    # Final chunk carries Ollama's token counts for the turn
+                    # (None if unreported, e.g. a full prompt-cache hit).
                     prompt_tokens = chunk.prompt_tokens
                     eval_tokens = chunk.eval_tokens
                     break
         except (OllamaUnavailable, OllamaProtocolError) as e:
-            # Flag-before-await mirrors the probe-loop branch above.
+            # Flag-before-await, as in the probe-loop branch above.
             persisted_or_errored = True
             await emit_ollama_error(state, e)
             return
@@ -851,20 +766,18 @@ async def _run_generation(
                 prompt_tokens=prompt_tokens,
                 eval_tokens=eval_tokens,
             )
-        # Persisted — outer finally must not double-write a partial.
-        # Set BEFORE any further awaits, since await is a suspension
-        # point where cancellation can land.
+        # Persisted — outer finally must not double-write a partial. Set
+        # BEFORE any further awaits, since await is a cancellation point.
         persisted_or_errored = True
 
-        # Phase 11d: title fires BEFORE the final done event so the
-        # consumer's SSE connection is still attached (the OOB
-        # outerHTML in done removes the placeholder which closes the
-        # EventSource — anything emitted after that is dropped).
+        # Title fires BEFORE the done event: the OOB outerHTML in done removes
+        # the placeholder, which closes the EventSource, so anything emitted
+        # after done is dropped.
         if on_complete == "append":
             await _maybe_emit_title(state, client, db, conversation_id)
 
-        # Final done event with the persisted message bubble +
-        # tool-card past-tense summary OOB.
+        # Final done event: persisted message bubble + past-tense tool-card
+        # summary OOB.
         done_card_oobs = render.render_done_card_oobs(
             call_index, in_flight, summary_id
         )
@@ -874,18 +787,15 @@ async def _run_generation(
         )
         await _emit(state, "done", done_card_oobs + final_html)
     finally:
-        # Phase 17: reset the workspace ContextVar BEFORE the safety-net
-        # helpers run. Resetting here (not in a nested finally) keeps the
-        # producer body's try/finally pyramid shallow; the helpers
-        # below don't depend on the per-turn workspace, so the order is
-        # safe.
+        # Reset the workspace ContextVar first. The safety-net helpers below
+        # don't depend on it, so resetting here (not in a nested finally)
+        # keeps the try/finally pyramid shallow.
         current_workspace_root.reset(ws_token)
-        # Phase 12e.1 safety net. The helpers fire on every exit path —
-        # CancelledError, GeneratorExit, unhandled exception, normal
-        # completion, OR Ollama errors. `maybe_persist_partial` no-ops
-        # when `persisted_or_errored` is True; `signal_done` always
-        # wakes pending consumers so they exit their drain loop instead
-        # of waiting forever on a task that's gone.
+        # Safety net, fires on every exit path (CancelledError,
+        # GeneratorExit, unhandled exception, normal completion, Ollama
+        # errors). `maybe_persist_partial` no-ops when persisted_or_errored;
+        # `signal_done` always wakes pending consumers so they don't wait
+        # forever on a task that's gone.
         maybe_persist_partial(
             db, conversation_id, on_complete, chunks, persisted_or_errored
         )
