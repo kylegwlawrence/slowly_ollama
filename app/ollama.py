@@ -930,6 +930,14 @@ async def generate_title(
         "model": model,
         "messages": [*history, title_request],
         "stream": False,
+        # Force thinking OFF for the title call regardless of the chat's
+        # think_mode. A title is a few tokens; a reasoning-capable model
+        # left to "think" first burns its budget on a hidden reasoning
+        # phase and blows the 10s cap below — silently skipping the
+        # rename. ``think: false`` is safe on any model (non-thinking
+        # models ignore it), so we send it unconditionally rather than
+        # probing the capability.
+        "think": False,
     }
 
     try:

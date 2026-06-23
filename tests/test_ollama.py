@@ -410,6 +410,9 @@ async def test_generate_title_uses_passed_model_and_appends_title_request() -> N
     assert captured["body"]["model"] == "llama3:8b"
     # Non-streaming — title responses are tiny, no need for SSE.
     assert captured["body"]["stream"] is False
+    # Thinking is forced off so a reasoning-capable model doesn't burn
+    # its budget on a hidden reasoning phase and blow the 10s title cap.
+    assert captured["body"]["think"] is False
     # History forwarded; a third (title-request) turn appended.
     msgs = captured["body"]["messages"]
     assert len(msgs) == 3
