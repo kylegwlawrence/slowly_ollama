@@ -4,7 +4,7 @@ Guidance for Claude Code when working in this repo.
 
 ## Project
 
-**olliellama** — a local-only chat app that talks to a locally-running
+**slollillama** — a local-only chat app that talks to a locally-running
 Ollama instance. No cloud calls; everything runs on-device. FastAPI + HTMX + Jinja
 + SQLite, served via uvicorn at `http://localhost:8000`. See `README.md` for
 end-user setup and `docs/plans/PLAN.md` for the build-time roadmap.
@@ -184,10 +184,10 @@ DB lives at `~/Library/Application Support/ollama_slowly/chats.db` by default
 (created on first run); configurable via `DB_PATH` in `.env`.
 
 **Deployment.** This box runs the app as a systemd **system** service,
-`olliellama.service` (`/etc/systemd/system/olliellama.service`, enabled), via
+`slollillama.service` (`/etc/systemd/system/slollillama.service`, enabled), via
 `.venv/bin/uvicorn main:app --host <host-ip> --port 8070`. Manage it with
-`sudo systemctl {restart,stop,status} olliellama.service` and read logs with
-`journalctl -u olliellama.service`. **`.env` changes require a service restart**
+`sudo systemctl {restart,stop,status} slollillama.service` and read logs with
+`journalctl -u slollillama.service`. **`.env` changes require a service restart**
 — `config.load_dotenv()` runs once at process start and does not override
 already-set env vars, and `--host`-style reloads don't apply to the service.
 

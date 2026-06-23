@@ -43,7 +43,7 @@ def _reset_backup_state(monkeypatch: pytest.MonkeyPatch):
 def _enable(monkeypatch: pytest.MonkeyPatch) -> None:
     """Configure both remote destinations so backups are enabled."""
     monkeypatch.setenv("REMOTE_PATH", "host1:/remote/agent_workspaces")
-    monkeypatch.setenv("REMOTE_DB_PATH", "host1:/remote/olliellama_chats")
+    monkeypatch.setenv("REMOTE_DB_PATH", "host1:/remote/slollillama_chats")
 
 
 # ---------------------------------------------------------------------------
@@ -219,11 +219,11 @@ async def test_push_database_targets_chats_db_and_never_wal(
 
     monkeypatch.setattr(backup, "_run", _capture)
 
-    ok = await backup._push_database("host1", "/remote/olliellama_chats")
+    ok = await backup._push_database("host1", "/remote/slollillama_chats")
 
     assert ok is True
     rsync = next(c for c in commands if c[0] == "rsync")
-    assert rsync[-1] == "host1:/remote/olliellama_chats/chats.db"
+    assert rsync[-1] == "host1:/remote/slollillama_chats/chats.db"
     assert rsync[-2] == "/local/data/chats.db.backup"
     joined = " ".join(rsync)
     assert "-wal" not in joined and "-shm" not in joined

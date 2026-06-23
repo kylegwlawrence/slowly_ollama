@@ -1,4 +1,4 @@
-/* olliellama — client-side glue.
+/* slollillama — client-side glue.
  *
  * Everything in here used to live in inline <script> blocks or hx-on::*
  * attributes scattered across the templates. Consolidating buys us:

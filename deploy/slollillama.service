@@ -1,17 +1,17 @@
-# olliellama webserver — systemd unit for the web-host (web-tier) deployment.
+# slollillama webserver — systemd unit for the web-host (web-tier) deployment.
 #
 # This runs ONLY the FastAPI/uvicorn web tier. Ollama and the DB/workspace
 # mirror live on a separate machine (<gpu-host>); see
 # docs/plans/phase23-split-deployment.md.
 #
 # Install:
-#   sudo cp deploy/olliellama.service /etc/systemd/system/olliellama.service
+#   sudo cp deploy/slollillama.service /etc/systemd/system/slollillama.service
 #   # edit the <placeholders> below to match this machine, then:
 #   sudo systemctl daemon-reload
-#   sudo systemctl enable --now olliellama.service
+#   sudo systemctl enable --now slollillama.service
 #
-# Logs:    journalctl -u olliellama -f
-# Restart: sudo systemctl restart olliellama
+# Logs:    journalctl -u slollillama -f
+# Restart: sudo systemctl restart slollillama
 #
 # Placeholders to replace:
 #   <pi-user>  → the Linux user that owns the checkout (e.g. "pi")
@@ -19,7 +19,7 @@
 #                (e.g. /home/pi/slowly_ollama)
 
 [Unit]
-Description=olliellama webserver (FastAPI + uvicorn)
+Description=slollillama webserver (FastAPI + uvicorn)
 # Ollama is remote; the private network must be up before we bind/serve so
 # the first chat turn can reach <gpu-host>. If a VPN provides that network,
 # add its unit here too (e.g. `After=... wg-quick@wg0.service`).

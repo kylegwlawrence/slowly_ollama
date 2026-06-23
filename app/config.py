@@ -205,7 +205,7 @@ def remote_db_path() -> str | None:
 
     The SQLite database is pushed (mirror-style, overwriting) to this
     location on every backup. The value is an rsync/ssh remote spec
-    (e.g. ``"host:/path/to/olliellama_chats"``) naming the *directory*
+    (e.g. ``"host:/path/to/slollillama_chats"``) naming the *directory*
     the backup module drops ``chats.db`` into.
 
     Paired with :func:`remote_workspace_path` via :func:`backups_enabled`:
