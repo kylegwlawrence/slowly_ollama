@@ -27,8 +27,8 @@ from app.tools import (
 # Keep output from blowing the context window. SearXNG can return dozens of
 # results; the top handful is what a model needs to pick a direction.
 _TOP_K = 6
-_PER_RESULT_SNIPPET_CAP = 300
-_TOTAL_OUTPUT_CAP = 4000
+_PER_RESULT_SNIPPET_CAP = 1000
+_TOTAL_OUTPUT_CAP = 8000
 
 
 def _format_results(items: list[dict]) -> str:
