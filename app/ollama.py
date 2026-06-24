@@ -834,6 +834,7 @@ async def generate_title(
     model: str,
     history: list[dict[str, str]],
     host: str | None = None,
+    num_ctx: int | None = None,
 ) -> str:
     """Ask the chat's own model to summarize the conversation as a title.
 
@@ -853,6 +854,11 @@ async def generate_title(
             request lands on a *different* machine where the model isn't
             resident (a cold load, often past the timeout). ``None`` falls
             through to the client's ``base_url`` (the primary host).
+        num_ctx: ``num_ctx`` to request, matching the turn that just streamed.
+            Ollama keys a resident model on its load params, so passing the
+            SAME value the stream used keeps this title call on the warm
+            instance instead of forcing a reload at a different context size.
+            ``None`` omits the key (Ollama default).
 
     Returns:
         The generated title, stripped of surrounding quotes and known
@@ -877,7 +883,12 @@ async def generate_title(
             " Reply with only the title, no punctuation."
         ),
     }
-    payload = {
+    # Match the streamed turn's num_ctx so Ollama reuses the warm instance
+    # rather than reloading the model at a different context size.
+    options: dict = {}
+    if num_ctx is not None:
+        options["num_ctx"] = num_ctx
+    payload: dict = {
         "model": model,
         "messages": [*history, title_request],
         "stream": False,
@@ -888,6 +899,8 @@ async def generate_title(
         # (non-thinking ones ignore it), so we send it unconditionally.
         "think": False,
     }
+    if options:
+        payload["options"] = options
 
     try:
         # 20s cap. The model is resident (we just streamed the reply), and the

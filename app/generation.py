@@ -481,6 +481,7 @@ async def _maybe_emit_title(
     db: sqlite3.Connection,
     conversation_id: int,
     ollama_host: str | None = None,
+    num_ctx: int | None = None,
 ) -> None:
     """Fire the auto-titler after the 1st through 3rd assistant reply.
 
@@ -495,6 +496,9 @@ async def _maybe_emit_title(
         ollama_host: The chat's selected Ollama host — the same machine that
             just streamed the reply, so the model is resident there. Passed
             through to `generate_title`; ``None`` targets the primary host.
+        num_ctx: The streamed turn's resolved ``num_ctx``, forwarded so the
+            title call reuses the warm instance instead of reloading at a
+            different context size. ``None`` omits it (Ollama default).
 
     Silent skips (no event):
       - The chat was manually renamed (`name_locked`).
@@ -533,6 +537,7 @@ async def _maybe_emit_title(
             conversation.model,
             _build_history_payload(context),
             host=ollama_host,
+            num_ctx=num_ctx,
         )
     except (OllamaUnavailable, OllamaProtocolError) as e:
         logger.warning("Title generation failed for conv %d: %s", conversation_id, e)
@@ -950,7 +955,8 @@ async def _run_generation(
         # after done is dropped.
         if on_complete == "append":
             await _maybe_emit_title(
-                state, client, db, conversation_id, ollama_host=ollama_host
+                state, client, db, conversation_id,
+                ollama_host=ollama_host, num_ctx=num_ctx,
             )
 
         # Final done event: persisted message bubble + past-tense tool-card

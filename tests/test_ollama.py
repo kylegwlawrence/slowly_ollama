@@ -484,6 +484,36 @@ async def test_generate_title_uses_passed_model_and_appends_title_request() -> N
 
 
 @pytest.mark.asyncio
+async def test_generate_title_passes_num_ctx_when_provided() -> None:
+    """A num_ctx forwards into options so the title call reuses the warm
+    instance instead of reloading the model at a different context size."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"message": {"content": "Title"}})
+
+    async with _client_with(handler) as client:
+        await generate_title(client, "llama3", [], num_ctx=32768)
+    assert captured["body"]["options"]["num_ctx"] == 32768
+
+
+@pytest.mark.asyncio
+async def test_generate_title_omits_options_when_num_ctx_none() -> None:
+    """No num_ctx → no options key at all (Ollama default), matching the
+    prior payload shape so nothing else changes for non-num_ctx callers."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"message": {"content": "Title"}})
+
+    async with _client_with(handler) as client:
+        await generate_title(client, "llama3", [])
+    assert "options" not in captured["body"]
+
+
+@pytest.mark.asyncio
 async def test_generate_title_targets_host_override() -> None:
     """A host override sends the title request to the chat's selected host.
 
