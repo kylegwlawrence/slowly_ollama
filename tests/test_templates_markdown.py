@@ -114,3 +114,36 @@ def test_ordinary_markdown_still_renders_alongside_math() -> None:
     html = _render_markdown("Steps:\n1. First\n2. Second\n\nDone with $a+b$.")
     assert "<ol>" in html  # list-spacing pre-pass + standard markdown
     assert '<span class="arithmatex">' in html
+
+
+def test_table_glued_to_prose_still_renders_as_table() -> None:
+    """The bug: a table header glued onto a lead-in line (no blank between).
+
+    LLMs routinely emit "Here's the data:\n| a | b |\n|---|---|" — without the
+    blank line the GFM ``tables`` extension never fires and the whole thing is
+    one paragraph of raw pipes. The table-spacing pre-pass inserts the blank.
+    """
+    html = _render_markdown(
+        "Here's the data:\n| Type | Example |\n|------|---------|\n| Images | Photos |"
+    )
+    assert "<table>" in html
+    assert "<th>Type</th>" in html
+    assert "<td>Images</td>" in html
+    # The lead-in stays its own paragraph; the pipes don't leak into it.
+    assert "<p>Here's the data:</p>" in html
+    assert "|" not in html
+
+
+def test_table_with_blank_line_is_unaffected() -> None:
+    """A correctly-spaced table still renders — the pre-pass is idempotent."""
+    html = _render_markdown(
+        "Lead-in:\n\n| Type | Example |\n|------|---------|\n| Images | Photos |"
+    )
+    assert "<table>" in html
+    assert "<th>Type</th>" in html
+
+
+def test_thematic_break_after_prose_is_not_treated_as_table() -> None:
+    """A bare ``---`` rule has no pipe, so it must not trip the table pre-pass."""
+    html = _render_markdown("Some prose\n---\nMore prose")
+    assert "<table>" not in html

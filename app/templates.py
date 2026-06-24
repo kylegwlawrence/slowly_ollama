@@ -55,6 +55,48 @@ def _ensure_list_spacing(text: str) -> str:
     return "\n".join(out)
 
 
+def _is_table_delimiter(line: str) -> bool:
+    """Return True if ``line`` is a GFM table delimiter row (e.g. ``|---|---|``).
+
+    A delimiter row holds only pipes, dashes, alignment colons, and spaces,
+    and must contain at least one of each of a pipe and a dash. Requiring a
+    pipe keeps a bare ``---`` thematic break from reading as a table.
+    """
+    stripped = line.strip()
+    return (
+        "|" in stripped
+        and "-" in stripped
+        and set(stripped) <= set("|:- \t")
+    )
+
+
+def _ensure_table_spacing(text: str) -> str:
+    """Insert a blank line before a table header that follows non-table text.
+
+    The ``tables`` extension only recognises a table when a blank line precedes
+    its header row. LLMs routinely glue the header straight onto a lead-in line
+    (e.g. "Here's the data:\n| Type | Example |\n|---|---|"), so the whole block
+    renders as one paragraph of raw pipes. This pass spots a header (a pipe line
+    whose next line is a delimiter row) sitting on prose and inserts the missing
+    blank line so the table is parsed.
+    """
+    lines = text.split("\n")
+    out: list[str] = []
+    for i, line in enumerate(lines):
+        is_header = (
+            "|" in line
+            and i + 1 < len(lines)
+            and _is_table_delimiter(lines[i + 1])
+        )
+        # Only split when the preceding emitted line is prose — a non-blank line
+        # that isn't itself a table row (no pipe) — so existing tables and the
+        # delimiter row's own lookahead are left untouched.
+        if is_header and out and out[-1].strip() and "|" not in out[-1]:
+            out.append("")
+        out.append(line)
+    return "\n".join(out)
+
+
 # --- LaTeX math protection -------------------------------------------------
 # arithmatex only shields math its block processor *recognises* — a `\[` / `$$`
 # that starts its own block. One indented in a list item or glued to prose is
@@ -162,7 +204,7 @@ def _render_markdown(text: str) -> str:
     """
     _md_converter.reset()
     protected, spans = _protect_math(text)
-    html = _md_converter.convert(_ensure_list_spacing(protected))
+    html = _md_converter.convert(_ensure_table_spacing(_ensure_list_spacing(protected)))
     return _restore_math(html, spans)
 
 
