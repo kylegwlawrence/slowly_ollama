@@ -24,7 +24,7 @@ import logging
 import sqlite3
 import time
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 import httpx
@@ -435,6 +435,46 @@ def _build_history_payload(
 build_history_payload = _build_history_payload
 
 
+# How much of each opening turn the titler sees. A title needs only the gist
+# of the request and reply, and `generate_title` forces `think: false`, which
+# changes the prompt template versus the streamed reply and so misses Ollama's
+# prompt cache — the opening turns are re-prefilled from scratch. Capping their
+# length bounds that prefill (the user turn is usually short, but a first reply
+# or a pasted document can run thousands of tokens), keeping the title call
+# fast and under its timeout regardless of conversation size. ~800 chars ≈ 200
+# tokens per turn; plenty to name a chat.
+_TITLE_CONTENT_BUDGET = 800
+
+
+def _opening_exchange(history: list) -> list:
+    """Pick the conversation's opening exchange for title generation.
+
+    Returns the first ``user`` message and the first ``assistant`` message
+    with non-empty text, in order, each truncated to ``_TITLE_CONTENT_BUDGET``
+    characters. Tool-call/result and summary rows are skipped — they add
+    tokens (and tool-interleaving hazards) without sharpening a title. The
+    assistant turn is optional: a title can be drawn from the opening request
+    alone if no text reply exists yet.
+
+    Args:
+        history: Active conversation Message rows, oldest first.
+
+    Returns:
+        A list of 0-2 Message rows (length-capped copies): the first user
+        turn, then the first non-empty assistant turn if present.
+    """
+    first_user = next((m for m in history if m.role == "user"), None)
+    first_assistant = next(
+        (m for m in history if m.role == "assistant" and m.content.strip()),
+        None,
+    )
+    return [
+        replace(m, content=m.content[:_TITLE_CONTENT_BUDGET])
+        for m in (first_user, first_assistant)
+        if m is not None
+    ]
+
+
 async def _maybe_emit_title(
     state: GenerationState,
     client: httpx.AsyncClient,
@@ -462,12 +502,24 @@ async def _maybe_emit_title(
 
     # Title generation runs on the ACTIVE (post-compact) history so the
     # title reflects what the conversation is now, not an archived prefix.
-    full_history = queries.list_active_messages(db, conversation_id)
+    #
+    # We feed the titler only the OPENING exchange (first user + first
+    # assistant turn), not the whole conversation. Two reasons:
+    #   1. Speed/reliability. `generate_title` forces `think: False`, but the
+    #      reply we just streamed was generated with the chat's own think
+    #      setting (thinking ON for reasoning models). The flag change renders
+    #      a different prompt template, so Ollama's prompt cache misses and it
+    #      re-prefills the ENTIRE conversation — tens of seconds on a long
+    #      chat, blowing the title timeout and silently skipping the rename.
+    #      A bounded opening exchange keeps the prefill small and fast.
+    #   2. Quality. The first request is what defines a chat's subject; the
+    #      whole transcript adds tokens (and cost) without a better title.
+    opening = _opening_exchange(queries.list_active_messages(db, conversation_id))
     try:
         title = await ollama.generate_title(
             client,
             conversation.model,
-            _build_history_payload(full_history),
+            _build_history_payload(opening),
         )
     except (OllamaUnavailable, OllamaProtocolError) as e:
         logger.warning("Title generation failed for conv %d: %s", conversation_id, e)

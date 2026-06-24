@@ -12,7 +12,7 @@ from app import generation, ollama, queries
 from app._time import today_utc
 from app.connection import open_connection
 from app.db import initialize_database
-from app.generation import _build_history_payload
+from app.generation import _build_history_payload, _opening_exchange
 from app.queries import Message
 
 
@@ -1351,6 +1351,83 @@ def test_build_history_payload_drops_phase13_agentic_rows() -> None:
     roles = {m["role"] for m in out}
     assert "research_findings" not in roles
     assert "review_verdict" not in roles
+
+
+def test_opening_exchange_picks_first_user_and_assistant() -> None:
+    """The titler gets only the opening exchange — first user turn plus the
+    first non-empty assistant turn — so prefill stays small and bounded."""
+    now = datetime.now(timezone.utc)
+    history = [
+        Message(id=1, conversation_id=1, role="user",
+                content="first question", created_at=now),
+        Message(id=2, conversation_id=1, role="assistant",
+                content="first answer", created_at=now),
+        Message(id=3, conversation_id=1, role="user",
+                content="second question", created_at=now),
+        Message(id=4, conversation_id=1, role="assistant",
+                content="second answer", created_at=now),
+    ]
+    out = _opening_exchange(history)
+    assert [m.content for m in out] == ["first question", "first answer"]
+
+
+def test_opening_exchange_skips_tool_and_summary_rows() -> None:
+    """Tool-call/result and summary rows are noise for a title and a
+    tool-interleaving hazard — only clean user/assistant text is kept."""
+    now = datetime.now(timezone.utc)
+    history = [
+        Message(id=1, conversation_id=1, role="summary",
+                content="earlier summary", created_at=now),
+        Message(id=2, conversation_id=1, role="user",
+                content="the request", created_at=now),
+        Message(id=3, conversation_id=1, role="tool_call",
+                content=json.dumps({"name": "current_time", "arguments": {}}),
+                created_at=now),
+        Message(id=4, conversation_id=1, role="tool_result",
+                content="2024-01-01T00:00:00+00:00", created_at=now),
+        Message(id=5, conversation_id=1, role="assistant",
+                content="the reply", created_at=now),
+    ]
+    out = _opening_exchange(history)
+    assert [(m.role, m.content) for m in out] == [
+        ("user", "the request"),
+        ("assistant", "the reply"),
+    ]
+
+
+def test_opening_exchange_caps_content_length() -> None:
+    """Each opening turn is truncated to a fixed budget so the title call's
+    prefill stays bounded even when the first message is huge (e.g. a pasted
+    document or a long first reply)."""
+    from app.generation import _TITLE_CONTENT_BUDGET
+
+    now = datetime.now(timezone.utc)
+    history = [
+        Message(id=1, conversation_id=1, role="user",
+                content="u" * 5000, created_at=now),
+        Message(id=2, conversation_id=1, role="assistant",
+                content="a" * 5000, created_at=now),
+    ]
+    out = _opening_exchange(history)
+    assert [len(m.content) for m in out] == [
+        _TITLE_CONTENT_BUDGET, _TITLE_CONTENT_BUDGET,
+    ]
+    # Truncation keeps the START of the message (the defining opener).
+    assert out[0].content == "u" * _TITLE_CONTENT_BUDGET
+
+
+def test_opening_exchange_skips_empty_assistant_and_tolerates_missing_reply() -> None:
+    """An assistant turn that streamed only reasoning (empty text) is
+    skipped; if no text reply exists yet, the user turn alone is enough."""
+    now = datetime.now(timezone.utc)
+    history = [
+        Message(id=1, conversation_id=1, role="user",
+                content="just asked", created_at=now),
+        Message(id=2, conversation_id=1, role="assistant",
+                content="   ", created_at=now),
+    ]
+    out = _opening_exchange(history)
+    assert [(m.role, m.content) for m in out] == [("user", "just asked")]
 
 
 def test_build_history_payload_agentic_row_does_not_swallow_following_tool_result() -> None:

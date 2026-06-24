@@ -864,20 +864,23 @@ async def generate_title(
         "stream": False,
         # Force thinking OFF regardless of the chat's think_mode. A title is a
         # few tokens; a reasoning model left to "think" first burns its budget
-        # on a hidden reasoning phase and blows the 10s cap below — silently
+        # on a hidden reasoning phase and blows the cap below — silently
         # skipping the rename. ``think: false`` is safe on any model
         # (non-thinking ones ignore it), so we send it unconditionally.
         "think": False,
     }
 
     try:
-        # 10s cap. The model is warm (we just streamed the reply), so a
-        # few-token title should return in well under a second; the cap bounds
-        # how long the connection stays open if Ollama wedges. On expiry httpx
-        # raises ReadTimeout (an httpx.HTTPError), which the caller catches as
-        # OllamaUnavailable → silent skip in _maybe_generate_title.
+        # 20s cap. The model is resident (we just streamed the reply), and the
+        # caller feeds only the opening exchange, so a few-token title returns
+        # quickly once any prefill is done. The headroom over a sub-second warm
+        # call covers a cold reload (10-30s for the weights, though the chat we
+        # just answered should keep them resident). The cap bounds how long the
+        # connection stays open if Ollama wedges. On expiry httpx raises
+        # ReadTimeout (an httpx.HTTPError), which the caller catches as
+        # OllamaUnavailable → silent skip in _maybe_emit_title.
         response = await client.post(
-            "/api/chat", json=payload, timeout=10.0
+            "/api/chat", json=payload, timeout=20.0
         )
     except (httpx.HTTPError, httpx.InvalidURL) as e:
         raise OllamaUnavailable(f"Title request failed: {e}") from e
