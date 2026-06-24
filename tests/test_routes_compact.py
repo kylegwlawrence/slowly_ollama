@@ -272,6 +272,76 @@ def test_compact_payload_excludes_archived_from_summarizer_input(
     assert len(corpus) == 8
 
 
+def test_post_compaction_turn_excludes_archived_from_model_payload(
+    make_client: ClientFactory,
+) -> None:
+    """After compaction, the NEXT chat turn must not resend archived rows.
+
+    This is the whole point of Compact: shrink per-turn context. The
+    generation layer reads ``list_active_messages`` (archived_at IS NULL), so
+    a continued turn should send Ollama only the summary + the kept tail + the
+    new user message — never the compacted-away originals. End-to-end guard:
+    compact a seeded chat, then drive a real turn and inspect the streaming
+    /api/chat payload.
+    """
+    SUMMARY = "BRIEFING-SUMMARY-TOKEN"
+    captured: dict = {"stream": None}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path != "/api/chat":
+            return httpx.Response(
+                404, content=f"unexpected {request.url.path}".encode()
+            )
+        body = json.loads(request.content or b"{}")
+        if body.get("stream"):
+            # The actual generation. Capture its payload; return a minimal
+            # one-token NDJSON reply the SSE pipeline can consume.
+            captured["stream"] = body
+            return httpx.Response(
+                200,
+                content=(
+                    b'{"message":{"content":"ok"},"done":false}\n'
+                    b'{"message":{"content":""},"done":true}\n'
+                ),
+            )
+        # Non-streaming: either the compaction summarizer or the turn's
+        # tool-probe (and the auto-titler). Distinguish by the instruction in
+        # the last user turn so the summarizer gets the summary and the probe
+        # gets a clean "no tool calls" so the producer proceeds to stream.
+        last = body["messages"][-1]["content"] if body["messages"] else ""
+        if "compact briefing" in last:
+            return httpx.Response(
+                200, json={"message": {"content": SUMMARY, "tool_calls": []}}
+            )
+        return httpx.Response(
+            200, json={"message": {"content": "", "tool_calls": []}}
+        )
+
+    with make_client(handler) as client:
+        # 10 rows; KEEP_RECENT=2 archives the 8 oldest, keeps user/asst-4.
+        chat_id = _seed_chat_with_history(turns=5, content_prefix="ARCHIVEME")
+        assert client.post(f"/chats/{chat_id}/compact").status_code == 200
+
+        # Continue chatting: POST a fresh message, then drive the stream.
+        client.post(
+            f"/chats/{chat_id}/messages", data={"content": "FRESH-QUESTION"}
+        )
+        client.get(f"/chats/{chat_id}/stream")
+
+    assert captured["stream"] is not None, "continued turn never streamed"
+    blob = "\n".join(
+        m.get("content", "") for m in captured["stream"]["messages"]
+    )
+    # The archived originals (turns 0..3) must NOT reach the model.
+    for i in range(4):
+        assert f"ARCHIVEME-user-{i}" not in blob
+        assert f"ARCHIVEME-asst-{i}" not in blob
+    # The summary replacement, the kept tail, and the new message DO.
+    assert SUMMARY in blob
+    assert "ARCHIVEME-asst-4" in blob
+    assert "FRESH-QUESTION" in blob
+
+
 # ---------------------------------------------------------------------------
 # GET /chats/{id}/archived
 # ---------------------------------------------------------------------------
