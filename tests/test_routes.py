@@ -704,6 +704,29 @@ def test_chat_url_direct_hit_renders_full_page_with_panel(
     assert 'class="composer"' not in response.text
 
 
+def test_chat_panel_renders_compact_error_slot(
+    make_client: ClientFactory,
+) -> None:
+    """The compact button + its error slot must render in the panel.
+
+    A failed POST /chats/{id}/compact (host offline → 503, nothing to
+    compact → 422, generating → 409) is a 4xx/5xx that htmx does NOT swap.
+    app.js surfaces the plain-text reason into `#chat-compact-error` keyed
+    off the `.chat-panel__compact` button — without these hooks the failure
+    is silent and the UI appears to "do nothing." This pins both contracts.
+    """
+    with make_client(_ollama_unreachable) as client:
+        chat_id = _create_chat_and_get_id(client, "Topic")
+
+        response = client.get(f"/chats/{chat_id}")
+
+    assert response.status_code == 200
+    # The JS handler matches on this class to scope the error display.
+    assert 'class="chat-panel__compact"' in response.text
+    # The JS handler writes the failure reason into this element by id.
+    assert 'id="chat-compact-error"' in response.text
+
+
 def test_base_disables_message_button_while_streaming(
     make_client: ClientFactory,
 ) -> None:

@@ -332,9 +332,35 @@ document.body.addEventListener('htmx:beforeRequest', (e) => {
     const icon = document.getElementById('health-check-icon');
     if (icon) icon.replaceChildren();
   }
+  if (e.target.matches('.chat-panel__compact')) {
+    // Clear a stale compaction error before retrying so a now-recovered
+    // attempt doesn't leave the old message hanging around.
+    const err = document.getElementById('chat-compact-error');
+    if (err) {
+      err.hidden = true;
+      err.textContent = '';
+    }
+  }
 });
 
 document.body.addEventListener('htmx:afterRequest', (e) => {
+  // The compact control is a <button>, not a form, so handle it before the
+  // form guard below. On success htmx swaps #messages (summary appears) and
+  // we leave the error slot hidden; on failure the swap is skipped (htmx
+  // ignores 4xx/5xx bodies) and the user would otherwise see nothing — so
+  // surface the plain-text reason instead.
+  if (e.target instanceof Element && e.target.matches('.chat-panel__compact')) {
+    if (!e.detail.successful) {
+      const err = document.getElementById('chat-compact-error');
+      if (err) {
+        err.textContent =
+          e.detail.xhr.responseText || 'Compaction failed.';
+        err.hidden = false;
+      }
+    }
+    return;
+  }
+
   const form = e.target;
   if (!(form instanceof HTMLFormElement)) return;
 

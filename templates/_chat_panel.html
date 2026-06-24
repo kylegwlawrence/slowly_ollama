@@ -130,6 +130,15 @@
     <span class="material-symbols-outlined" aria-hidden="true">progress_activity</span>
     <span>Compacting&hellip;</span>
   </div>
+  {# Surfaces a failed compaction (host offline → 503, nothing to compact →
+     422, generating → 409). Lives outside #messages alongside the indicator
+     so the /compact outerHTML swap can't remove it. Populated + toggled by
+     the htmx:afterRequest handler in app.js from the plain-text 4xx/5xx body.
+     #}
+  <div id="chat-compact-error"
+       class="form-error chat-panel__compact-error"
+       role="alert"
+       hidden></div>
   <form class="message-form"
         hx-post="/chats/{{ conversation.id }}/messages"
         hx-target="#messages"

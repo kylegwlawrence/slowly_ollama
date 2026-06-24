@@ -1066,6 +1066,20 @@ async def test_summarize_raises_unavailable_on_5xx() -> None:
 
 
 @pytest.mark.asyncio
+async def test_summarize_includes_ollama_body_in_5xx_error() -> None:
+    """A non-2xx from Ollama carries the real reason in its body; the error
+    surfaces it so the message the UI shows is actionable, not a bare status.
+    """
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="model requires more system memory")
+
+    async with _client_with(handler) as client:
+        with pytest.raises(OllamaUnavailable) as exc:
+            await summarize_conversation(client, "llama3", [])
+    assert "model requires more system memory" in str(exc.value)
+
+
+@pytest.mark.asyncio
 async def test_summarize_raises_protocol_error_on_bad_shape() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         # Valid JSON, wrong shape (no `message.content`).

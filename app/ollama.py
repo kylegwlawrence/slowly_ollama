@@ -796,13 +796,26 @@ async def summarize_conversation(
     }
 
     try:
-        # 120s cap: the model is warm, but the input may be the whole
-        # conversation, so time-to-first-token can exceed a title call. The
-        # shared client's 300s default would also work; this documents intent.
+        # 300s cap, matching stream_chat. The earlier 120s assumed a warm
+        # model, but by the time a user clicks Compact the model has usually
+        # idled out of memory (Ollama's default keep_alive is ~5 min), so this
+        # is a COLD load: weights load + the whole conversation prefills before
+        # the first token. A 9b model at num_ctx=32768 alone measured ~112s
+        # cold — under any extra load that blew past 120s and surfaced as a
+        # spurious 503. Generation already allows 300s; compaction should too.
         response = await client.post(
-            _url("/api/chat", host), json=payload, timeout=120.0
+            _url("/api/chat", host), json=payload, timeout=300.0
         )
         response.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        # Ollama answered with a non-2xx; its body carries the real reason
+        # (e.g. model-not-found, context too large). Surface it so the error
+        # the UI shows is actionable rather than a bare status line.
+        detail = (e.response.text or "").strip()
+        raise OllamaUnavailable(
+            f"Compaction request failed: {e}"
+            + (f" — {detail}" if detail else "")
+        ) from e
     except (httpx.HTTPError, httpx.InvalidURL) as e:
         raise OllamaUnavailable(f"Compaction request failed: {e}") from e
 

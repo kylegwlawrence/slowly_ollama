@@ -2183,6 +2183,13 @@ body {
   animation: chat-panel__compacting-spin 1s linear infinite;
 }
 
+/* Failed-compaction notice. Reuses `.form-error` for the danger tint; this
+   rule only handles placement (aligned with the composer, sitting just above
+   it) since the error lives outside any form grid. */
+.chat-panel__compact-error {
+  margin: 0 var(--space-md) var(--space-xs);
+}
+
 @keyframes chat-panel__compacting-spin {
   to { transform: rotate(360deg); }
 }
