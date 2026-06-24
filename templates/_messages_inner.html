@@ -29,6 +29,9 @@
       {% set content = block.thinking_text %}
       {% set open = False %}
       {% set swap_oob = none %}
+      {# Reload renders the stored reasoning as markdown, matching the live
+         collapse (render_thinking_collapse) so a reload looks identical. #}
+      {% set markdown = True %}
       {% include "_thinking_card.html" %}
     {% elif block.kind == "summary" %}
       {% set message = block.message %}

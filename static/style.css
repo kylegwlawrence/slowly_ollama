@@ -974,6 +974,51 @@ body {
   padding: 0 var(--space-md) var(--space-sm) calc(var(--space-md) + 1.5rem);
 }
 
+/* Collapsed / historic thinking renders the reasoning as markdown (the live
+   `open` stream stays raw, above). Drop the monospace + pre-wrap of the base
+   box and apply a compact subset of the assistant-bubble markdown styles so
+   `**bold**`, lists, headings and code read as prose, not literal source.
+   Self-contained (not folded into the shared markdown selector group) so the
+   small reasoning box keeps its own tighter spacing + secondary-text tone. */
+.thinking-card__content--md {
+  white-space: normal;
+  font-family: inherit;
+}
+.thinking-card__content--md * { color: var(--text-secondary); }
+.thinking-card__content--md p { margin: 0 0 var(--space-sm) 0; }
+.thinking-card__content--md p:last-child { margin-bottom: 0; }
+.thinking-card__content--md ul,
+.thinking-card__content--md ol {
+  padding-left: var(--space-xl);
+  margin: var(--space-xs) 0 var(--space-sm) 0;
+}
+.thinking-card__content--md li { margin-bottom: 2px; }
+.thinking-card__content--md h1,
+.thinking-card__content--md h2,
+.thinking-card__content--md h3,
+.thinking-card__content--md h4,
+.thinking-card__content--md h5,
+.thinking-card__content--md h6 {
+  margin: var(--space-sm) 0 var(--space-xs) 0;
+  font-weight: 600;
+  font-size: 1em;
+}
+.thinking-card__content--md code {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  background: var(--surface-hover);
+  border-radius: var(--radius-sm);
+  padding: 1px 4px;
+}
+.thinking-card__content--md pre {
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-sm);
+  overflow-x: auto;
+  margin: var(--space-sm) 0;
+}
+.thinking-card__content--md pre code { background: none; padding: 0; }
+
 /* ===== Regenerate button =================================================
    The visibility logic (`display: none` by default, override on
    `:last-child.message--assistant:not(.message--streaming)`) MUST remain

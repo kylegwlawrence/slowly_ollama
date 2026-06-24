@@ -29,5 +29,9 @@
     <span id="{{ summary_id }}">{{ summary }}</span>
     <span class="thinking-card__chevron material-symbols-outlined">chevron_right</span>
   </summary>
-  <div id="{{ content_id }}" class="thinking-card__content">{{ content }}</div>
+  {# `markdown` is set on the collapse + historic renders (the full reasoning
+     is known), so the closed card reads as prose. The live `open` stream keeps
+     it raw — chunks arrive piecemeal and can't be markdown-parsed mid-stream,
+     and `render_thinking_append` appends raw text spans into this same div. #}
+  <div id="{{ content_id }}" class="thinking-card__content{% if markdown %} thinking-card__content--md{% endif %}">{% if markdown %}{{ content | markdown | safe }}{% else %}{{ content }}{% endif %}</div>
 </details>

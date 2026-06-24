@@ -542,6 +542,39 @@ def _build_classic_tool_batch(
 # ---------------------------------------------------------------------------
 
 
+def _oob_insert(inner_html: str, *, swap: str, wrapper: str = "div") -> str:
+    """Wrap a fragment for a *positional* out-of-band insert.
+
+    htmx applies a positional OOB swap (``beforebegin`` / ``beforeend`` /
+    ``afterbegin`` / ``afterend``) by inserting the swap element's CHILDREN and
+    discarding the element itself (see ``u()`` in ``static/htmx.min.js``).
+    Putting ``hx-swap-oob`` directly on a wrapper we need to keep — a
+    ``<details>`` card or an ``<li>`` row — therefore strips that wrapper and
+    leaves its bare contents in the DOM: no card chrome, and the
+    ``<details>`` / ``<li>`` id never exists, so the later id-matched
+    freeze/collapse/summary swaps that target it fail with
+    ``htmx:oobErrorNoTarget``. Wrapping the real element in a disposable parent
+    makes it a child, so htmx inserts it intact and only the wrapper is dropped.
+
+    Mirrors the sidebar-row convention in ``app/routes/projects.py`` (a new
+    ``<li>`` wrapped in ``<ul hx-swap-oob=…>``). ``outerHTML`` OOB swaps keep
+    the matched element, so the freeze/collapse/summary swaps don't need this.
+
+    Args:
+        inner_html: Rendered fragment whose root element must survive. It must
+            NOT itself carry ``hx-swap-oob`` (render it with ``swap_oob=None``),
+            or htmx would process the inner OOB too and re-strip it.
+        swap: The ``hx-swap-oob`` value, e.g. ``"beforebegin:#assistant-stream-3"``.
+        wrapper: Tag for the disposable parent. ``"div"`` for a ``<details>``
+            card; ``"ul"`` for an ``<li>`` row so the throwaway markup stays
+            valid HTML.
+
+    Returns:
+        ``inner_html`` wrapped in ``<{wrapper} hx-swap-oob="{swap}">…</{wrapper}>``.
+    """
+    return f'<{wrapper} hx-swap-oob="{swap}">{inner_html}</{wrapper}>'
+
+
 def render_tool_card_initial(
     *,
     card_id: str,
@@ -556,14 +589,20 @@ def render_tool_card_initial(
     placeholder's preceding sibling via
     ``beforebegin:#assistant-stream-{conversation_id}``. Subsequent calls hit
     :func:`render_tool_card_row_append`.
+
+    The ``<details>`` is rendered without its own ``hx-swap-oob`` and wrapped by
+    :func:`_oob_insert`, so htmx's positional swap can't strip the card wrapper.
     """
-    return templates.get_template("_tool_card_shell.html").render(
+    card_html = templates.get_template("_tool_card_shell.html").render(
         card_id=card_id,
         list_id=list_id,
         summary_id=summary_id,
         summary_text=summary_text(1, done=False),
         rows=[live_row],
-        swap_oob=f"beforebegin:#assistant-stream-{conversation_id}",
+        swap_oob=None,
+    )
+    return _oob_insert(
+        card_html, swap=f"beforebegin:#assistant-stream-{conversation_id}"
     )
 
 
@@ -582,17 +621,24 @@ def render_tool_card_row_append(
 
     ``call_index`` is the zero-based count BEFORE this call landed, so the
     display count is ``call_index + 1``.
+
+    The ``<li>`` is rendered without its own ``hx-swap-oob`` and wrapped by
+    :func:`_oob_insert` (in a ``<ul>``), so htmx's positional ``beforeend``
+    swap appends the real ``<li>`` rather than stripping it to bare spans.
     """
     row_html = templates.get_template("_tool_row.html").render(
         row=live_row,
-        swap_oob=f"beforeend:#{list_id}",
+        swap_oob=None,
+    )
+    wrapped_row = _oob_insert(
+        row_html, swap=f"beforeend:#{list_id}", wrapper="ul"
     )
     summary_html = (
         f'<span id="{summary_id}" hx-swap-oob="outerHTML">'
         f"{html.escape(summary_text(call_index + 1, done=False))}"
         f"</span>"
     )
-    return row_html + summary_html
+    return wrapped_row + summary_html
 
 
 def render_tool_card_row_freeze(frozen_row: ToolRowView) -> str:
@@ -693,15 +739,25 @@ def render_thinking_open(
     the summary reads ``Thinking…``. Subsequent chunks hit
     :func:`render_thinking_append`; the first content chunk hits
     :func:`render_thinking_collapse`.
+
+    The ``<details>`` is rendered without its own ``hx-swap-oob`` and wrapped by
+    :func:`_oob_insert`, so htmx's positional swap can't strip the card wrapper
+    (which would orphan ``#{card_id}`` and break the later collapse swap).
+    Reasoning streams raw (``markdown=False``); the collapse re-renders it as
+    markdown.
     """
-    return templates.get_template("_thinking_card.html").render(
+    card_html = templates.get_template("_thinking_card.html").render(
         card_id=card_id,
         content_id=content_id,
         summary_id=summary_id,
         summary=summary_text_thinking(done=False),
         content=first_text,
         open=True,
-        swap_oob=f"beforebegin:#assistant-stream-{conversation_id}",
+        swap_oob=None,
+        markdown=False,
+    )
+    return _oob_insert(
+        card_html, swap=f"beforebegin:#assistant-stream-{conversation_id}"
     )
 
 
@@ -732,6 +788,11 @@ def render_thinking_collapse(
     thinking-only stream, after the loop). ``swap_oob="outerHTML"`` replaces
     the whole ``<details>`` by id with a closed copy carrying the full
     accumulated reasoning; the summary swaps to ``Thoughts``.
+
+    ``swap_oob="outerHTML"`` matches ``#{card_id}`` and replaces the whole
+    element, so it keeps the ``<details>`` wrapper and needs no :func:`_oob_insert`.
+    The collapsed copy renders the reasoning as markdown (``markdown=True``) —
+    the live ``open`` card streamed it raw.
     """
     return templates.get_template("_thinking_card.html").render(
         card_id=card_id,
@@ -741,6 +802,7 @@ def render_thinking_collapse(
         content=full_text,
         open=False,
         swap_oob="outerHTML",
+        markdown=True,
     )
 
 

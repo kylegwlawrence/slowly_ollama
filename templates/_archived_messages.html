@@ -22,6 +22,7 @@
         {% set content = block.thinking_text %}
         {% set open = False %}
         {% set swap_oob = none %}
+        {% set markdown = True %}
         {% include "_thinking_card.html" %}
       {% else %}
         {% set message = block.message %}

@@ -741,6 +741,14 @@ def test_render_tool_card_initial_emits_full_card_with_beforebegin_swap() -> Non
     assert 'id="tool-card-T-row-0"' in html_out
     # OOB swap is the beforebegin selector with the conversation_id.
     assert 'hx-swap-oob="beforebegin:#assistant-stream-42"' in html_out
+    # The swap lives on a throwaway <div> wrapper, NOT on the <details>:
+    # htmx's positional OOB inserts the swap element's children and discards
+    # the element, so an hx-swap-oob on the <details> would strip the card
+    # chrome (see app/render._oob_insert). The <details> must render clean.
+    assert html_out.lstrip().startswith(
+        '<div hx-swap-oob="beforebegin:#assistant-stream-42">'
+    )
+    assert '<details id="tool-card-T" class="tool-card">' in html_out
     # Summary text is present tense, singular.
     assert "using 1 tool" in html_out
 
@@ -754,8 +762,13 @@ def test_render_tool_card_row_append_emits_row_plus_summary_bump() -> None:
         summary_id="tool-card-T-summary",
         call_index=1,
     )
-    # Row append into the existing list.
+    # Row append into the existing list. The swap lives on a <ul> wrapper, not
+    # the <li> — a positional OOB on the <li> would strip it to bare spans and
+    # orphan #tool-card-T-row-1 (so the later freeze swap can't find it). See
+    # app/render._oob_insert.
     assert 'hx-swap-oob="beforeend:#tool-card-T-list"' in html_out
+    assert '<ul hx-swap-oob="beforeend:#tool-card-T-list">' in html_out
+    assert '<li id="tool-card-T-row-1" class="tool-row"' in html_out
     assert 'id="tool-card-T-row-1"' in html_out
     # Summary swap to "using 2 tools…" (pluralized).
     assert 'id="tool-card-T-summary"' in html_out
@@ -865,10 +878,19 @@ def test_render_thinking_open_emits_open_card_with_anchor() -> None:
     assert "<details" in html_out
     assert " open" in html_out
     assert 'hx-swap-oob="beforebegin:#assistant-stream-7"' in html_out
+    # Swap lives on a throwaway <div>, not the <details>: a positional OOB on
+    # the card would strip #thinking-card-T and break the later collapse swap
+    # (see app/render._oob_insert).
+    assert html_out.lstrip().startswith(
+        '<div hx-swap-oob="beforebegin:#assistant-stream-7">'
+    )
+    assert '<details id="thinking-card-T" class="thinking-card" open>' in html_out
     assert "psychology" in html_out  # the icon glyph
     assert "Thinking…" in html_out
     assert 'id="thinking-card-T-content"' in html_out
+    # Live stream renders reasoning raw (markdown applied only on collapse).
     assert "Let me reason" in html_out
+    assert "thinking-card__content--md" not in html_out
 
 
 def test_render_thinking_open_escapes_reasoning_text() -> None:
@@ -909,6 +931,23 @@ def test_render_thinking_collapse_replaces_card_closed() -> None:
     assert " open" not in html_out
     assert "Thoughts" in html_out
     assert "the full reasoning" in html_out
+
+
+def test_render_thinking_collapse_renders_reasoning_as_markdown() -> None:
+    """The collapsed card renders the reasoning through the markdown filter
+    (the live `open` stream showed it raw), so `**bold**` and list syntax read
+    as prose instead of literal source — fixes raw `**` showing in the box."""
+    html_out = render_thinking_collapse(
+        card_id="thinking-card-T",
+        content_id="thinking-card-T-content",
+        summary_id="thinking-card-T-summary",
+        full_text="Step **one** is key\n\n- a\n- b",
+    )
+    # Markdown was applied: emphasis + list became HTML, not raw asterisks.
+    assert "thinking-card__content--md" in html_out
+    assert "<strong>one</strong>" in html_out
+    assert "<li>a</li>" in html_out
+    assert "**one**" not in html_out
 
 
 def test_group_messages_emits_thinking_block_before_assistant() -> None:
