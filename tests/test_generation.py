@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from app import generation, ollama, queries
+from app._time import today_utc
 from app.connection import open_connection
 from app.db import initialize_database
 from app.generation import _build_history_payload
@@ -451,7 +452,8 @@ async def test_generation_injects_system_prompt_when_tools_present(
     tmp_path, monkeypatch
 ):
     """When tools are sent (capable model + ≥1 enabled tool), every
-    /api/chat body leads with the single-agent system prompt."""
+    /api/chat body leads with the current-date line joined to the
+    single-agent system prompt."""
     from app.tools import builtins  # noqa: F401 — registers current_time
     from app.generation import SINGLE_AGENT_SYSTEM_PROMPT
 
@@ -504,14 +506,12 @@ async def test_generation_injects_system_prompt_when_tools_present(
 
     assert captured_bodies, "expected at least one /api/chat call"
     # Both the non-stream probe and the streaming reply must lead with
-    # the system prompt.
+    # the system prompt: current-date line + tool nudge.
+    expected = f"Current date: {today_utc()} (UTC).\n\n" + SINGLE_AGENT_SYSTEM_PROMPT
     for body in captured_bodies:
         msgs = body.get("messages") or []
         assert msgs, f"expected messages in body: {body}"
-        assert msgs[0] == {
-            "role": "system",
-            "content": SINGLE_AGENT_SYSTEM_PROMPT,
-        }
+        assert msgs[0] == {"role": "system", "content": expected}
 
 
 def test_turn_tool_specs_includes_all_registered_tools(tmp_path) -> None:
@@ -572,15 +572,21 @@ def test_turn_tool_specs_includes_query_rag_when_servers_configured(
 
 
 @pytest.mark.asyncio
-async def test_generation_omits_system_prompt_when_no_tools(
+async def test_generation_injects_date_only_when_no_tools_no_project_prompt(
     tmp_path, monkeypatch
 ):
-    """When the model isn't tool-capable, ``tools_payload`` is None and
-    the system prompt is NOT injected — the plain-chat path stays
-    prompt-free."""
+    """Even on the bare plain-chat path (no tools, no project prompt), the
+    current-date line is injected as the system message. The date is
+    grounded unconditionally so the model never answers time-sensitive
+    questions from frozen training knowledge."""
     db_path = tmp_path / "chats.db"
     conv_id = _setup_chat(db_path)
     monkeypatch.setenv("DB_PATH", str(db_path))
+    # Lock the chat name so the auto-titler doesn't fire — its /api/chat
+    # call deliberately carries no system prompt and would otherwise
+    # pollute captured_bodies.
+    with open_connection(db_path) as conn:
+        queries.rename_conversation(conn, conv_id, "locked")
 
     captured_bodies: list[dict] = []
 
@@ -620,11 +626,10 @@ async def test_generation_omits_system_prompt_when_no_tools(
         await state.task
 
     assert captured_bodies, "expected at least one /api/chat call"
+    expected = f"Current date: {today_utc()} (UTC)."
     for body in captured_bodies:
         msgs = body.get("messages") or []
-        assert all(m.get("role") != "system" for m in msgs), (
-            f"system prompt leaked into the no-tools path: {body}"
-        )
+        assert msgs[0] == {"role": "system", "content": expected}
 
 
 def _set_default_project_system_prompt(db_path: Path, prompt: str) -> None:
@@ -641,8 +646,8 @@ async def test_generation_injects_project_system_prompt_on_normal_chat_without_t
     tmp_path, monkeypatch
 ):
     """When a Normal chat has no tools but the owning project has a
-    system prompt, every /api/chat body leads with that prompt (no nudge
-    suffix, since no tools were sent)."""
+    system prompt, every /api/chat body leads with the current-date line
+    joined to that prompt (no nudge suffix, since no tools were sent)."""
     db_path = tmp_path / "chats.db"
     conv_id = _setup_chat(db_path)
     monkeypatch.setenv("DB_PATH", str(db_path))
@@ -688,12 +693,10 @@ async def test_generation_injects_project_system_prompt_on_normal_chat_without_t
         await state.task
 
     assert captured, "expected at least one /api/chat call"
+    expected = f"Current date: {today_utc()} (UTC).\n\nSpeak like a pirate."
     for body in captured:
         msgs = body.get("messages") or []
-        assert msgs[0] == {
-            "role": "system",
-            "content": "Speak like a pirate.",
-        }
+        assert msgs[0] == {"role": "system", "content": expected}
 
 
 @pytest.mark.asyncio
@@ -750,7 +753,13 @@ async def test_generation_combines_project_prompt_with_tool_nudge_when_tools_pre
         )
         await state.task
 
-    expected = "Be terse." + "\n\n" + SINGLE_AGENT_SYSTEM_PROMPT
+    expected = (
+        f"Current date: {today_utc()} (UTC)."
+        + "\n\n"
+        + "Be terse."
+        + "\n\n"
+        + SINGLE_AGENT_SYSTEM_PROMPT
+    )
     for body in captured:
         msgs = body.get("messages") or []
         assert msgs[0] == {"role": "system", "content": expected}

@@ -30,6 +30,7 @@ from typing import Literal
 import httpx
 
 from app import backup, ollama, queries, rag_servers as _rag_servers, render
+from app._time import today_utc
 from app.ollama import OllamaProtocolError, OllamaUnavailable
 from app.projects import current_workspace_root, project_workspace_root
 from app.templates import templates
@@ -560,15 +561,20 @@ async def _run_generation(
         # turn still runs without project-scoped extras.
         _project = None
 
-    # System prompt = project prompt (when set) + tool-use nudge (only when
-    # tools are sent). With neither, omit the system message entirely so
-    # plain chat stays byte-identical for users who haven't set one.
-    parts: list[str] = []
+    # System prompt = current date + project prompt (when set) + tool-use
+    # nudge (only when tools are sent). The date is injected unconditionally,
+    # fresh each turn, so the model never answers time-sensitive questions
+    # from its frozen training knowledge — it doesn't have to *recognise* a
+    # question as date-dependent, the date is simply always in context. This
+    # gives up the former "no system message on bare plain chat" property,
+    # but the line is factual rather than behavioural, so it's unlikely to
+    # shift small-model behaviour.
+    parts: list[str] = [f"Current date: {today_utc()} (UTC)."]
     if _project is not None and _project.system_prompt:
         parts.append(_project.system_prompt)
     if tools_payload is not None:
         parts.append(SINGLE_AGENT_SYSTEM_PROMPT)
-    system_prompt = "\n\n".join(parts) if parts else None
+    system_prompt = "\n\n".join(parts)
 
     turn_id = str(time.monotonic_ns())
     card_id = render.card_id_for(turn_id)
