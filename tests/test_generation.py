@@ -1881,7 +1881,9 @@ async def test_producer_persists_thinking_on_replace_path(tmp_path, monkeypatch)
 async def test_producer_collapses_thinking_only_stream(tmp_path, monkeypatch):
     """A stream with reasoning but no visible content still collapses the
     card (so it doesn't hang in the 'Thinking…' state) and persists the
-    reasoning."""
+    reasoning. With no answer from the stream OR the tool probe (both empty
+    here), the turn falls back to the empty-answer note instead of a blank
+    bubble."""
     db_path = tmp_path / "chats.db"
     conv_id = _setup_chat(db_path)
     monkeypatch.setenv("DB_PATH", str(db_path))
@@ -1909,17 +1911,77 @@ async def test_producer_collapses_thinking_only_stream(tmp_path, monkeypatch):
         await state.task
 
     think_payloads = [p for (ev, p) in state.events if ev == "think"]
-    # Open + collapse, no append (single chunk), no token.
+    # Open + collapse, no append (single chunk).
     assert len(think_payloads) == 2
     assert "Thinking…" in think_payloads[0]
     assert 'hx-swap-oob="outerHTML"' in think_payloads[1]
     assert "Thoughts" in think_payloads[1]
-    assert [ev for (ev, _p) in state.events].count("token") == 0
+    # The empty answer falls back to the note, emitted as a single token so the
+    # live placeholder fills in rather than staying blank.
+    assert [ev for (ev, _p) in state.events].count("token") == 1
 
     with open_connection(db_path) as db:
         msgs = queries.list_messages(db, conv_id)
     assistant = [m for m in msgs if m.role == "assistant"][-1]
     assert assistant.thinking == "only reasoning"
+    # Probe content was empty too, so the persisted answer is the note.
+    assert assistant.content == generation._EMPTY_ANSWER_FALLBACK
+
+
+@pytest.mark.asyncio
+async def test_producer_recovers_probe_content_when_stream_empty(
+    tmp_path, monkeypatch
+):
+    """When the streaming call yields no visible content but the tool probe
+    answered, the turn recovers the probe's content instead of leaving a blank
+    bubble (the pagan-message failure mode)."""
+    db_path = tmp_path / "chats.db"
+    conv_id = _setup_chat(db_path)
+    monkeypatch.setenv("DB_PATH", str(db_path))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content or b"{}")
+        if body.get("stream"):
+            # Streaming call: only reasoning, no content (the failure mode).
+            return httpx.Response(
+                200,
+                content=(
+                    b'{"message":{"thinking":"hmm","content":""},"done":false}\n'
+                    b'{"message":{"content":""},"done":true}\n'
+                ),
+            )
+        # Non-streaming probe: no tool call, but a real answer in content.
+        return httpx.Response(
+            200,
+            json={"message": {"content": "The recovered answer.", "tool_calls": []}},
+        )
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://test"
+    )
+
+    async def _not_capable(*args, **kwargs):
+        return False
+
+    monkeypatch.setattr(ollama, "model_supports_tools", _not_capable)
+
+    with open_connection(db_path) as db:
+        state = await generation.start_generation(
+            client=client, db=db, conversation_id=conv_id, model="qwen3",
+            history=queries.list_messages(db, conv_id), on_complete="append",
+        )
+        await state.task
+
+    token_payloads = [p for (ev, p) in state.events if ev == "token"]
+    assert len(token_payloads) == 1
+    assert "The recovered answer." in token_payloads[0]
+
+    with open_connection(db_path) as db:
+        msgs = queries.list_messages(db, conv_id)
+    assistant = [m for m in msgs if m.role == "assistant"][-1]
+    # Recovered the probe's answer, not the fallback note or an empty string.
+    assert assistant.content == "The recovered answer."
+    assert assistant.thinking == "hmm"
 
 
 @pytest.mark.asyncio

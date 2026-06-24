@@ -53,6 +53,17 @@ logger = logging.getLogger(__name__)
 # Hard ceiling on tool rounds per assistant turn before we bail out.
 _TOOL_ITERATION_CAP = 5
 
+# Shown when a turn produces no visible answer at all — neither the streaming
+# call nor the recovered tool-probe content yielded any text. A thinking model
+# can spend a whole turn reasoning (and even "decide" mid-stream to call a tool
+# the no-tools streaming call can't run), leaving an otherwise-blank bubble.
+# A short note is clearer than an empty bubble; the reasoning is still kept in
+# the collapsed thinking card.
+_EMPTY_ANSWER_FALLBACK = (
+    "_(The model stopped after reasoning without producing an answer. "
+    "Try rephrasing or asking again.)_"
+)
+
 
 # Minimal system prompt injected ONLY on turns where tools are available
 # (see `_run_generation`). Local models tend to under-call tools without an
@@ -598,6 +609,12 @@ async def _run_generation(
     chunks: list[str] = []
     thinking_chunks: list[str] = []
     persisted_or_errored = False
+    # Content the tool-probe returned on the round it decided NOT to call a
+    # tool. The probe (`maybe_tool_call`) often carries the actual answer there;
+    # the loop normally discards it and re-streams. We keep it as a recovery
+    # source for the rare turn whose streaming call comes back empty (see the
+    # empty-answer fallback after the stream).
+    probe_content = ""
 
     # Scope file tools to this chat's project workspace for the turn. The
     # ContextVar wraps the whole producer body; tool calls inside see the
@@ -616,7 +633,7 @@ async def _run_generation(
     try:
         for iteration in range(tool_iteration_cap):
             try:
-                tool_calls, _content = await ollama.maybe_tool_call(
+                tool_calls, probe_content = await ollama.maybe_tool_call(
                     client,
                     model,
                     _build_history_payload(working_history, system_prompt),
@@ -635,6 +652,9 @@ async def _run_generation(
                 return
 
             if not tool_calls:
+                # `probe_content` now holds whatever this round answered with;
+                # the empty-answer fallback below recovers it if the streaming
+                # call yields nothing.
                 break
 
             for call in tool_calls:
@@ -828,6 +848,16 @@ async def _run_generation(
             )
 
         full_text = "".join(chunks)
+        # Empty-answer recovery. The streaming call (which carries no tools) can
+        # finish having emitted only reasoning — e.g. a thinking model that
+        # "decides" mid-stream to call a tool it can't reach here. Rather than
+        # persist a blank bubble, fall back to the tool-probe's content (often
+        # the real answer, otherwise empty), then to a short note. Emit it as a
+        # token so the live placeholder fills in before the done swap, matching
+        # the normal streaming path. The reasoning is still kept below.
+        if not full_text.strip():
+            full_text = probe_content if probe_content.strip() else _EMPTY_ANSWER_FALLBACK
+            await _emit(state, "token", html.escape(full_text))
         # Persist the reasoning so a reload rebuilds the collapsed card. None
         # (not "") on a non-reasoning turn keeps the column NULL and the
         # historic render free of an empty thinking card.
