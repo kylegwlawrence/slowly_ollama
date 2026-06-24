@@ -12,7 +12,7 @@ from app import generation, ollama, queries
 from app._time import today_utc
 from app.connection import open_connection
 from app.db import initialize_database
-from app.generation import _build_history_payload, _opening_exchange
+from app.generation import _build_history_payload, _title_context
 from app.queries import Message
 
 
@@ -1353,9 +1353,10 @@ def test_build_history_payload_drops_phase13_agentic_rows() -> None:
     assert "review_verdict" not in roles
 
 
-def test_opening_exchange_picks_first_user_and_assistant() -> None:
-    """The titler gets only the opening exchange — first user turn plus the
-    first non-empty assistant turn — so prefill stays small and bounded."""
+def test_title_context_keeps_all_user_and_assistant_turns() -> None:
+    """The titler gets every user+assistant turn so far (not just the
+    opening), so a later title pass can refine on the newer turns. The
+    caller's `1 <= count <= 3` guard bounds the list to a few turns."""
     now = datetime.now(timezone.utc)
     history = [
         Message(id=1, conversation_id=1, role="user",
@@ -1367,11 +1368,14 @@ def test_opening_exchange_picks_first_user_and_assistant() -> None:
         Message(id=4, conversation_id=1, role="assistant",
                 content="second answer", created_at=now),
     ]
-    out = _opening_exchange(history)
-    assert [m.content for m in out] == ["first question", "first answer"]
+    out = _title_context(history)
+    assert [m.content for m in out] == [
+        "first question", "first answer",
+        "second question", "second answer",
+    ]
 
 
-def test_opening_exchange_skips_tool_and_summary_rows() -> None:
+def test_title_context_skips_tool_and_summary_rows() -> None:
     """Tool-call/result and summary rows are noise for a title and a
     tool-interleaving hazard — only clean user/assistant text is kept."""
     now = datetime.now(timezone.utc)
@@ -1388,17 +1392,17 @@ def test_opening_exchange_skips_tool_and_summary_rows() -> None:
         Message(id=5, conversation_id=1, role="assistant",
                 content="the reply", created_at=now),
     ]
-    out = _opening_exchange(history)
+    out = _title_context(history)
     assert [(m.role, m.content) for m in out] == [
         ("user", "the request"),
         ("assistant", "the reply"),
     ]
 
 
-def test_opening_exchange_caps_content_length() -> None:
-    """Each opening turn is truncated to a fixed budget so the title call's
-    prefill stays bounded even when the first message is huge (e.g. a pasted
-    document or a long first reply)."""
+def test_title_context_caps_each_turn_content_length() -> None:
+    """Each turn is truncated to a fixed per-message budget so the title
+    call's prefill stays bounded even when a message is huge (e.g. a pasted
+    document or a long reply)."""
     from app.generation import _TITLE_CONTENT_BUDGET
 
     now = datetime.now(timezone.utc)
@@ -1408,7 +1412,7 @@ def test_opening_exchange_caps_content_length() -> None:
         Message(id=2, conversation_id=1, role="assistant",
                 content="a" * 5000, created_at=now),
     ]
-    out = _opening_exchange(history)
+    out = _title_context(history)
     assert [len(m.content) for m in out] == [
         _TITLE_CONTENT_BUDGET, _TITLE_CONTENT_BUDGET,
     ]
@@ -1416,7 +1420,7 @@ def test_opening_exchange_caps_content_length() -> None:
     assert out[0].content == "u" * _TITLE_CONTENT_BUDGET
 
 
-def test_opening_exchange_skips_empty_assistant_and_tolerates_missing_reply() -> None:
+def test_title_context_skips_empty_assistant_and_tolerates_missing_reply() -> None:
     """An assistant turn that streamed only reasoning (empty text) is
     skipped; if no text reply exists yet, the user turn alone is enough."""
     now = datetime.now(timezone.utc)
@@ -1426,7 +1430,7 @@ def test_opening_exchange_skips_empty_assistant_and_tolerates_missing_reply() ->
         Message(id=2, conversation_id=1, role="assistant",
                 content="   ", created_at=now),
     ]
-    out = _opening_exchange(history)
+    out = _title_context(history)
     assert [(m.role, m.content) for m in out] == [("user", "just asked")]
 
 

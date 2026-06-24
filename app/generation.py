@@ -446,32 +446,32 @@ build_history_payload = _build_history_payload
 _TITLE_CONTENT_BUDGET = 800
 
 
-def _opening_exchange(history: list) -> list:
-    """Pick the conversation's opening exchange for title generation.
+def _title_context(history: list) -> list:
+    """Pick the user+assistant turns to title the conversation from.
 
-    Returns the first ``user`` message and the first ``assistant`` message
-    with non-empty text, in order, each truncated to ``_TITLE_CONTENT_BUDGET``
-    characters. Tool-call/result and summary rows are skipped — they add
-    tokens (and tool-interleaving hazards) without sharpening a title. The
-    assistant turn is optional: a title can be drawn from the opening request
-    alone if no text reply exists yet.
+    Returns every ``user`` message and every non-empty ``assistant`` message,
+    in order, each truncated to ``_TITLE_CONTENT_BUDGET`` characters.
+    Tool-call/result and summary rows are skipped — they add tokens (and
+    tool-interleaving hazards) without sharpening a title. Assistant turns are
+    optional: a title can be drawn from the user turns alone if no text reply
+    exists yet.
+
+    The caller fires the titler only for the first few assistant replies
+    (``_maybe_emit_title``'s ``1 <= count <= 3`` guard), so this list stays a
+    handful of turns even on a chat that later grows long. That bound is what
+    keeps the title call's prefill cheap — see ``_maybe_emit_title``.
 
     Args:
         history: Active conversation Message rows, oldest first.
 
     Returns:
-        A list of 0-2 Message rows (length-capped copies): the first user
-        turn, then the first non-empty assistant turn if present.
+        A list of length-capped Message copies: the user and non-empty
+        assistant text turns so far, oldest first.
     """
-    first_user = next((m for m in history if m.role == "user"), None)
-    first_assistant = next(
-        (m for m in history if m.role == "assistant" and m.content.strip()),
-        None,
-    )
     return [
         replace(m, content=m.content[:_TITLE_CONTENT_BUDGET])
-        for m in (first_user, first_assistant)
-        if m is not None
+        for m in history
+        if m.role == "user" or (m.role == "assistant" and m.content.strip())
     ]
 
 
@@ -513,23 +513,25 @@ async def _maybe_emit_title(
     # Title generation runs on the ACTIVE (post-compact) history so the
     # title reflects what the conversation is now, not an archived prefix.
     #
-    # We feed the titler only the OPENING exchange (first user + first
-    # assistant turn), not the whole conversation. Two reasons:
+    # We feed the titler every user+assistant turn SO FAR (tool/summary rows
+    # skipped), so each of the up-to-three title passes refines using the
+    # latest turns, not just the opening request. The `1 <= count <= 3` guard
+    # above bounds this to a few short turns, which is what keeps it cheap:
     #   1. Speed/reliability. `generate_title` forces `think: False`, but the
     #      reply we just streamed was generated with the chat's own think
     #      setting (thinking ON for reasoning models). The flag change renders
     #      a different prompt template, so Ollama's prompt cache misses and it
-    #      re-prefills the ENTIRE conversation — tens of seconds on a long
-    #      chat, blowing the title timeout and silently skipping the rename.
-    #      A bounded opening exchange keeps the prefill small and fast.
-    #   2. Quality. The first request is what defines a chat's subject; the
-    #      whole transcript adds tokens (and cost) without a better title.
-    opening = _opening_exchange(queries.list_active_messages(db, conversation_id))
+    #      re-prefills the turns we send. A handful of bounded turns keeps that
+    #      prefill small and under the title timeout — the hazard only bites on
+    #      a LONG transcript, which the firing window rules out.
+    #   2. Quality. A subject that only emerges over replies 2-3 can sharpen
+    #      the title instead of being ignored.
+    context = _title_context(queries.list_active_messages(db, conversation_id))
     try:
         title = await ollama.generate_title(
             client,
             conversation.model,
-            _build_history_payload(opening),
+            _build_history_payload(context),
             host=ollama_host,
         )
     except (OllamaUnavailable, OllamaProtocolError) as e:
