@@ -62,7 +62,9 @@ SINGLE_AGENT_SYSTEM_PROMPT = (
     "You have tools available. Call one only when its result would change "
     "your answer — prefer retrieval over memory for questions grounded in "
     "the user's configured knowledge sources. Don't call tools speculatively. "
-    "If the user asks for a specific tool, use it."
+    "If the user asks for a specific tool, use it. "
+    "The current date is already provided. Call the time tool only for the "
+    "precise time of day or a different timezone."
 )
 
 

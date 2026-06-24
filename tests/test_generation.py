@@ -514,6 +514,17 @@ async def test_generation_injects_system_prompt_when_tools_present(
         assert msgs[0] == {"role": "system", "content": expected}
 
 
+def test_single_agent_prompt_steers_off_redundant_time_tool() -> None:
+    """The tool nudge tells the model the date is already in context, so it
+    doesn't redundantly call the time tool just to learn today's date."""
+    from app.generation import SINGLE_AGENT_SYSTEM_PROMPT
+
+    assert "The current date is already provided." in SINGLE_AGENT_SYSTEM_PROMPT
+    assert "precise time of day or a different timezone" in (
+        SINGLE_AGENT_SYSTEM_PROMPT
+    )
+
+
 def test_turn_tool_specs_includes_all_registered_tools(tmp_path) -> None:
     """Every registered (non-RAG) tool is offered — phase 23 removed the
     per-chat chip / per-agent allowlist filtering."""
