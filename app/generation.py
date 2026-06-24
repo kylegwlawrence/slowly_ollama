@@ -480,11 +480,21 @@ async def _maybe_emit_title(
     client: httpx.AsyncClient,
     db: sqlite3.Connection,
     conversation_id: int,
+    ollama_host: str | None = None,
 ) -> None:
     """Fire the auto-titler after the 1st through 3rd assistant reply.
 
     Emits zero or one `title` SSE event via `_emit` (consumers see it before
     the final `done` because we emit in order).
+
+    Args:
+        state: The live generation's state (for emitting the `title` event).
+        client: The shared httpx client.
+        db: The shared SQLite connection.
+        conversation_id: The chat being titled.
+        ollama_host: The chat's selected Ollama host — the same machine that
+            just streamed the reply, so the model is resident there. Passed
+            through to `generate_title`; ``None`` targets the primary host.
 
     Silent skips (no event):
       - The chat was manually renamed (`name_locked`).
@@ -520,6 +530,7 @@ async def _maybe_emit_title(
             client,
             conversation.model,
             _build_history_payload(opening),
+            host=ollama_host,
         )
     except (OllamaUnavailable, OllamaProtocolError) as e:
         logger.warning("Title generation failed for conv %d: %s", conversation_id, e)
@@ -936,7 +947,9 @@ async def _run_generation(
         # the placeholder, which closes the EventSource, so anything emitted
         # after done is dropped.
         if on_complete == "append":
-            await _maybe_emit_title(state, client, db, conversation_id)
+            await _maybe_emit_title(
+                state, client, db, conversation_id, ollama_host=ollama_host
+            )
 
         # Final done event: persisted message bubble + past-tense tool-card
         # summary OOB.

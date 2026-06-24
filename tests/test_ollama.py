@@ -484,6 +484,30 @@ async def test_generate_title_uses_passed_model_and_appends_title_request() -> N
 
 
 @pytest.mark.asyncio
+async def test_generate_title_targets_host_override() -> None:
+    """A host override sends the title request to the chat's selected host.
+
+    The title call must land on the SAME machine that just streamed the
+    reply, where the model is resident — otherwise it hits the primary host
+    cold (a slow load that often trips the timeout and skips the rename).
+    """
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json={"message": {"content": "A Title"}})
+
+    async with _client_with(handler) as client:
+        title = await generate_title(
+            client, "llama3", [], host="http://host1:11434"
+        )
+
+    assert title == "A Title"
+    # base_url was http://test, but the override sent it to host1.
+    assert seen == ["http://host1:11434/api/chat"]
+
+
+@pytest.mark.asyncio
 async def test_generate_title_raises_unavailable_on_5xx() -> None:
     """5xx → OllamaUnavailable (no special-case for 404 anymore — we
     reuse the chat's own model, which is guaranteed installed)."""

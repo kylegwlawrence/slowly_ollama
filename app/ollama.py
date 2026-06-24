@@ -820,6 +820,7 @@ async def generate_title(
     client: httpx.AsyncClient,
     model: str,
     history: list[dict[str, str]],
+    host: str | None = None,
 ) -> str:
     """Ask the chat's own model to summarize the conversation as a title.
 
@@ -834,6 +835,11 @@ async def generate_title(
         history: The conversation so far — the same wire-format list
             ``stream_chat`` accepts. A title-request user turn is appended
             here; callers needn't.
+        host: Optional override base URL — the chat's selected Ollama host.
+            Must match the host that just streamed the reply, or the title
+            request lands on a *different* machine where the model isn't
+            resident (a cold load, often past the timeout). ``None`` falls
+            through to the client's ``base_url`` (the primary host).
 
     Returns:
         The generated title, stripped of surrounding quotes and known
@@ -880,7 +886,7 @@ async def generate_title(
         # ReadTimeout (an httpx.HTTPError), which the caller catches as
         # OllamaUnavailable → silent skip in _maybe_emit_title.
         response = await client.post(
-            "/api/chat", json=payload, timeout=20.0
+            _url("/api/chat", host), json=payload, timeout=20.0
         )
     except (httpx.HTTPError, httpx.InvalidURL) as e:
         raise OllamaUnavailable(f"Title request failed: {e}") from e

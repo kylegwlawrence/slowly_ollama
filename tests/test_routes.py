@@ -1761,7 +1761,7 @@ def test_stream_emits_title_event_after_assistant_reply(
     """After the first assistant reply the SSE stream emits a `title`
     event carrying the OOB-swap sidebar row with the new name."""
 
-    async def fake_generate_title(client, model, history):
+    async def fake_generate_title(client, model, history, host=None):
         return "Sandwiches in Space"
 
     monkeypatch.setattr(routes.ollama, "generate_title", fake_generate_title)
@@ -1793,7 +1793,7 @@ def test_stream_passes_conversation_model_to_title_generator(
 
     captured: dict = {}
 
-    async def fake_generate_title(client, model, history):
+    async def fake_generate_title(client, model, history, host=None):
         captured["model"] = model
         return "Anything"
 
@@ -1819,7 +1819,7 @@ def test_stream_skips_title_when_chat_is_locked(
 
     called = {"n": 0}
 
-    async def fake_generate_title(client, model, history):
+    async def fake_generate_title(client, model, history, host=None):
         called["n"] += 1
         return "Should Not Be Used"
 
@@ -1861,7 +1861,7 @@ def test_stream_stops_title_after_third_assistant_reply(
 
     calls = []
 
-    async def fake_generate_title(client, model, history):
+    async def fake_generate_title(client, model, history, host=None):
         calls.append(len(history))
         return f"Title {len(calls)}"
 
@@ -1908,7 +1908,7 @@ def test_regenerate_stream_does_not_emit_title(
 
     called = {"n": 0}
 
-    async def fake_generate_title(client, model, history):
+    async def fake_generate_title(client, model, history, host=None):
         called["n"] += 1
         return "Should not be set by regenerate"
 
