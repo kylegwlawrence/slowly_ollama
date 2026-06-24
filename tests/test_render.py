@@ -11,6 +11,7 @@ from app.render import (
     DedupedSource,
     MessageBlock,
     SummaryBlock,
+    ThinkingBlock,
     ToolBatchBlock,
     ToolRowView,
     card_id_for,
@@ -20,10 +21,14 @@ from app.render import (
     group_messages_for_render,
     render_done_card_oobs,
     render_oob_delete,
+    render_thinking_append,
+    render_thinking_collapse,
+    render_thinking_open,
     render_tool_card_initial,
     render_tool_card_row_append,
     render_tool_card_row_freeze,
     summary_text,
+    thinking_card_id_for,
 )
 from app.tools import Source, ToolResult, encode_tool_result
 
@@ -34,6 +39,7 @@ def _msg(
     role: str,
     content: str,
     created_at: datetime | None = None,
+    thinking: str | None = None,
 ) -> Message:
     """Tiny factory so tests don't repeat the dataclass spelling."""
     return Message(
@@ -43,6 +49,7 @@ def _msg(
         content=content,
         created_at=created_at
         or datetime(2026, 5, 19, 12, 0, id, tzinfo=timezone.utc),
+        thinking=thinking,
     )
 
 
@@ -831,3 +838,118 @@ def test_render_oob_delete_targets_id_with_delete_swap() -> None:
     assert 'hx-swap-oob="delete"' in html_out
 
 
+
+
+# ---------------------------------------------------------------------------
+# Thinking card (phase 28)
+# ---------------------------------------------------------------------------
+
+
+def test_thinking_card_id_for_format() -> None:
+    """The thinking-card id helper mirrors card_id_for's shape."""
+    assert thinking_card_id_for("hist-42") == "thinking-card-hist-42"
+    assert thinking_card_id_for("12345") == "thinking-card-12345"
+
+
+def test_render_thinking_open_emits_open_card_with_anchor() -> None:
+    """The first chunk's OOB is an open <details> inserted as the
+    placeholder's preceding sibling, labelled 'Thinking…'."""
+    html_out = render_thinking_open(
+        card_id="thinking-card-T",
+        content_id="thinking-card-T-content",
+        summary_id="thinking-card-T-summary",
+        first_text="Let me reason",
+        conversation_id=7,
+    )
+    assert 'id="thinking-card-T"' in html_out
+    assert "<details" in html_out
+    assert " open" in html_out
+    assert 'hx-swap-oob="beforebegin:#assistant-stream-7"' in html_out
+    assert "psychology" in html_out  # the icon glyph
+    assert "Thinking…" in html_out
+    assert 'id="thinking-card-T-content"' in html_out
+    assert "Let me reason" in html_out
+
+
+def test_render_thinking_open_escapes_reasoning_text() -> None:
+    """Reasoning text is HTML-escaped, not injected as markup."""
+    html_out = render_thinking_open(
+        card_id="thinking-card-T",
+        content_id="thinking-card-T-content",
+        summary_id="thinking-card-T-summary",
+        first_text="<script>alert(1)</script>",
+        conversation_id=1,
+    )
+    assert "<script>" not in html_out
+    assert "&lt;script&gt;" in html_out
+
+
+def test_render_thinking_append_appends_into_content_box() -> None:
+    """A subsequent chunk's OOB appends an escaped span into the content div."""
+    html_out = render_thinking_append(
+        content_id="thinking-card-T-content", text="more & more"
+    )
+    assert 'hx-swap-oob="beforeend:#thinking-card-T-content"' in html_out
+    assert "more &amp; more" in html_out
+    assert "<span" in html_out
+
+
+def test_render_thinking_collapse_replaces_card_closed() -> None:
+    """The collapse OOB replaces the whole card (outerHTML), closed, with
+    the full accumulated reasoning and the 'Thoughts' label."""
+    html_out = render_thinking_collapse(
+        card_id="thinking-card-T",
+        content_id="thinking-card-T-content",
+        summary_id="thinking-card-T-summary",
+        full_text="the full reasoning",
+    )
+    assert 'id="thinking-card-T"' in html_out
+    assert 'hx-swap-oob="outerHTML"' in html_out
+    # No `open` attribute → the card renders collapsed.
+    assert " open" not in html_out
+    assert "Thoughts" in html_out
+    assert "the full reasoning" in html_out
+
+
+def test_group_messages_emits_thinking_block_before_assistant() -> None:
+    """An assistant row WITH thinking yields a ThinkingBlock immediately
+    before its MessageBlock; the block carries the row's reasoning + a
+    stable hist- turn id."""
+    messages = [
+        _msg(id=1, role="user", content="q"),
+        _msg(id=2, role="assistant", content="a", thinking="because"),
+    ]
+    blocks = group_messages_for_render(messages)
+    assert [b.kind for b in blocks] == ["message", "thinking", "message"]
+    thinking = blocks[1]
+    assert isinstance(thinking, ThinkingBlock)
+    assert thinking.turn_id == "hist-2"
+    assert thinking.card_id == "thinking-card-hist-2"
+    assert thinking.content_id == "thinking-card-hist-2-content"
+    assert thinking.summary_id == "thinking-card-hist-2-summary"
+    assert thinking.thinking_text == "because"
+    assert thinking.summary == "Thoughts"
+    # The assistant bubble still renders exactly once (no duplicate).
+    assert blocks[2].kind == "message"
+    assert blocks[2].message.id == 2
+
+
+def test_group_messages_no_thinking_block_when_row_has_no_thinking() -> None:
+    """An assistant row without thinking yields no ThinkingBlock."""
+    messages = [
+        _msg(id=1, role="user", content="q"),
+        _msg(id=2, role="assistant", content="a"),
+    ]
+    blocks = group_messages_for_render(messages)
+    assert [b.kind for b in blocks] == ["message", "message"]
+
+
+def test_group_messages_no_thinking_block_for_user_row() -> None:
+    """Thinking only attaches to assistant rows (a user row with a stray
+    thinking value, defensively, gets no card)."""
+    messages = [
+        _msg(id=1, role="user", content="q", thinking="ignored"),
+        _msg(id=2, role="assistant", content="a"),
+    ]
+    blocks = group_messages_for_render(messages)
+    assert [b.kind for b in blocks] == ["message", "message"]

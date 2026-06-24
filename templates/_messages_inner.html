@@ -5,6 +5,7 @@
    Block kinds:
      - "message"    — standalone user / assistant bubble (_message.html)
      - "tool_batch" — aggregated tool card (_tool_card_shell.html)
+     - "thinking"   — collapsed reasoning card (_thinking_card.html)
      - "summary"    — synthetic compaction summary (_summary_bubble.html)
 
    Each branch sets up the loop-local variables its template expects.
@@ -20,6 +21,15 @@
       {% set rows = block.rows %}
       {% set swap_oob = none %}
       {% include "_tool_card_shell.html" %}
+    {% elif block.kind == "thinking" %}
+      {% set card_id = block.card_id %}
+      {% set content_id = block.content_id %}
+      {% set summary_id = block.summary_id %}
+      {% set summary = block.summary %}
+      {% set content = block.thinking_text %}
+      {% set open = False %}
+      {% set swap_oob = none %}
+      {% include "_thinking_card.html" %}
     {% elif block.kind == "summary" %}
       {% set message = block.message %}
       {% include "_summary_bubble.html" %}

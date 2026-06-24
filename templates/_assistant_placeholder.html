@@ -23,7 +23,12 @@
      `beforebegin:#assistant-stream-{id}`; subsequent tool-calls
      append rows + bump the summary count; each tool-result
      OOB-replaces its row with a frozen variant.
+   - `think` (phase 28): OOB fragments that build up the streamed
+     thinking card above this placeholder. The first thinking chunk
+     inserts the open card via `beforebegin:#assistant-stream-{id}`;
+     later chunks append reasoning text into it; the first answer token
+     OOB-replaces the whole card with a collapsed copy.
 
    Events not emitted for a given turn are silently ignored, so
    listing them all here is safe whether or not the turn used tools. #}
-<div id="assistant-stream-{{ conversation_id }}" class="message message--assistant message--streaming" data-role="assistant" hx-ext="sse" sse-connect="{{ stream_url }}" sse-swap="token,done,error,title,tool-call,tool-result" hx-swap="beforeend"></div>
+<div id="assistant-stream-{{ conversation_id }}" class="message message--assistant message--streaming" data-role="assistant" hx-ext="sse" sse-connect="{{ stream_url }}" sse-swap="token,think,done,error,title,tool-call,tool-result" hx-swap="beforeend"></div>

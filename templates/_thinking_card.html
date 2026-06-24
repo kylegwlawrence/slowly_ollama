@@ -1,0 +1,33 @@
+{# Streamed-reasoning card. Sits above an assistant message bubble, styled
+   like the tool-usage card (_tool_card_shell.html).
+
+   Three render contexts share this template:
+
+   1. **Live first thinking-chunk SSE event** (`render_thinking_open` in
+      app/render.py). `open=True` so the reasoning is visible as it
+      streams; `swap_oob` is "beforebegin:#assistant-stream-{id}" so HTMX
+      inserts the card as the placeholder's preceding sibling; `summary`
+      reads "Thinking…".
+
+   2. **Live collapse** (`render_thinking_collapse`), fired when the first
+      visible answer token arrives. `open=False`, `swap_oob="outerHTML"`
+      replaces the whole <details> by id with this closed copy carrying the
+      full accumulated reasoning; `summary` reads "Thoughts".
+
+   3. **Historic replay** (inside the block-iterating templates for each
+      `ThinkingBlock` from app/render.py). `swap_oob` unset; `open=False`;
+      `summary` is "Thoughts".
+
+   `content` is the reasoning text (Jinja-autoescaped). The content div is a
+   fixed-height scroll window auto-followed by a small JS hook in app.js as
+   text streams in. #}
+<details id="{{ card_id }}" class="thinking-card"
+         {%- if open %} open{% endif %}
+         {%- if swap_oob %} hx-swap-oob="{{ swap_oob }}"{% endif %}>
+  <summary class="thinking-card__summary">
+    <span class="material-symbols-outlined">psychology</span>
+    <span id="{{ summary_id }}">{{ summary }}</span>
+    <span class="thinking-card__chevron material-symbols-outlined">chevron_right</span>
+  </summary>
+  <div id="{{ content_id }}" class="thinking-card__content">{{ content }}</div>
+</details>

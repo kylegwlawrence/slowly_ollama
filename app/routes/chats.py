@@ -472,6 +472,15 @@ async def regenerate_endpoint(
         stale_oob = render.render_oob_delete(
             element_id=render.card_id_for(f"hist-{first_tool_call_id}")
         )
+    # The historic thinking card (phase 28) is likewise a sibling above the
+    # bubble, untouched by the `closest .message` swap; the new turn streams a
+    # fresh card under a different id, stacking two until reload. Delete the
+    # stale one by id. Conditional, so a no-thinking regenerate emits nothing.
+    regen_row = history[-1]
+    if regen_row.thinking:
+        stale_oob += render.render_oob_delete(
+            element_id=render.thinking_card_id_for(f"hist-{regen_row.id}")
+        )
     return HTMLResponse(content=placeholder_html + stale_oob + indicator_oob)
 
 

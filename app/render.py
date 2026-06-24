@@ -43,6 +43,24 @@ def card_id_for(turn_id: str) -> str:
     return f"tool-card-{turn_id}"
 
 
+def thinking_card_id_for(turn_id: str) -> str:
+    """Build the DOM id for a thinking-card with the given turn id.
+
+    Mirrors :func:`card_id_for` so the live SSE path (`app/generation.py`)
+    and the historic-replay path here produce the same id format. The
+    content and summary spans extend this with ``-content`` / ``-summary``.
+
+    Args:
+        turn_id: Live turns use ``str(time.monotonic_ns())``; historic turns
+            use ``f"hist-{assistant_message_id}"``.
+
+    Returns:
+        A DOM id like ``thinking-card-12345678901234567`` or
+        ``thinking-card-hist-42``.
+    """
+    return f"thinking-card-{turn_id}"
+
+
 def summary_text(count: int, done: bool) -> str:
     """Render the card's summary phrase as one string.
 
@@ -255,6 +273,53 @@ class MessageBlock:
 
 
 @dataclass(frozen=True)
+class ThinkingBlock:
+    """A thinking model's reasoning, rendered as a collapsed card above its turn.
+
+    Emitted by :func:`group_messages_for_render` immediately before the
+    assistant :class:`MessageBlock` whenever the assistant row carries
+    ``thinking`` text — the same sibling position the live SSE path inserts
+    the streamed card at, so live and reload render identically.
+
+    Attributes:
+        message: The assistant row whose ``thinking`` this renders. (The same
+            row's ``content`` is rendered separately by its MessageBlock.)
+        turn_id: Stable id (`hist-{message_id}`), so the card's DOM id is
+            stable across reloads.
+        kind: Template discriminator. Class-level constant.
+    """
+
+    message: Message
+    turn_id: str = ""
+    kind: ClassVar[str] = "thinking"
+
+    @property
+    def card_id(self) -> str:
+        """DOM id of the <details> thinking card element."""
+        return thinking_card_id_for(self.turn_id)
+
+    @property
+    def content_id(self) -> str:
+        """DOM id of the scrollable div holding the reasoning text."""
+        return f"{self.card_id}-content"
+
+    @property
+    def summary_id(self) -> str:
+        """DOM id of the <span> holding the summary phrase."""
+        return f"{self.card_id}-summary"
+
+    @property
+    def thinking_text(self) -> str:
+        """The reasoning text to render (never None for an emitted block)."""
+        return self.message.thinking or ""
+
+    @property
+    def summary(self) -> str:
+        """Collapsed-state summary label (historic render is always done)."""
+        return summary_text_thinking(done=True)
+
+
+@dataclass(frozen=True)
 class SummaryBlock:
     """A synthetic ``summary`` row produced by the manual-compact endpoint.
 
@@ -330,7 +395,7 @@ class ToolBatchBlock:
         return summary_text(len(self.calls), done=True)
 
 
-Block = MessageBlock | ToolBatchBlock | SummaryBlock
+Block = MessageBlock | ToolBatchBlock | SummaryBlock | ThinkingBlock
 
 
 _TOOL_ROLES = frozenset({"tool_call", "tool_result"})
@@ -391,6 +456,13 @@ def group_messages_for_render(messages: list[Message]) -> list[Block]:
             blocks.append(SummaryBlock(message=m))
         elif m.role in _RENDERABLE_MESSAGE_ROLES:
             flush_batch()
+            # A reasoning assistant turn gets a collapsed thinking card as a
+            # sibling immediately above its bubble — same position the live
+            # SSE path inserts the streamed card, so reload looks identical.
+            if m.role == "assistant" and m.thinking:
+                blocks.append(
+                    ThinkingBlock(message=m, turn_id=f"hist-{m.id}")
+                )
             blocks.append(MessageBlock(message=m))
         # else: unknown/legacy role — skip without flushing.
 
@@ -594,6 +666,98 @@ def render_done_card_oobs(
         )
         frozen_rows_html += render_tool_card_row_freeze(frozen_row)
     return summary_html + frozen_rows_html
+
+
+# ---------------------------------------------------------------------------
+# Thinking-card OOB rendering — emitted by the producer during the streaming
+# phase. Mirrors the tool-card OOB lifecycle: the first thinking chunk inserts
+# the open card as the placeholder's preceding sibling; later chunks append
+# text spans into it; the first content chunk replaces the whole card with a
+# collapsed copy carrying the full accumulated reasoning.
+# ---------------------------------------------------------------------------
+
+
+def render_thinking_open(
+    *,
+    card_id: str,
+    content_id: str,
+    summary_id: str,
+    first_text: str,
+    conversation_id: int,
+) -> str:
+    """Render the first thinking-chunk OOB: open <details> card + first text.
+
+    Inserts the card as the streaming placeholder's preceding sibling via
+    ``beforebegin:#assistant-stream-{conversation_id}`` (the same anchor the
+    tool card uses). ``open=True`` so the reasoning is visible as it streams;
+    the summary reads ``Thinking…``. Subsequent chunks hit
+    :func:`render_thinking_append`; the first content chunk hits
+    :func:`render_thinking_collapse`.
+    """
+    return templates.get_template("_thinking_card.html").render(
+        card_id=card_id,
+        content_id=content_id,
+        summary_id=summary_id,
+        summary=summary_text_thinking(done=False),
+        content=first_text,
+        open=True,
+        swap_oob=f"beforebegin:#assistant-stream-{conversation_id}",
+    )
+
+
+def render_thinking_append(*, content_id: str, text: str) -> str:
+    """Render a subsequent thinking-chunk OOB: append text into the card.
+
+    Appends a ``<span>`` into the card's scrollable content div via
+    ``beforeend:#{content_id}``. Each append is its own OOB swap, so the JS
+    auto-scroll hook fires once per chunk.
+    """
+    return (
+        f'<span hx-swap-oob="beforeend:#{content_id}">'
+        f"{html.escape(text)}"
+        f"</span>"
+    )
+
+
+def render_thinking_collapse(
+    *,
+    card_id: str,
+    content_id: str,
+    summary_id: str,
+    full_text: str,
+) -> str:
+    """Render the collapse OOB: replace the open card with a closed copy.
+
+    Emitted when the first visible content chunk arrives (or, for a
+    thinking-only stream, after the loop). ``swap_oob="outerHTML"`` replaces
+    the whole ``<details>`` by id with a closed copy carrying the full
+    accumulated reasoning; the summary swaps to ``Thoughts``.
+    """
+    return templates.get_template("_thinking_card.html").render(
+        card_id=card_id,
+        content_id=content_id,
+        summary_id=summary_id,
+        summary=summary_text_thinking(done=True),
+        content=full_text,
+        open=False,
+        swap_oob="outerHTML",
+    )
+
+
+def summary_text_thinking(done: bool) -> str:
+    """Render the thinking-card summary label.
+
+    Single source of truth so the live and historic paths agree. No stored
+    duration, so the same two strings serve both: ``Thinking…`` while the
+    reasoning streams, ``Thoughts`` once the card collapses (and on reload).
+
+    Args:
+        done: False while streaming (card open), True once collapsed.
+
+    Returns:
+        ``"Thinking…"`` or ``"Thoughts"``.
+    """
+    return "Thoughts" if done else "Thinking…"
 
 
 def render_oob_delete(*, element_id: str) -> str:

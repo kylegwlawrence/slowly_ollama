@@ -316,6 +316,67 @@ async def test_stream_chat_omits_num_ctx_when_none() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stream_chat_populates_thinking_from_message_field() -> None:
+    """Phase 28: reasoning rides in a separate `message.thinking` field.
+
+    Ollama emits thinking chunks first (content empty), then content chunks
+    (thinking empty). stream_chat surfaces each on the matching ChatChunk
+    field so the producer can route them to the thinking card vs the bubble.
+    """
+    body = (
+        b'{"message":{"role":"assistant","thinking":"Let me ","content":""},"done":false}\n'
+        b'{"message":{"role":"assistant","thinking":"think.","content":""},"done":false}\n'
+        b'{"message":{"role":"assistant","thinking":"","content":"Answer"},"done":false}\n'
+        b'{"message":{"role":"assistant","content":""},"done":true}\n'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body)
+
+    async with _client_with(handler) as client:
+        chunks = [
+            chunk
+            async for chunk in stream_chat(
+                client,
+                model="qwen3",
+                messages=[{"role": "user", "content": "Hi"}],
+            )
+        ]
+
+    assert chunks == [
+        ChatChunk(content="", thinking="Let me ", done=False),
+        ChatChunk(content="", thinking="think.", done=False),
+        ChatChunk(content="Answer", thinking="", done=False),
+        ChatChunk(content="", thinking="", done=True),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_thinking_defaults_empty_for_content_only_line() -> None:
+    """A content-only line (no `thinking` key) yields thinking == ''.
+
+    Guards the `or ""` collapse so a non-thinking model never surfaces a
+    None reasoning value to the producer.
+    """
+    body = b'{"message":{"content":"Hi"},"done":false}\n'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body)
+
+    async with _client_with(handler) as client:
+        chunks = [
+            chunk
+            async for chunk in stream_chat(
+                client,
+                model="llama3",
+                messages=[{"role": "user", "content": "Hi"}],
+            )
+        ]
+
+    assert chunks == [ChatChunk(content="Hi", thinking="", done=False)]
+
+
+@pytest.mark.asyncio
 async def test_stream_chat_raises_when_ollama_unreachable() -> None:
     """Connection failures while streaming surface as OllamaUnavailable."""
 

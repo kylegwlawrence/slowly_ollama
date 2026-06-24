@@ -85,6 +85,13 @@ class ChatChunk:
     Attributes:
         content: Assistant text emitted in this chunk. May be empty —
             Ollama emits empty content on the final ``done`` chunk.
+        thinking: Reasoning text emitted in this chunk. Ollama streams a
+            thinking model's reasoning in a SEPARATE ``message.thinking``
+            field (not inline ``<think>`` tags), parallel to ``content``:
+            thinking chunks arrive first (``content`` empty), then content
+            chunks (``thinking`` empty). Empty on non-thinking models and
+            when the ``think`` flag is off. Defaulted so existing
+            constructions stay valid.
         done: ``True`` on the final chunk, ``False`` otherwise. Callers stop
             iterating once they see ``done=True``.
         prompt_tokens: Tokens Ollama evaluated for this turn's input prompt
@@ -99,6 +106,7 @@ class ChatChunk:
 
     content: str
     done: bool
+    thinking: str = ""
     prompt_tokens: int | None = None
     eval_tokens: int | None = None
 
@@ -609,8 +617,12 @@ async def stream_chat(
                 # not 0, so the UI can tell "no data" from "zero tokens".
                 prompt_tokens = data.get("prompt_eval_count") if done else None
                 eval_tokens = data.get("eval_count") if done else None
+                message = data.get("message", {})
                 yield ChatChunk(
-                    content=data.get("message", {}).get("content", ""),
+                    content=message.get("content", ""),
+                    # Reasoning rides a separate field; `or ""` collapses a
+                    # null/absent value so consumers never see None.
+                    thinking=message.get("thinking") or "",
                     done=done,
                     prompt_tokens=prompt_tokens,
                     eval_tokens=eval_tokens,

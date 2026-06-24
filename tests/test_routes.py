@@ -1535,6 +1535,135 @@ def test_regenerate_deletes_card_keyed_on_first_call(
     assert f'id="tool-card-hist-{second_call_id}"' not in response.text
 
 
+# ---------------------------------------------------------------------------
+# Streamed thinking card (phase 28)
+# ---------------------------------------------------------------------------
+
+
+def _seed_thinking_turn(thinking: str = "because I reasoned") -> tuple[int, int]:
+    """Seed a chat with a user row + a reasoning assistant row.
+
+    Returns (chat_id, assistant_message_id). Must be called inside a
+    make_client context so the schema exists.
+    """
+    db_path = os.environ["DB_PATH"]
+    with open_connection(db_path) as conn:
+        chat = queries.create_conversation(conn, name="t", model="qwen3")
+        queries.append_message(conn, chat.id, "user", "hi")
+        assistant = queries.append_message(
+            conn, chat.id, "assistant", "the answer", thinking=thinking
+        )
+    return chat.id, assistant.id
+
+
+def test_placeholder_sse_swap_includes_think(
+    make_client: ClientFactory,
+) -> None:
+    """The streaming placeholder subscribes to the `think` SSE event so the
+    thinking card builds up live."""
+    with make_client(_ollama_unreachable) as client:
+        chat_id = _create_chat_db_only("think placeholder")
+        generation.live_generations[chat_id] = generation.GenerationState(
+            conversation_id=chat_id
+        )
+        response = client.get(f"/chats/{chat_id}")
+    assert response.status_code == 200
+    sse_idx = response.text.index("sse-swap=")
+    sse_attr = response.text[sse_idx:sse_idx + 90]
+    assert "think" in sse_attr
+
+
+def test_historic_render_shows_thinking_card_and_one_bubble(
+    make_client: ClientFactory,
+) -> None:
+    """A reloaded chat with a reasoning assistant row shows a collapsed
+    thinking card AND exactly one assistant bubble — guards against the
+    ThinkingBlock falling through to the duplicate-bubble else branch."""
+    with make_client(_ollama_unreachable) as client:
+        chat_id, msg_id = _seed_thinking_turn()
+        response = client.get(f"/chats/{chat_id}")
+    assert response.status_code == 200
+    text = response.text
+    assert f'id="thinking-card-hist-{msg_id}"' in text
+    assert "thinking-card__content" in text
+    assert "because I reasoned" in text
+    assert "Thoughts" in text
+    # Exactly one assistant bubble (a duplicate would be a second
+    # data-role="assistant" with the same message id).
+    assert text.count('data-role="assistant"') == 1
+
+
+def test_historic_render_no_thinking_card_without_reasoning(
+    make_client: ClientFactory,
+) -> None:
+    """A normal (non-reasoning) assistant turn renders no thinking card."""
+    with make_client(_ollama_unreachable) as client:
+        chat_id, _ = _seed_chat_rows([
+            ("user", "hi"),
+            ("assistant", "answer"),
+        ])
+        response = client.get(f"/chats/{chat_id}")
+    assert response.status_code == 200
+    assert "thinking-card" not in response.text
+
+
+def test_archived_disclosure_renders_thinking_card_no_duplicate_bubble(
+    make_client: ClientFactory,
+) -> None:
+    """A compacted-away reasoning turn shows its collapsed thinking card in
+    the archived disclosure, with no duplicate assistant bubble."""
+    db_path = os.environ["DB_PATH"]
+    with make_client(_ollama_unreachable) as client:
+        with open_connection(db_path) as conn:
+            chat = queries.create_conversation(conn, name="t", model="qwen3")
+            queries.append_message(conn, chat.id, "user", "old q")
+            archived_assistant = queries.append_message(
+                conn, chat.id, "assistant", "old answer",
+                thinking="archived reasoning",
+            )
+            # A later summary row + cutoff archives the earlier turn.
+            summary = queries.append_message(
+                conn, chat.id, "summary", "a summary"
+            )
+            queries.archive_messages_before(conn, chat.id, summary.id)
+        response = client.get(f"/chats/{chat.id}/archived")
+
+    assert response.status_code == 200
+    text = response.text
+    assert f'id="thinking-card-hist-{archived_assistant.id}"' in text
+    assert "archived reasoning" in text
+    # No duplicate assistant bubble for the archived turn.
+    assert text.count('data-role="assistant"') == 1
+
+
+def test_regenerate_deletes_stale_thinking_card(
+    make_client: ClientFactory,
+) -> None:
+    """Regenerating a reasoning turn OOB-deletes its orphaned thinking card
+    (a sibling above the bubble the `closest .message` swap leaves behind)."""
+    with make_client(_ollama_unreachable) as client:
+        chat_id, msg_id = _seed_thinking_turn()
+        response = client.post(f"/chats/{chat_id}/regenerate")
+    assert response.status_code == 200
+    assert f'id="thinking-card-hist-{msg_id}"' in response.text
+    assert 'hx-swap-oob="delete"' in response.text
+
+
+def test_regenerate_no_thinking_card_delete_without_reasoning(
+    make_client: ClientFactory,
+) -> None:
+    """A plain regenerate (assistant row had no reasoning) emits no
+    thinking-card delete — byte-identical to the pre-phase-28 response."""
+    with make_client(_ollama_unreachable) as client:
+        chat_id, _ = _seed_chat_rows([
+            ("user", "hi"),
+            ("assistant", "answer"),
+        ])
+        response = client.post(f"/chats/{chat_id}/regenerate")
+    assert response.status_code == 200
+    assert "thinking-card-hist-" not in response.text
+
+
 def test_regenerate_stream_404_for_unknown_conversation(
     make_client: ClientFactory,
 ) -> None:

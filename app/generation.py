@@ -577,10 +577,18 @@ async def _run_generation(
     call_index = 0
     in_flight: dict[str, dict] = {}
 
+    # Thinking-card ids share the turn_id so the open/append/collapse OOBs all
+    # target the same <details>. See render.render_thinking_* helpers.
+    thinking_card_id = render.thinking_card_id_for(turn_id)
+    thinking_content_id = f"{thinking_card_id}-content"
+    thinking_summary_id = f"{thinking_card_id}-summary"
+
     # Hoist `chunks` + `persisted_or_errored` so the function-level
     # try/finally can persist a partial assistant row on a CancelledError /
-    # GeneratorExit at any phase before re-raising.
+    # GeneratorExit at any phase before re-raising. `thinking_chunks`
+    # accumulates the final stream_chat call's reasoning for persistence.
     chunks: list[str] = []
+    thinking_chunks: list[str] = []
     persisted_or_errored = False
 
     # Scope file tools to this chat's project workspace for the turn. The
@@ -729,6 +737,12 @@ async def _run_generation(
         # Streaming phase.
         prompt_tokens: int | None = None
         eval_tokens: int | None = None
+        # Thinking lifecycle: the model streams reasoning chunks (content
+        # empty) first, then content chunks. The card opens on the first
+        # reasoning chunk and collapses the moment the first visible token
+        # arrives — mirroring the tool-card OOB lifecycle.
+        thinking_started = False
+        thinking_collapsed = False
         try:
             async for chunk in ollama.stream_chat(
                 client, model,
@@ -738,7 +752,45 @@ async def _run_generation(
                 num_ctx=num_ctx,
                 host=ollama_host,
             ):
+                if chunk.thinking:
+                    if not thinking_started:
+                        thinking_started = True
+                        await _emit(
+                            state,
+                            "think",
+                            render.render_thinking_open(
+                                card_id=thinking_card_id,
+                                content_id=thinking_content_id,
+                                summary_id=thinking_summary_id,
+                                first_text=chunk.thinking,
+                                conversation_id=conversation_id,
+                            ),
+                        )
+                    else:
+                        await _emit(
+                            state,
+                            "think",
+                            render.render_thinking_append(
+                                content_id=thinking_content_id,
+                                text=chunk.thinking,
+                            ),
+                        )
+                    thinking_chunks.append(chunk.thinking)
                 if chunk.content:
+                    # First visible token: collapse the open card before the
+                    # answer starts streaming below it.
+                    if thinking_started and not thinking_collapsed:
+                        thinking_collapsed = True
+                        await _emit(
+                            state,
+                            "think",
+                            render.render_thinking_collapse(
+                                card_id=thinking_card_id,
+                                content_id=thinking_content_id,
+                                summary_id=thinking_summary_id,
+                                full_text="".join(thinking_chunks),
+                            ),
+                        )
                     chunks.append(chunk.content)
                     await _emit(state, "token", html.escape(chunk.content))
                 if chunk.done:
@@ -753,18 +805,38 @@ async def _run_generation(
             await emit_ollama_error(state, e)
             return
 
+        # Thinking-only stream (reasoning but no visible answer): collapse the
+        # still-open card so it doesn't linger in the "Thinking…" state.
+        if thinking_started and not thinking_collapsed:
+            await _emit(
+                state,
+                "think",
+                render.render_thinking_collapse(
+                    card_id=thinking_card_id,
+                    content_id=thinking_content_id,
+                    summary_id=thinking_summary_id,
+                    full_text="".join(thinking_chunks),
+                ),
+            )
+
         full_text = "".join(chunks)
+        # Persist the reasoning so a reload rebuilds the collapsed card. None
+        # (not "") on a non-reasoning turn keeps the column NULL and the
+        # historic render free of an empty thinking card.
+        thinking_text = "".join(thinking_chunks) or None
         if on_complete == "append":
             message = queries.append_message(
                 db, conversation_id, "assistant", full_text,
                 prompt_tokens=prompt_tokens,
                 eval_tokens=eval_tokens,
+                thinking=thinking_text,
             )
         else:  # "replace"
             message = queries.replace_last_assistant_message(
                 db, conversation_id, full_text,
                 prompt_tokens=prompt_tokens,
                 eval_tokens=eval_tokens,
+                thinking=thinking_text,
             )
         # Persisted — outer finally must not double-write a partial. Set
         # BEFORE any further awaits, since await is a cancellation point.

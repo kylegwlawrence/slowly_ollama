@@ -138,6 +138,12 @@ class Message:
     # `app.ollama.ChatChunk` for interpretation.
     prompt_tokens: int | None = None
     eval_tokens: int | None = None
+    # A thinking model's streamed reasoning for this assistant turn, or NULL.
+    # Populated by `append_message` / `replace_last_assistant_message` from
+    # the producer's accumulated `message.thinking` chunks; NULL on
+    # non-assistant rows, pre-existing rows, and non-reasoning turns.
+    # Rebuilt into a collapsed card above the bubble on historic render.
+    thinking: str | None = None
     # Set by `archive_messages_before` to hide the row from the prompt
     # (manual compaction); NULL = active. Never written by `append_message`.
     archived_at: datetime | None = None

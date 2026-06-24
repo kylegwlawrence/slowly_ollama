@@ -18,6 +18,7 @@ def _row_to_message(row: sqlite3.Row) -> Message:
         created_at=datetime.fromisoformat(row["created_at"]),
         prompt_tokens=row["prompt_tokens"],
         eval_tokens=row["eval_tokens"],
+        thinking=row["thinking"],
         archived_at=(
             datetime.fromisoformat(archived_at_raw)
             if archived_at_raw is not None
@@ -34,6 +35,7 @@ def append_message(
     *,
     prompt_tokens: int | None = None,
     eval_tokens: int | None = None,
+    thinking: str | None = None,
 ) -> Message:
     """Append a message to a conversation.
 
@@ -49,6 +51,9 @@ def append_message(
             meaningful on assistant rows; pass None otherwise and when Ollama
             reported no counts.
         eval_tokens: Ollama's `eval_count` (tokens generated) for this turn.
+        thinking: A thinking model's accumulated reasoning for the turn. Only
+            meaningful on assistant rows; pass None otherwise and on
+            non-reasoning turns.
 
     Returns:
         The newly inserted Message.
@@ -61,12 +66,12 @@ def append_message(
         row = conn.execute(
             "INSERT INTO messages"
             " (conversation_id, role, content, created_at,"
-            "  prompt_tokens, eval_tokens)"
-            " VALUES (?, ?, ?, ?, ?, ?)"
+            "  prompt_tokens, eval_tokens, thinking)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)"
             " RETURNING id, conversation_id, role, content, created_at,"
-            "  prompt_tokens, eval_tokens, archived_at;",
+            "  prompt_tokens, eval_tokens, thinking, archived_at;",
             (conversation_id, role, content, now,
-             prompt_tokens, eval_tokens),
+             prompt_tokens, eval_tokens, thinking),
         ).fetchone()
         # Bump updated_at in Python (not a trigger) to keep all mutation in
         # one codepath that's easy to find when asking "what touches it?".
@@ -92,7 +97,7 @@ def list_messages(
     """
     rows = conn.execute(
         "SELECT id, conversation_id, role, content, created_at,"
-        "  prompt_tokens, eval_tokens, archived_at"
+        "  prompt_tokens, eval_tokens, thinking, archived_at"
         " FROM messages"
         " WHERE conversation_id = ?"
         " ORDER BY created_at ASC, id ASC;",
@@ -122,7 +127,7 @@ def list_active_messages(
     """
     rows = conn.execute(
         "SELECT id, conversation_id, role, content, created_at,"
-        "  prompt_tokens, eval_tokens, archived_at"
+        "  prompt_tokens, eval_tokens, thinking, archived_at"
         " FROM messages"
         " WHERE conversation_id = ? AND archived_at IS NULL"
         " ORDER BY created_at ASC, id ASC;",
@@ -176,6 +181,7 @@ def replace_last_assistant_message(
     *,
     prompt_tokens: int | None = None,
     eval_tokens: int | None = None,
+    thinking: str | None = None,
 ) -> Message:
     """Replace the most-recent assistant message's content in place.
 
@@ -187,6 +193,9 @@ def replace_last_assistant_message(
         conversation_id: Id of the conversation whose last assistant message
             to replace.
         new_content: Replacement text.
+        prompt_tokens: Ollama's `prompt_eval_count` for the regenerated turn.
+        eval_tokens: Ollama's `eval_count` for the regenerated turn.
+        thinking: The regenerated turn's accumulated reasoning, or None.
 
     Returns:
         The updated Message (same id and created_at, new content).
@@ -211,11 +220,11 @@ def replace_last_assistant_message(
             )
         row = conn.execute(
             "UPDATE messages SET content = ?,"
-            "  prompt_tokens = ?, eval_tokens = ?"
+            "  prompt_tokens = ?, eval_tokens = ?, thinking = ?"
             " WHERE id = ?"
             " RETURNING id, conversation_id, role, content, created_at,"
-            "  prompt_tokens, eval_tokens, archived_at;",
-            (new_content, prompt_tokens, eval_tokens, latest["id"]),
+            "  prompt_tokens, eval_tokens, thinking, archived_at;",
+            (new_content, prompt_tokens, eval_tokens, thinking, latest["id"]),
         ).fetchone()
         conn.execute(
             "UPDATE conversations SET updated_at = ? WHERE id = ?;",

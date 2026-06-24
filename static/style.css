@@ -915,6 +915,65 @@ body {
 .tool-row__source-title { color: var(--text-primary); }
 .tool-row__source-meta { color: var(--text-secondary); margin-left: var(--space-xs); }
 
+/* ===== Thinking card (phase 28) ==========================================
+   A thinking model's streamed reasoning, shown above the answer bubble.
+   Shares the tool-card's surface/border/font tokens so the two cards read
+   as a family; the content area is a fixed-height scroll window so a long
+   reasoning stream auto-follows (app.js) without pushing the answer off
+   screen. Summary + chevron mirror the tool-card behaviour exactly.        */
+
+.thinking-card {
+  align-self: flex-start;
+  max-width: 75%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: 0.7em;
+}
+
+.thinking-card__summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  cursor: pointer;
+  list-style: none;
+  /* Pin color across closed/open/focus, same rationale as the tool card. */
+  color: var(--text-secondary);
+  transition: none;
+}
+.thinking-card__summary::-webkit-details-marker { display: none; }
+.thinking-card__summary::after { display: none; }
+.thinking-card[open] > .thinking-card__summary,
+.thinking-card__summary:focus,
+.thinking-card__summary:focus-visible {
+  color: var(--text-secondary);
+  outline: none;
+}
+
+.thinking-card__chevron {
+  margin-left: auto;
+  transition: transform 0.15s;
+}
+.thinking-card[open] .thinking-card__chevron {
+  transform: rotate(90deg);
+}
+
+.thinking-card__content {
+  /* Fixed-height scroll window, auto-followed by the app.js oobAfterSwap
+     hook as reasoning streams in. pre-wrap preserves the model's own line
+     breaks; monospace + secondary text marks it as machine reasoning. */
+  max-height: 8.5em;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.85em;
+  color: var(--text-secondary);
+  /* Indent under the psychology icon in the summary, mirroring the
+     tool-card list's left padding. */
+  padding: 0 var(--space-md) var(--space-sm) calc(var(--space-md) + 1.5rem);
+}
+
 /* ===== Regenerate button =================================================
    The visibility logic (`display: none` by default, override on
    `:last-child.message--assistant:not(.message--streaming)`) MUST remain
@@ -2280,6 +2339,7 @@ body {
   /* --- Roomier message column --- */
   .message { max-width: 85%; }
   .tool-card,
+  .thinking-card,
   .message--summary { max-width: 90%; }
 
   .messages { padding: var(--space-md); }

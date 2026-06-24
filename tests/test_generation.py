@@ -1683,3 +1683,255 @@ async def test_run_generation_sets_workspace_contextvar(
 
     # After the producer completes, the ContextVar is back to its default.
     assert current_workspace_root.get() is None
+
+
+# ---------------------------------------------------------------------------
+# Streamed thinking (phase 28)
+# ---------------------------------------------------------------------------
+
+
+def _thinking_stream_handler(
+    *,
+    thinking_chunks: list[str],
+    content_chunks: list[str],
+) -> "callable":
+    """Build a handler: no tool calls on probe, then stream thinking + content.
+
+    The streaming response emits each thinking chunk first (content empty),
+    then each content chunk (thinking empty), then a done marker — the wire
+    order Ollama uses for a reasoning model.
+    """
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content or b"{}")
+        if body.get("stream"):
+            lines = b""
+            for t in thinking_chunks:
+                lines += (
+                    b'{"message":{"thinking":'
+                    + json.dumps(t).encode()
+                    + b',"content":""},"done":false}\n'
+                )
+            for c in content_chunks:
+                lines += (
+                    b'{"message":{"thinking":"","content":'
+                    + json.dumps(c).encode()
+                    + b'},"done":false}\n'
+                )
+            lines += b'{"message":{"content":""},"done":true}\n'
+            return httpx.Response(200, content=lines)
+        return httpx.Response(
+            200, json={"message": {"content": "", "tool_calls": []}}
+        )
+
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_producer_emits_ordered_think_events_before_tokens(
+    tmp_path, monkeypatch
+):
+    """A reasoning stream emits think open → append → collapse, with the
+    collapse landing before the first token event."""
+    db_path = tmp_path / "chats.db"
+    conv_id = _setup_chat(db_path)
+    monkeypatch.setenv("DB_PATH", str(db_path))
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            _thinking_stream_handler(
+                thinking_chunks=["Let me ", "think."],
+                content_chunks=["Answer"],
+            )
+        ),
+        base_url="http://test",
+    )
+
+    async def _not_capable(*args, **kwargs):
+        return False
+
+    monkeypatch.setattr(ollama, "model_supports_tools", _not_capable)
+
+    with open_connection(db_path) as db:
+        state = await generation.start_generation(
+            client=client, db=db, conversation_id=conv_id, model="qwen3",
+            history=queries.list_messages(db, conv_id), on_complete="append",
+        )
+        await state.task
+
+    events = [ev for (ev, _payload) in state.events]
+    # Exactly three think events: open, append, collapse.
+    assert events.count("think") == 3
+    think_idxs = [i for i, ev in enumerate(events) if ev == "think"]
+    token_idxs = [i for i, ev in enumerate(events) if ev == "token"]
+    # All think events precede the first token (collapse fires before content).
+    assert max(think_idxs) < min(token_idxs)
+
+    think_payloads = [p for (ev, p) in state.events if ev == "think"]
+    # Open: open card with the streaming anchor + "Thinking…".
+    assert "Thinking…" in think_payloads[0]
+    assert f"beforebegin:#assistant-stream-{conv_id}" in think_payloads[0]
+    # Append: the second chunk's text into the content box.
+    assert "beforeend:#thinking-card-" in think_payloads[1]
+    assert "think." in think_payloads[1]
+    # Collapse: outerHTML replace, "Thoughts", full accumulated reasoning.
+    assert 'hx-swap-oob="outerHTML"' in think_payloads[2]
+    assert "Thoughts" in think_payloads[2]
+    assert "Let me think." in think_payloads[2]
+
+
+@pytest.mark.asyncio
+async def test_producer_persists_thinking_on_append_path(tmp_path, monkeypatch):
+    """The assistant row stores the accumulated reasoning (append path)."""
+    db_path = tmp_path / "chats.db"
+    conv_id = _setup_chat(db_path)
+    monkeypatch.setenv("DB_PATH", str(db_path))
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            _thinking_stream_handler(
+                thinking_chunks=["reason ", "more"],
+                content_chunks=["done"],
+            )
+        ),
+        base_url="http://test",
+    )
+
+    async def _not_capable(*args, **kwargs):
+        return False
+
+    monkeypatch.setattr(ollama, "model_supports_tools", _not_capable)
+
+    with open_connection(db_path) as db:
+        state = await generation.start_generation(
+            client=client, db=db, conversation_id=conv_id, model="qwen3",
+            history=queries.list_messages(db, conv_id), on_complete="append",
+        )
+        await state.task
+
+    with open_connection(db_path) as db:
+        msgs = queries.list_messages(db, conv_id)
+    assistant = [m for m in msgs if m.role == "assistant"][-1]
+    assert assistant.content == "done"
+    assert assistant.thinking == "reason more"
+
+
+@pytest.mark.asyncio
+async def test_producer_persists_thinking_on_replace_path(tmp_path, monkeypatch):
+    """A regenerate (replace path) overwrites the row's thinking in place."""
+    db_path = tmp_path / "chats.db"
+    conv_id = _setup_chat(db_path)
+    monkeypatch.setenv("DB_PATH", str(db_path))
+    # Seed an existing assistant row to replace.
+    with open_connection(db_path) as conn:
+        queries.append_message(conn, conv_id, "assistant", "old", thinking="old think")
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            _thinking_stream_handler(
+                thinking_chunks=["fresh"],
+                content_chunks=["new"],
+            )
+        ),
+        base_url="http://test",
+    )
+
+    async def _not_capable(*args, **kwargs):
+        return False
+
+    monkeypatch.setattr(ollama, "model_supports_tools", _not_capable)
+
+    with open_connection(db_path) as db:
+        # Regenerate operates on the prompt history (everything but the row
+        # being replaced).
+        history = queries.list_active_messages(db, conv_id)
+        state = await generation.start_generation(
+            client=client, db=db, conversation_id=conv_id, model="qwen3",
+            history=history[:-1], on_complete="replace",
+        )
+        await state.task
+
+    with open_connection(db_path) as db:
+        msgs = queries.list_messages(db, conv_id)
+    assistant = [m for m in msgs if m.role == "assistant"][-1]
+    assert assistant.content == "new"
+    assert assistant.thinking == "fresh"
+
+
+@pytest.mark.asyncio
+async def test_producer_collapses_thinking_only_stream(tmp_path, monkeypatch):
+    """A stream with reasoning but no visible content still collapses the
+    card (so it doesn't hang in the 'Thinking…' state) and persists the
+    reasoning."""
+    db_path = tmp_path / "chats.db"
+    conv_id = _setup_chat(db_path)
+    monkeypatch.setenv("DB_PATH", str(db_path))
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            _thinking_stream_handler(
+                thinking_chunks=["only reasoning"],
+                content_chunks=[],
+            )
+        ),
+        base_url="http://test",
+    )
+
+    async def _not_capable(*args, **kwargs):
+        return False
+
+    monkeypatch.setattr(ollama, "model_supports_tools", _not_capable)
+
+    with open_connection(db_path) as db:
+        state = await generation.start_generation(
+            client=client, db=db, conversation_id=conv_id, model="qwen3",
+            history=queries.list_messages(db, conv_id), on_complete="append",
+        )
+        await state.task
+
+    think_payloads = [p for (ev, p) in state.events if ev == "think"]
+    # Open + collapse, no append (single chunk), no token.
+    assert len(think_payloads) == 2
+    assert "Thinking…" in think_payloads[0]
+    assert 'hx-swap-oob="outerHTML"' in think_payloads[1]
+    assert "Thoughts" in think_payloads[1]
+    assert [ev for (ev, _p) in state.events].count("token") == 0
+
+    with open_connection(db_path) as db:
+        msgs = queries.list_messages(db, conv_id)
+    assistant = [m for m in msgs if m.role == "assistant"][-1]
+    assert assistant.thinking == "only reasoning"
+
+
+@pytest.mark.asyncio
+async def test_producer_no_think_events_for_non_reasoning_stream(
+    tmp_path, monkeypatch
+):
+    """A content-only stream emits no think events and stores NULL thinking."""
+    db_path = tmp_path / "chats.db"
+    conv_id = _setup_chat(db_path)
+    monkeypatch.setenv("DB_PATH", str(db_path))
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            _thinking_stream_handler(thinking_chunks=[], content_chunks=["hi"])
+        ),
+        base_url="http://test",
+    )
+
+    async def _not_capable(*args, **kwargs):
+        return False
+
+    monkeypatch.setattr(ollama, "model_supports_tools", _not_capable)
+
+    with open_connection(db_path) as db:
+        state = await generation.start_generation(
+            client=client, db=db, conversation_id=conv_id, model="llama3",
+            history=queries.list_messages(db, conv_id), on_complete="append",
+        )
+        await state.task
+
+    assert [ev for (ev, _p) in state.events].count("think") == 0
+    with open_connection(db_path) as db:
+        msgs = queries.list_messages(db, conv_id)
+    assistant = [m for m in msgs if m.role == "assistant"][-1]
+    assert assistant.thinking is None

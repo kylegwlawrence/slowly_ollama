@@ -96,6 +96,12 @@ CREATE TABLE IF NOT EXISTS messages (
     -- turn's prompt_tokens is "current context size" — summing double-counts.
     prompt_tokens   INTEGER,
     eval_tokens     INTEGER,
+    -- A thinking model's streamed reasoning for this assistant turn (the
+    -- final stream_chat call, after any tool loop). NULL on non-assistant
+    -- rows, pre-existing rows, and turns where the model didn't reason
+    -- (think off, or a non-thinking model). Rebuilt into a collapsed card
+    -- above the bubble on historic render.
+    thinking        TEXT,
     -- ISO 8601 UTC stamp set when manual compaction archives this row.
     -- NULL = active (sent to Ollama). Non-NULL = hidden from the prompt but
     -- kept in the DB (reversible) and still rendered faded behind a
@@ -460,6 +466,26 @@ def _ensure_messages_token_count_columns(conn: sqlite3.Connection) -> None:
         )
 
 
+def _ensure_messages_thinking_column(conn: sqlite3.Connection) -> None:
+    """Add ``messages.thinking`` on legacy DBs.
+
+    Nullable TEXT, no default — pre-existing rows read back as NULL (no
+    reasoning captured). Mirrors :func:`_ensure_messages_token_count_columns`.
+    Must run AFTER :func:`_migrate_messages_drop_role_check`, which rebuilds
+    ``messages`` from a fixed column list that omits ``thinking``.
+
+    Args:
+        conn: Open SQLite connection.
+    """
+    columns = {row[1] for row in conn.execute(
+        "PRAGMA table_info(messages);"
+    )}
+    if "thinking" not in columns:
+        conn.execute(
+            "ALTER TABLE messages ADD COLUMN thinking TEXT;"
+        )
+
+
 def _ensure_messages_archived_at_column(conn: sqlite3.Connection) -> None:
     """Add ``messages.archived_at`` (and its partial index) on legacy DBs.
 
@@ -569,6 +595,7 @@ def initialize_database(path: Path | None = None) -> Path:
         # messages table without those columns.
         _migrate_messages_drop_role_check(conn)
         _ensure_messages_token_count_columns(conn)
+        _ensure_messages_thinking_column(conn)
         _ensure_messages_archived_at_column(conn)
         _ensure_rag_servers_description_column(conn)
         _ensure_conversations_temperature_column(conn)

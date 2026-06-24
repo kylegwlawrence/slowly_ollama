@@ -231,9 +231,23 @@ document.body.addEventListener('htmx:afterSwap', (e) => {
 // is a no-op on already-rendered KaTeX.
 document.body.addEventListener('htmx:oobAfterSwap', (e) => {
   const swapped = e.target;
-  if (swapped instanceof Element && swapped.closest('#messages')) {
-    typesetMath(swapped);
+  if (!(swapped instanceof Element) || !swapped.closest('#messages')) return;
+
+  // Thinking card (phase 28): each reasoning chunk is a `<span>` appended
+  // via `beforeend:#…-content`, so the swapped-in element is the span, not
+  // the scroll container — walk up to the container and pin it to the
+  // bottom so the stream auto-follows. (scrollTop on the span is a no-op.)
+  const box = swapped.closest('.thinking-card__content');
+  if (box) {
+    box.scrollTop = box.scrollHeight;
+    return;
   }
+
+  // Skip KaTeX on the thinking card: reasoning text rarely contains math,
+  // and we don't want renderMathInElement scanning the streamed reasoning.
+  if (swapped.closest('.thinking-card')) return;
+
+  typesetMath(swapped);
 });
 
 // ---------------------------------------------------------------------
