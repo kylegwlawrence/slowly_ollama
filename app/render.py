@@ -594,3 +594,25 @@ def render_done_card_oobs(
         )
         frozen_rows_html += render_tool_card_row_freeze(frozen_row)
     return summary_html + frozen_rows_html
+
+
+def render_oob_delete(*, element_id: str) -> str:
+    """Render an OOB fragment that deletes a DOM element by id.
+
+    Element-agnostic: HTMX matches ``hx-swap-oob="delete"`` against the
+    element with this id already in the DOM and removes it, ignoring the
+    (empty) body of the fragment we send.
+
+    Used by the regenerate route to drop a stale historic sibling card (e.g.
+    the aggregated tool card) that the ``closest .message`` swap leaves behind,
+    since the card lives *beside* the assistant bubble, not inside it.
+
+    Args:
+        element_id: The id of the element to remove (e.g. a tool card's
+            ``card_id_for("hist-{first_call_id}")``). Always an app-generated
+            id, so no escaping is needed.
+
+    Returns:
+        A one-element OOB fragment ready to concatenate into a response body.
+    """
+    return f'<div id="{element_id}" hx-swap-oob="delete"></div>'

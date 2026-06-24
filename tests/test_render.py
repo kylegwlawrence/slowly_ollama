@@ -19,6 +19,7 @@ from app.render import (
     format_elapsed_mm_ss,
     group_messages_for_render,
     render_done_card_oobs,
+    render_oob_delete,
     render_tool_card_initial,
     render_tool_card_row_append,
     render_tool_card_row_freeze,
@@ -817,5 +818,16 @@ def test_render_done_card_oobs_freezes_in_flight_rows() -> None:
     assert 'id="tool-card-T-row-0"' in html_out
     assert "data-elapsed-final=" in html_out
     assert "calling current_time" in html_out
+
+
+def test_render_oob_delete_targets_id_with_delete_swap() -> None:
+    """The generic OOB-delete fragment carries the id + hx-swap-oob=delete.
+
+    HTMX matches the id against the live DOM and removes that element; the
+    regenerate route uses it to drop a stale historic tool card.
+    """
+    html_out = render_oob_delete(element_id="tool-card-hist-42")
+    assert 'id="tool-card-hist-42"' in html_out
+    assert 'hx-swap-oob="delete"' in html_out
 
 

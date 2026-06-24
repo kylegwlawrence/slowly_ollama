@@ -455,7 +455,24 @@ async def regenerate_endpoint(
         model_loaded=True,
         oob=True,
     )
-    return HTMLResponse(content=placeholder_html + indicator_oob)
+    # The aggregated tool card for this turn is a sibling ABOVE the assistant
+    # bubble, so the `closest .message` swap above leaves it in the DOM; the
+    # regenerated turn then streams a fresh card under a new id, orphaning the
+    # old one until a full reload. Delete it by id. Its `turn_id` derives from
+    # the FIRST tool_call row in the contiguous tool run right before the
+    # assistant row — the same rule `render._build_classic_tool_batch` uses.
+    stale_oob = ""
+    first_tool_call_id = None
+    for m in reversed(history[:-1]):
+        if m.role not in ("tool_call", "tool_result"):
+            break
+        if m.role == "tool_call":
+            first_tool_call_id = m.id
+    if first_tool_call_id is not None:
+        stale_oob = render.render_oob_delete(
+            element_id=render.card_id_for(f"hist-{first_tool_call_id}")
+        )
+    return HTMLResponse(content=placeholder_html + stale_oob + indicator_oob)
 
 
 @router.post("/chats/{conversation_id}/host", response_class=HTMLResponse)

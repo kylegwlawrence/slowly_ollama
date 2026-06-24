@@ -1454,6 +1454,87 @@ def test_regenerate_404_for_unknown_conversation(
     assert response.status_code == 404
 
 
+def _seed_chat_rows(roles_contents: list[tuple[str, str]]) -> tuple[int, list[int]]:
+    """Seed a chat with the given (role, content) rows; return (chat_id, ids).
+
+    Rows are appended in order and committed, so the app connection sees them.
+    Used by the regenerate tests to build a historic tool turn directly. Must
+    be called INSIDE a `make_client` context so the schema exists.
+    """
+    db_path = os.environ["DB_PATH"]
+    ids: list[int] = []
+    with open_connection(db_path) as conn:
+        chat = queries.create_conversation(conn, name="t", model="llama3")
+        for role, content in roles_contents:
+            ids.append(queries.append_message(conn, chat.id, role, content).id)
+    return chat.id, ids
+
+
+def test_regenerate_deletes_stale_tool_card(
+    make_client: ClientFactory,
+) -> None:
+    """Regenerating a tool turn OOB-deletes its orphaned historic tool card.
+
+    The card is a sibling above the assistant bubble, so the `closest .message`
+    swap leaves it behind; the route must delete it by id (keyed on the first
+    tool_call row), else it stacks above the regenerated reply until a reload.
+    """
+    with make_client(_ollama_unreachable) as client:
+        chat_id, ids = _seed_chat_rows([
+            ("user", "hi"),
+            ("tool_call", "call"),
+            ("tool_result", "result"),
+            ("assistant", "answer"),
+        ])
+        call_id = ids[1]
+        response = client.post(f"/chats/{chat_id}/regenerate")
+
+    assert response.status_code == 200
+    assert f'id="tool-card-hist-{call_id}"' in response.text
+    assert 'hx-swap-oob="delete"' in response.text
+
+
+def test_regenerate_no_tool_card_delete_when_turn_used_no_tools(
+    make_client: ClientFactory,
+) -> None:
+    """A plain regenerate (no tool rows) emits no tool-card delete."""
+    with make_client(_ollama_unreachable) as client:
+        chat_id, _ = _seed_chat_rows([
+            ("user", "hi"),
+            ("assistant", "answer"),
+        ])
+        response = client.post(f"/chats/{chat_id}/regenerate")
+
+    assert response.status_code == 200
+    assert "tool-card-hist-" not in response.text
+    assert 'hx-swap-oob="delete"' not in response.text
+
+
+def test_regenerate_deletes_card_keyed_on_first_call(
+    make_client: ClientFactory,
+) -> None:
+    """A multi-call turn deletes the card keyed on the FIRST call's id.
+
+    Mirrors `_build_classic_tool_batch`, whose turn_id is `calls[0][0].id`. The
+    walk-back must reach the earliest tool_call, not stop at the latest.
+    """
+    with make_client(_ollama_unreachable) as client:
+        chat_id, ids = _seed_chat_rows([
+            ("user", "hi"),
+            ("tool_call", "call-A"),
+            ("tool_result", "result-A"),
+            ("tool_call", "call-B"),
+            ("tool_result", "result-B"),
+            ("assistant", "answer"),
+        ])
+        first_call_id, second_call_id = ids[1], ids[3]
+        response = client.post(f"/chats/{chat_id}/regenerate")
+
+    assert response.status_code == 200
+    assert f'id="tool-card-hist-{first_call_id}"' in response.text
+    assert f'id="tool-card-hist-{second_call_id}"' not in response.text
+
+
 def test_regenerate_stream_404_for_unknown_conversation(
     make_client: ClientFactory,
 ) -> None:
