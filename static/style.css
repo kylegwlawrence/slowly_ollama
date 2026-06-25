@@ -1962,9 +1962,9 @@ body {
 }
 
 .project-settings__delete-btn {
-  background: none;
-  border: 1px solid var(--danger);
-  color: var(--danger);
+  background: var(--danger);
+  border: none;
+  color: black;
   padding: var(--space-xs) var(--space-md);
   border-radius: var(--radius-md);
   font-size: 13px;
