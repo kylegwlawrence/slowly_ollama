@@ -27,6 +27,7 @@
   --accent-tonal-text: #3d6549;
   --accent-on: #1f3a26;
   --danger: #d93025;
+  --danger-hover: var(--danger);
   /* Mirrors --danger: the deep WCAG-AA green Google uses for "ok"
      dots in their Material samples. Used by the health-check icon
      next to the add-server button (.health-icon__ok). */
@@ -80,6 +81,7 @@
   --accent-tonal-text: #b3cbda;
   --accent-hover: #548ba2;
   --danger: #f28b82;
+  --danger-hover: #d93025;
   /* Lighter sage-leaning green so the check_circle glyph reads
      against the dark surface without going neon. */
   --success: #81c995;
@@ -1962,7 +1964,7 @@ body {
 }
 
 .project-settings__delete-btn {
-  background: var(--danger);
+  background: #f28b82;
   border: none;
   color: black;
   padding: var(--space-xs) var(--space-md);
@@ -1975,7 +1977,7 @@ body {
 }
 
 .project-settings__delete-btn:hover {
-  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  background: var(--danger-hover);
 }
 
 /* ----- Project files ----- */
