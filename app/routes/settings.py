@@ -21,8 +21,6 @@ from fastapi.responses import HTMLResponse
 
 from app import queries
 from app import rag_servers as _rag_servers
-from app.hosts import list_hosts
-from app.config import extra_ollama_hosts
 from app.dependencies import DB
 from app.rag_health import probe_rag_health
 from app.routes._helpers import _sidebar_reference_context, _sidebar_reference_oob
@@ -45,22 +43,12 @@ def settings_endpoint(request: Request, db: DB) -> Response:
     default_tool_iteration_cap = queries.get_default_tool_iteration_cap(db)
     default_model = queries.get_default_model(db)
     default_num_ctx = queries.get_default_num_ctx(db)
-    hosts = list_hosts()
-    # remote_configured gates the toggle vs the "set env vars first" hint;
-    # extra_hosts feeds the read-only per-host labels.
-    extra_hosts = extra_ollama_hosts()
-    remote_configured = bool(extra_hosts)
-    remote_enabled = queries.get_remote_ollama_enabled(db)
     settings_ctx = {
         "servers": servers,
         "default_temperature": default_temperature,
         "default_tool_iteration_cap": default_tool_iteration_cap,
         "default_model": default_model,
         "default_num_ctx": default_num_ctx,
-        "hosts": hosts,
-        "remote_configured": remote_configured,
-        "extra_hosts": extra_hosts,
-        "remote_enabled": remote_enabled,
     }
     if request.headers.get("HX-Request"):
         return templates.TemplateResponse(
@@ -299,29 +287,6 @@ async def set_default_num_ctx_endpoint(
     Returns 204 — the input already shows the typed value, no swap needed.
     """
     queries.set_default_num_ctx(db, num_ctx)
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-
-@router.post(
-    "/settings/remote-ollama-enabled",
-    response_class=Response,
-)
-async def set_remote_ollama_enabled_endpoint(
-    db: DB,
-    enabled: Annotated[str, Form()] = "0",
-) -> Response:
-    """Persist the app-wide Remote Ollama enable flag.
-
-    Driven by the checkbox in ``_settings.html`` (``hx-post`` on
-    ``change``). The field uses ``hx-vals="js:{enabled: this.checked ?
-    '1' : '0'}"`` so both states arrive as an explicit "1"/"0" rather
-    than relying on checkbox absence — keeps the endpoint dumb and
-    idempotent.
-
-    Returns 204 — the checkbox already shows the choice, no swap needed.
-    The next chat panel render reflects the new state automatically.
-    """
-    queries.set_remote_ollama_enabled(db, enabled == "1")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

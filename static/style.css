@@ -1267,12 +1267,19 @@ body {
 }
 
 .settings__title {
-  font-size: 24px;
+  /* Page-title scale, aligned with the in-app headings (chat/project
+     names sit at 18–20px). Pico leaves <h1> at 32px+, which dwarfed the
+     rest of the compact UI. */
+  font-size: 20px;
   font-weight: 500;
   margin: 0;
 }
 
 .settings__subtitle {
+  /* Match the app's compact body text. Without an explicit size this
+     paragraph inherits Pico's 16px default and reads oversized next to
+     everything else. */
+  font-size: var(--font-size-base);
   color: var(--text-secondary);
   margin: var(--space-xs) 0 0;
 }
@@ -1530,6 +1537,9 @@ body {
    `.settings__subtitle` muting but sits inside a section instead of
    the page header). */
 .settings__section-help {
+  /* Compact body text; without this it inherits Pico's 16px and the
+     help paragraphs visually dominate each section. */
+  font-size: var(--font-size-base);
   color: var(--text-secondary);
   margin: 0;
 }
