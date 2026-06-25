@@ -30,6 +30,34 @@ def ollama_host() -> str:
     return os.environ["OLLAMA_HOST"]
 
 
+def ollama_chat_timeout() -> float:
+    """Return the read timeout (seconds) for chat generation + compaction.
+
+    Backs the live streaming `/api/chat` call (via the `create_client`
+    default) and the compaction summary call. Both can be a COLD model load
+    — weights load plus a full-context prefill before the first token — so
+    the cap is generous. For the stream this is a *read* timeout, applied
+    between chunks, not a wall-clock cap on the whole generation.
+
+    Sourced from `OLLAMA_CHAT_TIMEOUT`; defaults to 600 when unset so an
+    existing `.env` without the key keeps working.
+    """
+    return float(os.environ.get("OLLAMA_CHAT_TIMEOUT", "600"))
+
+
+def ollama_util_timeout() -> float:
+    """Return the read timeout (seconds) for Ollama utility calls.
+
+    Backs the short metadata round-trips: `/api/show` capability probes,
+    `/api/tags` model listing, and auto-title generation. These hit a
+    (usually) resident model or return static metadata, so the cap is tight
+    enough to bound a wedged server without tripping a healthy cold reload.
+
+    Sourced from `OLLAMA_UTIL_TIMEOUT`; defaults to 30 when unset.
+    """
+    return float(os.environ.get("OLLAMA_UTIL_TIMEOUT", "30"))
+
+
 def db_path() -> Path:
     """Return the SQLite database path (`DB_PATH`), with `~` expanded.
 

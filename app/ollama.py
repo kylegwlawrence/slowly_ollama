@@ -31,7 +31,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from app.config import ollama_host
+from app.config import ollama_chat_timeout, ollama_host, ollama_util_timeout
 
 
 class OllamaUnavailable(Exception):
@@ -120,13 +120,14 @@ def create_client() -> httpx.AsyncClient:
 
     Timeout policy: httpx's 5s default is far too tight for a local chat
     model's first-token latency on cold load (a 7B model can take 10-30s to
-    warm up). We set READ to 600s — ample for any cold-start or large-context
-    processing — and CONNECT to 10s. A localhost connect is sub-second, but
-    ``OLLAMA_HOST`` can point at a remote machine over a private network (the
-    split deployment), where the first connect to an idle peer may be relayed
-    or wait for it to wake; 10s absorbs that without masking a wedged server.
-    Per-call overrides still win — e.g. ``generate_title`` passes
-    ``timeout=10``.
+    warm up). The READ timeout is sourced from ``OLLAMA_CHAT_TIMEOUT`` (via
+    :func:`app.config.ollama_chat_timeout`, default 600s) — ample for any
+    cold-start or large-context processing — and CONNECT is fixed at 10s. A
+    localhost connect is sub-second, but ``OLLAMA_HOST`` can point at a remote
+    machine over a private network (the split deployment), where the first
+    connect to an idle peer may be relayed or wait for it to wake; 10s absorbs
+    that without masking a wedged server. Per-call overrides still win — the
+    short metadata calls pass ``timeout=ollama_util_timeout()``.
 
     Returns:
         A fresh ``httpx.AsyncClient`` with ``base_url`` and a chat-friendly
@@ -137,7 +138,7 @@ def create_client() -> httpx.AsyncClient:
     """
     return httpx.AsyncClient(
         base_url=ollama_host(),
-        timeout=httpx.Timeout(600.0, connect=10.0),
+        timeout=httpx.Timeout(ollama_chat_timeout(), connect=10.0),
     )
 
 
@@ -163,7 +164,9 @@ async def list_models(
         OllamaProtocolError: Body wasn't valid JSON or had the wrong shape.
     """
     try:
-        response = await client.get(_url("/api/tags", host))
+        response = await client.get(
+            _url("/api/tags", host), timeout=ollama_util_timeout()
+        )
         response.raise_for_status()
     except (httpx.HTTPError, httpx.InvalidURL) as e:
         # HTTPError is the umbrella for connection failures, timeouts, and
@@ -248,7 +251,11 @@ async def list_tool_capable_models(
     async def _supports(name: str) -> str | None:
         """Probe one model; return its name if tool-capable, else None."""
         try:
-            resp = await client.post(_url("/api/show", host), json={"model": name})
+            resp = await client.post(
+                _url("/api/show", host),
+                json={"model": name},
+                timeout=ollama_util_timeout(),
+            )
             resp.raise_for_status()
             caps = resp.json().get("capabilities") or []
             # Require BOTH "completion" and "tools". Ollama occasionally
@@ -316,7 +323,11 @@ async def list_thinking_capable_models(
     async def _supports(name: str) -> str | None:
         """Probe one model; return its name if thinking-capable, else None."""
         try:
-            resp = await client.post(_url("/api/show", host), json={"model": name})
+            resp = await client.post(
+                _url("/api/show", host),
+                json={"model": name},
+                timeout=ollama_util_timeout(),
+            )
             resp.raise_for_status()
             caps = resp.json().get("capabilities") or []
             return name if "thinking" in caps else None
@@ -369,7 +380,9 @@ async def model_supports_tools(
         # local path pays on a cache miss.
         try:
             resp = await client.post(
-                _url("/api/show", host), json={"model": name}
+                _url("/api/show", host),
+                json={"model": name},
+                timeout=ollama_util_timeout(),
             )
             resp.raise_for_status()
             caps = resp.json().get("capabilities") or []
@@ -411,7 +424,11 @@ async def model_supports_thinking(
         than render it on a model that can't think.
     """
     try:
-        resp = await client.post(_url("/api/show", host), json={"model": name})
+        resp = await client.post(
+            _url("/api/show", host),
+            json={"model": name},
+            timeout=ollama_util_timeout(),
+        )
         resp.raise_for_status()
         caps = resp.json().get("capabilities") or []
         return "thinking" in caps
@@ -796,15 +813,16 @@ async def summarize_conversation(
     }
 
     try:
-        # 300s cap, matching stream_chat. The earlier 120s assumed a warm
-        # model, but by the time a user clicks Compact the model has usually
-        # idled out of memory (Ollama's default keep_alive is ~5 min), so this
-        # is a COLD load: weights load + the whole conversation prefills before
-        # the first token. A 9b model at num_ctx=32768 alone measured ~112s
-        # cold — under any extra load that blew past 120s and surfaced as a
-        # spurious 503. Generation already allows 300s; compaction should too.
+        # Matches stream_chat's read timeout (OLLAMA_CHAT_TIMEOUT, default
+        # 600s). The earlier 120s assumed a warm model, but by the time a user
+        # clicks Compact the model has usually idled out of memory (Ollama's
+        # default keep_alive is ~5 min), so this is a COLD load: weights load +
+        # the whole conversation prefills before the first token. A 9b model at
+        # num_ctx=32768 alone measured ~112s cold — under any extra load that
+        # blew past 120s and surfaced as a spurious 503. Generation gets the
+        # full chat timeout; compaction shares it.
         response = await client.post(
-            _url("/api/chat", host), json=payload, timeout=300.0
+            _url("/api/chat", host), json=payload, timeout=ollama_chat_timeout()
         )
         response.raise_for_status()
     except httpx.HTTPStatusError as e:
@@ -903,16 +921,17 @@ async def generate_title(
         payload["options"] = options
 
     try:
-        # 20s cap. The model is resident (we just streamed the reply), and the
-        # caller feeds only the opening exchange, so a few-token title returns
-        # quickly once any prefill is done. The headroom over a sub-second warm
-        # call covers a cold reload (10-30s for the weights, though the chat we
-        # just answered should keep them resident). The cap bounds how long the
-        # connection stays open if Ollama wedges. On expiry httpx raises
-        # ReadTimeout (an httpx.HTTPError), which the caller catches as
-        # OllamaUnavailable → silent skip in _maybe_emit_title.
+        # Util cap (OLLAMA_UTIL_TIMEOUT, default 30s). The model is resident
+        # (we just streamed the reply), and the caller feeds only the opening
+        # exchange, so a few-token title returns quickly once any prefill is
+        # done. The headroom over a sub-second warm call covers a cold reload
+        # (10-30s for the weights, though the chat we just answered should keep
+        # them resident). The cap bounds how long the connection stays open if
+        # Ollama wedges. On expiry httpx raises ReadTimeout (an httpx.HTTPError),
+        # which the caller catches as OllamaUnavailable → silent skip in
+        # _maybe_emit_title.
         response = await client.post(
-            _url("/api/chat", host), json=payload, timeout=20.0
+            _url("/api/chat", host), json=payload, timeout=ollama_util_timeout()
         )
     except (httpx.HTTPError, httpx.InvalidURL) as e:
         raise OllamaUnavailable(f"Title request failed: {e}") from e
