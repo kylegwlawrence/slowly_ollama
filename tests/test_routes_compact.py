@@ -17,7 +17,6 @@ from fastapi.testclient import TestClient
 
 from app import generation, queries
 from app.connection import open_connection
-from app.routes.chats import _split_for_compact
 
 # Re-use the shared fixtures from test_routes.
 from tests.test_routes import (
@@ -93,15 +92,54 @@ def test_compact_unknown_chat_404s(make_client: ClientFactory) -> None:
     assert response.status_code == 404
 
 
-def test_compact_with_too_little_history_422s(
+def test_compact_lone_summary_422s(
     make_client: ClientFactory,
 ) -> None:
-    """A chat with just one user message has nothing to summarize."""
+    """A chat whose only active row is a summary has nothing new to fold in.
+
+    Re-summarizing a lone summary would only degrade it, so the endpoint
+    refuses. This is the floor now that compaction keeps nothing verbatim.
+    """
     with make_client(_summarize_handler("ignored")) as client:
-        chat_id = _create_chat_db_only("just one message")
-        response = client.post(f"/chats/{chat_id}/compact")
+        db_path = os.environ["DB_PATH"]
+        with open_connection(db_path) as conn:
+            chat = queries.create_conversation(conn, name="t", model="llama3")
+            queries.append_message(conn, chat.id, "summary", "prior briefing")
+        response = client.post(f"/chats/{chat.id}/compact")
     assert response.status_code == 422
     assert "nothing to compact" in response.text.lower()
+
+
+def test_compact_empty_chat_422s(make_client: ClientFactory) -> None:
+    """A chat with no messages at all has nothing to compact."""
+    with make_client(_summarize_handler("ignored")) as client:
+        db_path = os.environ["DB_PATH"]
+        with open_connection(db_path) as conn:
+            chat = queries.create_conversation(conn, name="t", model="llama3")
+        response = client.post(f"/chats/{chat.id}/compact")
+    assert response.status_code == 422
+    assert "nothing to compact" in response.text.lower()
+
+
+def test_compact_single_message_now_summarizes(
+    make_client: ClientFactory,
+) -> None:
+    """With nothing kept verbatim, even a single user message compacts.
+
+    The old keep-recent floor refused chats this short; the new contract
+    folds the whole active history regardless of length.
+    """
+    with make_client(_summarize_handler("the one-message briefing")) as client:
+        chat_id = _create_chat_db_only("just one message")
+        response = client.post(f"/chats/{chat_id}/compact")
+    assert response.status_code == 200
+
+    db_path = os.environ["DB_PATH"]
+    with open_connection(db_path) as conn:
+        active = queries.list_active_messages(conn, chat_id)
+    # Only the summary survives; the original user message is archived.
+    assert [m.role for m in active] == ["summary"]
+    assert "the one-message briefing" in active[0].content
 
 
 def test_compact_archives_old_turns_and_inserts_summary(
@@ -120,20 +158,15 @@ def test_compact_archives_old_turns_and_inserts_summary(
         all_rows = queries.list_messages(conn, chat_id)
         active = queries.list_active_messages(conn, chat_id)
 
-    # Exactly one active summary row, plus the most-recent KEEP_RECENT
-    # rows still active. KEEP_RECENT is 4 (see _KEEP_RECENT_ON_COMPACT
-    # in app.routes.chats); 10 rows - 4 kept = 6 archived; +1 new summary.
-    summaries = [m for m in active if m.role == "summary"]
-    assert len(summaries) == 1
-    assert "the user wants X" in summaries[0].content
+    # Nothing is kept verbatim: the summary is the ONLY active row.
+    assert [m.role for m in active] == ["summary"]
+    assert "the user wants X" in active[0].content
 
-    # Originals are still in the DB, just archived.
+    # All 10 originals are still in the DB, just archived.
     archived = [m for m in all_rows if m.archived_at is not None]
-    assert len(archived) > 0
-    # The kept tail should still hold the last user/assistant pair.
-    assert any(
-        m.role == "assistant" and "msg-asst-4" in m.content for m in active
-    )
+    assert len(archived) == 10
+    # The last user/assistant pair is archived now, not kept.
+    assert all(m.archived_at is not None for m in all_rows if "msg-asst-4" in m.content)
 
     # The HTML response is the re-rendered #messages container.
     assert 'id="messages"' in response.text
@@ -267,9 +300,9 @@ def test_compact_payload_excludes_archived_from_summarizer_input(
     msgs = captured[0]["messages"]
     assert msgs[-1]["role"] == "user"
     corpus = msgs[:-1]
-    # 10 prior rows; KEEP_RECENT=2 keeps the trailing 2 in the chat (NOT
-    # in the corpus) so the corpus contains the 8 oldest rows.
-    assert len(corpus) == 8
+    # 10 prior rows, all folded in (nothing kept verbatim), so the corpus
+    # contains every active row.
+    assert len(corpus) == 10
 
 
 def test_post_compaction_turn_excludes_archived_from_model_payload(
@@ -318,7 +351,7 @@ def test_post_compaction_turn_excludes_archived_from_model_payload(
         )
 
     with make_client(handler) as client:
-        # 10 rows; KEEP_RECENT=2 archives the 8 oldest, keeps user/asst-4.
+        # 10 rows; compaction archives ALL of them, keeping nothing verbatim.
         chat_id = _seed_chat_with_history(turns=5, content_prefix="ARCHIVEME")
         assert client.post(f"/chats/{chat_id}/compact").status_code == 200
 
@@ -332,13 +365,12 @@ def test_post_compaction_turn_excludes_archived_from_model_payload(
     blob = "\n".join(
         m.get("content", "") for m in captured["stream"]["messages"]
     )
-    # The archived originals (turns 0..3) must NOT reach the model.
-    for i in range(4):
+    # The archived originals (all 5 turns) must NOT reach the model.
+    for i in range(5):
         assert f"ARCHIVEME-user-{i}" not in blob
         assert f"ARCHIVEME-asst-{i}" not in blob
-    # The summary replacement, the kept tail, and the new message DO.
+    # The summary replacement and the new message DO.
     assert SUMMARY in blob
-    assert "ARCHIVEME-asst-4" in blob
     assert "FRESH-QUESTION" in blob
 
 
@@ -381,84 +413,3 @@ def test_archived_endpoint_empty_for_uncompacted_chat(
         response = client.get(f"/chats/{chat_id}/archived")
     assert response.status_code == 200
     assert "No archived messages" in response.text
-
-
-# ---------------------------------------------------------------------------
-# _split_for_compact unit tests — the helper is interesting enough to pin
-# directly rather than only through the endpoint behavior.
-# ---------------------------------------------------------------------------
-
-
-def _msg(role: str, *, mid: int = 0) -> queries.Message:
-    from datetime import UTC, datetime
-    return queries.Message(
-        id=mid, conversation_id=1, role=role, content="x",
-        created_at=datetime.now(UTC),
-    )
-
-
-def test_split_keeps_last_n_renderables() -> None:
-    """A flat list of user/assistant rows splits at the boundary."""
-    rows = [
-        _msg("user", mid=1), _msg("assistant", mid=2),
-        _msg("user", mid=3), _msg("assistant", mid=4),
-        _msg("user", mid=5), _msg("assistant", mid=6),
-        _msg("user", mid=7), _msg("assistant", mid=8),
-    ]
-    to_summarize, to_keep = _split_for_compact(rows, 4)
-    assert [m.id for m in to_summarize] == [1, 2, 3, 4]
-    assert [m.id for m in to_keep] == [5, 6, 7, 8]
-
-
-def test_split_slides_past_orphan_tool_rows() -> None:
-    """A kept window whose head would be a tool_result slides forward
-    until it points at a renderable row.
-
-    Construct a sequence where the natural boundary at the Nth-from-last
-    renderable lands ON a tool_call (the user/assistant turn it belonged
-    to is already in the kept tail).
-    """
-    # u(1), a(2), tc(3), tr(4), a(5), u(6), a(7) — 4 renderables.
-    # keep_recent=3 → scan finds a(7)=1, u(6)=2, a(5)=3 → break at
-    # index 4 (assistant id=5). The slide is a no-op since active[4]
-    # is renderable. To exercise the slide we need the boundary to
-    # land ON a tool row — happens when keep_recent is exactly the
-    # count of trailing renderables AFTER the last tool batch.
-    rows = [
-        _msg("user", mid=1),
-        _msg("tool_call", mid=2),
-        _msg("tool_result", mid=3),
-        _msg("assistant", mid=4),
-        _msg("user", mid=5),
-        _msg("assistant", mid=6),
-    ]
-    # keep_recent=3: scan finds a(6)=1, u(5)=2, a(4)=3 → break at
-    # index 3 (a4). Then slide: active[3]=a (renderable, no slide).
-    # Result: to_summarize=[u1,tc2,tr3], to_keep=[a4,u5,a6].
-    to_summarize, to_keep = _split_for_compact(rows, 3)
-    assert [m.id for m in to_keep] == [4, 5, 6]
-    # The leading kept row is renderable, never a tool_*.
-    assert to_keep[0].role not in ("tool_call", "tool_result")
-
-
-def test_split_with_too_little_history_returns_empty_summarize() -> None:
-    rows = [_msg("user", mid=1), _msg("assistant", mid=2)]
-    to_summarize, to_keep = _split_for_compact(rows, 4)
-    assert to_summarize == []
-    assert len(to_keep) == 2
-
-
-def test_split_treats_prior_summary_as_renderable() -> None:
-    """A prior summary row counts toward the kept window — re-compaction
-    will subsume it into the new summary."""
-    rows = [
-        _msg("summary", mid=1),
-        _msg("user", mid=2),
-        _msg("assistant", mid=3),
-        _msg("user", mid=4),
-        _msg("assistant", mid=5),
-    ]
-    to_summarize, to_keep = _split_for_compact(rows, 4)
-    # The summary plus the last 3 rows = 4 renderables kept.
-    assert [m.id for m in to_keep] == [2, 3, 4, 5]
-    assert [m.id for m in to_summarize] == [1]

@@ -590,59 +590,6 @@ async def unload_chat_model_endpoint(
     return HTMLResponse(content=indicator_html)
 
 
-# Trailing (user/assistant/summary) rows to keep active on Compact. Captures
-# the current working thread without bloating the prompt. Hardcoded for v1.
-_KEEP_RECENT_ON_COMPACT = 2
-
-
-def _split_for_compact(
-    active: list[queries.Message], keep_recent: int
-) -> tuple[list[queries.Message], list[queries.Message]]:
-    """Split active rows into ``(to-summarize, to-keep)`` halves.
-
-    ``keep_recent`` is counted in renderable rows (``user`` / ``assistant`` /
-    prior ``summary``); attached ``tool_call`` / ``tool_result`` rows travel
-    with the assistant turn they belong to. An orphan ``tool_result`` at the
-    head of the kept window would 400 Ollama next turn — the wire format
-    requires a preceding ``assistant`` with ``tool_calls`` for every ``role:
-    "tool"`` message.
-
-    A prior ``summary`` counts as renderable because re-compacting subsumes
-    it: it joins the new corpus and the new summary replaces it.
-
-    Args:
-        active: Rows from :func:`queries.list_active_messages`, oldest first.
-        keep_recent: Renderable rows to keep unarchived. Must be >= 1.
-
-    Returns:
-        ``(to_summarize, to_keep)``. An empty ``to_summarize`` means nothing
-        older than the kept window (caller 422s); ``to_keep`` is never empty
-        in practice (the triggering user message sits at the tail).
-    """
-    # Walk from the end; the boundary is where we've seen `keep_recent`
-    # renderable rows. If the chat has fewer than that total, the loop exits
-    # without breaking — nothing to compact, so keep everything and return an
-    # empty `to_summarize` (the route then 422s).
-    keep_idx: int | None = None
-    renderables_seen = 0
-    for i in range(len(active) - 1, -1, -1):
-        if active[i].role in ("user", "assistant", "summary"):
-            renderables_seen += 1
-            if renderables_seen >= keep_recent:
-                keep_idx = i
-                break
-    if keep_idx is None:
-        return [], list(active)
-    # Slide forward past leading tool_* rows so the kept window doesn't start
-    # with an orphan tool_result (or tool_call) — both are illegal in the wire
-    # format without their assistant context.
-    while keep_idx < len(active) and active[keep_idx].role in (
-        "tool_call", "tool_result",
-    ):
-        keep_idx += 1
-    return active[:keep_idx], active[keep_idx:]
-
-
 @router.post(
     "/chats/{conversation_id}/compact", response_class=HTMLResponse
 )
@@ -652,19 +599,20 @@ async def compact_chat_endpoint(
     db: DB,
     client: OllamaClient,
 ) -> Response:
-    """Summarize the older portion of a chat into a single ``summary`` row.
+    """Summarize the entire active history of a chat into one ``summary`` row.
 
-    Keeps the most-recent ``_KEEP_RECENT_ON_COMPACT`` renderable messages
-    active; archives everything older (including any prior ``summary``);
-    inserts a fresh ``summary`` row with the model-generated briefing. Returns
-    the re-rendered messages container for HTMX to swap in place.
+    Summarizes every active message — nothing is kept verbatim — then archives
+    all of it (including any prior ``summary``) and inserts a fresh ``summary``
+    row with the model-generated briefing. Returns the re-rendered messages
+    container for HTMX to swap in place.
 
     Raises:
         HTTPException 404: Unknown conversation.
         HTTPException 409: A generation is in flight for this chat —
             compacting mid-stream would race the producer's history reads.
-        HTTPException 422: Nothing to compact yet (the chat has fewer than
-            ``_KEEP_RECENT_ON_COMPACT`` + 1 active renderable rows).
+        HTTPException 422: Nothing to compact yet — the chat has no active
+            rows, or its only active row is an existing ``summary`` (no new
+            turns to fold in).
         HTTPException 502: Ollama returned a body we couldn't parse, or
             returned an empty summary.
         HTTPException 503: Ollama is unreachable.
@@ -685,18 +633,16 @@ async def compact_chat_endpoint(
         )
 
     active = queries.list_active_messages(db, conversation_id)
-    to_summarize, to_keep = _split_for_compact(
-        active, _KEEP_RECENT_ON_COMPACT
-    )
-    if not to_summarize:
+    # Compact the entire active history — nothing is kept verbatim. The only
+    # "nothing to compact" cases are an empty chat or a lone, already-active
+    # summary (no new turns to fold in; re-summarizing it would only degrade
+    # it).
+    if not active or (len(active) == 1 and active[0].role == "summary"):
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             "Nothing to compact yet.",
         )
-    # Cutoff is the FIRST kept row's id, not the summary's. Every to_summarize
-    # row has id < to_keep[0].id; using the summary's id (appended last, so
-    # highest) would archive the kept rows too.
-    archive_cutoff_id = to_keep[0].id
+    to_summarize = active
 
     # num_ctx for the summarization call: project override or global default —
     # same as a normal turn, so a project pinning a larger window benefits
@@ -730,14 +676,14 @@ async def compact_chat_endpoint(
             "Compaction model returned empty text.",
         )
 
-    # Insert the summary, then archive everything older than the kept window.
-    # The summary's id is > every prior row's (monotonic rowid), so it's not
-    # in the archived range.
-    queries.append_message(
+    # Insert the summary, then archive the entire prior history. The summary's
+    # id is > every prior row's (monotonic rowid), so ``id < summary.id``
+    # archives everything except the summary itself.
+    summary = queries.append_message(
         db, conversation_id, "summary", summary_text
     )
     queries.archive_messages_before(
-        db, conversation_id, archive_cutoff_id
+        db, conversation_id, summary.id
     )
 
     # Re-render the whole messages container — simpler than an OOB delta for
