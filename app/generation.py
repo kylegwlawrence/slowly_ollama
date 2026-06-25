@@ -480,6 +480,7 @@ async def _maybe_emit_title(
     client: httpx.AsyncClient,
     db: sqlite3.Connection,
     conversation_id: int,
+    model: str,
     ollama_host: str | None = None,
     num_ctx: int | None = None,
 ) -> None:
@@ -493,6 +494,12 @@ async def _maybe_emit_title(
         client: The shared httpx client.
         db: The shared SQLite connection.
         conversation_id: The chat being titled.
+        model: The EFFECTIVE model the turn just streamed on — i.e. what
+            ``_run_generation`` ran, not the chat's pinned ``conversation.model``.
+            On a non-primary host these differ (the per-host model lives in
+            ``chat_host_models``); titling with ``conversation.model`` would
+            ask the remote host for a model it doesn't have and 404. Must be
+            paired with ``ollama_host`` (same machine that streamed the reply).
         ollama_host: The chat's selected Ollama host — the same machine that
             just streamed the reply, so the model is resident there. Passed
             through to `generate_title`; ``None`` targets the primary host.
@@ -534,7 +541,7 @@ async def _maybe_emit_title(
     try:
         title = await ollama.generate_title(
             client,
-            conversation.model,
+            model,
             _build_history_payload(context),
             host=ollama_host,
             num_ctx=num_ctx,
@@ -955,7 +962,7 @@ async def _run_generation(
         # after done is dropped.
         if on_complete == "append":
             await _maybe_emit_title(
-                state, client, db, conversation_id,
+                state, client, db, conversation_id, model,
                 ollama_host=ollama_host, num_ctx=num_ctx,
             )
 

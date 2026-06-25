@@ -2098,3 +2098,61 @@ async def test_producer_no_think_events_for_non_reasoning_stream(
         msgs = queries.list_messages(db, conv_id)
     assistant = [m for m in msgs if m.role == "assistant"][-1]
     assert assistant.thinking is None
+
+
+# ---------------------------------------------------------------------------
+# _maybe_emit_title — model resolution
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_maybe_emit_title_uses_effective_model_not_pinned(
+    tmp_path, monkeypatch
+):
+    """Regression: the titler must use the EFFECTIVE model the turn streamed
+    on, not the chat's pinned ``conversation.model``.
+
+    On a non-primary host the chat runs that host's per-host model
+    (``chat_host_models``), which need not exist under the primary-host pinned
+    name. Titling with ``conversation.model`` asks the remote host for a model
+    it doesn't have, Ollama 404s on ``/api/chat``, and the titler swallows the
+    error — so the chat never gets an auto-title. Observed in production on the
+    ``air`` host (conv 85: pinned ``qwen3.5:9b`` vs per-host ``qwen3.5:4b-mlx``).
+    """
+    db_path = tmp_path / "chats.db"
+    initialize_database(db_path)
+    with open_connection(db_path) as conn:
+        # `conversation.model` is the PRIMARY-host pinned tag.
+        chat = queries.create_conversation(conn, "t", "pinned-primary-model")
+        queries.append_message(conn, chat.id, "user", "hi")
+        # One assistant reply → count == 1, inside the 1..3 firing window.
+        queries.append_message(conn, chat.id, "assistant", "hello")
+    conv_id = chat.id
+
+    captured: dict = {}
+
+    async def fake_generate_title(client, model, history, host=None, num_ctx=None):
+        captured["model"] = model
+        captured["host"] = host
+        return "A Fine Title"
+
+    monkeypatch.setattr(generation.ollama, "generate_title", fake_generate_title)
+
+    state = generation.GenerationState(conversation_id=conv_id)
+    with open_connection(db_path) as db:
+        await generation._maybe_emit_title(
+            state,
+            None,  # client unused — generate_title is faked.
+            db,
+            conv_id,
+            "host2-effective-model",
+            ollama_host="http://host2:11434",
+        )
+
+    # The EFFECTIVE model the turn ran on — NOT the pinned `conversation.model`.
+    assert captured["model"] == "host2-effective-model"
+    assert captured["host"] == "http://host2:11434"
+    # And the title actually landed (a `title` event + the renamed row).
+    assert [ev for (ev, _p) in state.events].count("title") == 1
+    with open_connection(db_path) as db:
+        assert queries.get_conversation(db, conv_id).name == "A Fine Title"
