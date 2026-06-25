@@ -51,6 +51,7 @@ from app.queries.messages import (
     replace_last_assistant_message,
 )
 from app.queries.projects import (
+    SYSTEM_PROMPT_MAX_CHARS,
     count_projects,
     create_project,
     delete_project,
@@ -108,6 +109,7 @@ __all__ = [
     "list_messages",
     "replace_last_assistant_message",
     # Projects
+    "SYSTEM_PROMPT_MAX_CHARS",
     "count_projects",
     "create_project",
     "delete_project",

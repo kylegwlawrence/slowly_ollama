@@ -14,6 +14,11 @@ _PROJECT_COLS = (
     " num_ctx, system_prompt, created_at, updated_at"
 )
 
+# Max length of a project's system prompt. Enforced server-side here and in the
+# route layer, and surfaced to the textarea's ``maxlength`` via route context, so
+# all three stay in sync from one source of truth.
+SYSTEM_PROMPT_MAX_CHARS = 4000
+
 
 def _row_to_project(row: sqlite3.Row) -> Project:
     """Map a ``projects`` row to the :class:`Project` dataclass."""
@@ -211,7 +216,7 @@ def update_project(
             (inherit global), or ``_UNSET`` (default) to leave alone.
             Clamped to [NUM_CTX_MIN, NUM_CTX_MAX].
         system_prompt: New system prompt (``""`` to clear), or ``None``
-            (default) to leave alone. Clamped to 2000 chars.
+            (default) to leave alone. Clamped to SYSTEM_PROMPT_MAX_CHARS.
 
     Returns:
         The updated Project (unchanged when no kwargs were passed).
@@ -241,7 +246,7 @@ def update_project(
         # Clamp defensively — the route enforces this too, but a direct
         # caller shouldn't be able to insert an unbounded prompt.
         sets.append("system_prompt = ?")
-        args.append(system_prompt[:2000])
+        args.append(system_prompt[:SYSTEM_PROMPT_MAX_CHARS])
     if not sets:
         # No-op: return the current row rather than bump updated_at for nothing.
         return get_project(conn, project_id)

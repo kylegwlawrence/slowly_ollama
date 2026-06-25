@@ -15,6 +15,7 @@ from app.connection import open_connection
 from app.db import initialize_database
 from app.queries import (
     _UNSET,
+    SYSTEM_PROMPT_MAX_CHARS,
     Project,
     count_projects,
     create_conversation,
@@ -244,13 +245,13 @@ def test_update_project_clears_system_prompt_with_empty_string(conn) -> None:
     assert cleared.system_prompt == ""
 
 
-def test_update_project_clamps_system_prompt_at_2000_chars(conn) -> None:
-    """An overlong prompt is truncated to 2000 chars."""
+def test_update_project_clamps_system_prompt_to_max(conn) -> None:
+    """An overlong prompt is truncated to SYSTEM_PROMPT_MAX_CHARS."""
     p = create_project(conn, name="Pspl")
-    long_text = "x" * 2500
+    long_text = "x" * (SYSTEM_PROMPT_MAX_CHARS + 500)
     updated = update_project(conn, p.id, system_prompt=long_text)
-    assert len(updated.system_prompt) == 2000
-    assert updated.system_prompt == "x" * 2000
+    assert len(updated.system_prompt) == SYSTEM_PROMPT_MAX_CHARS
+    assert updated.system_prompt == "x" * SYSTEM_PROMPT_MAX_CHARS
 
 
 def test_update_project_leaves_system_prompt_alone_when_unpassed(conn) -> None:

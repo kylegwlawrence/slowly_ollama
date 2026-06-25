@@ -186,15 +186,15 @@ async def update_project_endpoint(
         except ValueError:
             return queries._UNSET
 
-    # Per-project system prompt. Trim + cap at 2000 chars server-side (the
-    # textarea caps client-side too, but a hand-rolled POST would bypass it).
+    # Per-project system prompt. Trim + cap server-side (the textarea caps
+    # client-side too, but a hand-rolled POST would bypass it).
     # Absent field → None, so update_project leaves the existing value alone.
     raw_prompt = form.get("system_prompt") if "system_prompt" in form else None
     if raw_prompt is None:
         system_prompt_arg: str | None = None
     else:
         s = raw_prompt.strip() if isinstance(raw_prompt, str) else ""
-        system_prompt_arg = s[:2000]
+        system_prompt_arg = s[: queries.SYSTEM_PROMPT_MAX_CHARS]
 
     project = queries.update_project(
         db,
@@ -218,6 +218,7 @@ async def update_project_endpoint(
         saved=True,
         hosts=list_hosts(),
         global_default_num_ctx=queries.get_default_num_ctx(db),
+        system_prompt_max_chars=queries.SYSTEM_PROMPT_MAX_CHARS,
     )
     header_oob = templates.get_template(
         "_project_header_oob.html"
@@ -634,6 +635,7 @@ def project_settings_endpoint(
                 "hosts": list_hosts(),
                 "saved": False,
                 "global_default_num_ctx": queries.get_default_num_ctx(db),
+                "system_prompt_max_chars": queries.SYSTEM_PROMPT_MAX_CHARS,
             },
         },
     )

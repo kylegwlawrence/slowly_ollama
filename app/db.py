@@ -43,8 +43,8 @@ CREATE TABLE IF NOT EXISTS projects (
     default_agent     TEXT,
     -- Ollama `num_ctx` override (context tokens). NULL = inherit global.
     num_ctx           INTEGER,
-    -- System prompt prepended to Normal-chat turns (≤2000 chars, capped at
-    -- the route layer). '' = none. Ignored on agent turns (agent's wins).
+    -- System prompt prepended to Normal-chat turns (≤SYSTEM_PROMPT_MAX_CHARS,
+    -- capped at the route layer). '' = none. Ignored on agent turns (agent wins).
     system_prompt     TEXT NOT NULL DEFAULT '',
     created_at        TEXT NOT NULL,
     updated_at        TEXT NOT NULL

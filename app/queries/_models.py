@@ -85,7 +85,7 @@ class Project:
             window). ``None`` inherits the global default. Applied per turn,
             so a change takes effect on the next message in any chat here.
         system_prompt: Prepended to Normal-chat turns; ``""`` = none, capped
-            at 2000 chars. Ignored on invoked-agent turns (the agent's prompt
+            at SYSTEM_PROMPT_MAX_CHARS. Ignored on invoked-agent turns (the agent's prompt
             wins).
         created_at, updated_at: ISO 8601 UTC timestamps.
     """
