@@ -2714,6 +2714,158 @@ def test_settings_renders_health_check_icon_slot(
     assert 'aria-live="polite"' in response.text
 
 
+# ---------------------------------------------------------------------------
+# POST /settings/sync-descriptions — pull descriptions from /sources
+# ---------------------------------------------------------------------------
+
+
+def _add_server(client: TestClient, name: str, url: str) -> None:
+    """Insert a RAG server via the add route (health probe is stubbed)."""
+    resp = client.post("/settings/servers", data={"name": name, "url": url})
+    assert resp.status_code == 200
+
+
+def test_sync_descriptions_overwrites_matched_rows(
+    make_client: ClientFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each matched server's description is rewritten from /sources.
+
+    Matching strips a trailing ``_rag`` (``arxiv_rag`` → source id ``arxiv``)
+    and timeframe is appended in parentheses.
+    """
+    async def _fake_fetch(base_url: str) -> dict:
+        return {
+            "arxiv": {
+                "id": "arxiv",
+                "description": "Research papers.",
+                "timeframe": "1991–current",
+            },
+            "openstax": {
+                "id": "openstax",
+                "description": "Textbooks.",
+                "timeframe": "",
+            },
+        }
+
+    monkeypatch.setattr(
+        "app.routes.settings.fetch_sources", _fake_fetch
+    )
+
+    with make_client(_ollama_unreachable) as client:
+        _add_server(client, "arxiv_rag", "http://pop-os:8002/arxiv_rag")
+        _add_server(client, "openstax_rag", "http://pop-os:8002/openstax_rag")
+
+        response = client.post("/settings/sync-descriptions")
+
+    assert response.status_code == 200
+    assert "Research papers. (1991–current)" in response.text
+    # No timeframe → no trailing parenthetical.
+    assert "Textbooks." in response.text
+    assert "Textbooks. (" not in response.text
+    # Banner reports both rows updated.
+    assert "Updated 2 descriptions." in response.text
+
+
+def test_sync_descriptions_reports_unmatched(
+    make_client: ClientFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A server with no matching /sources id is counted as unmatched."""
+    async def _fake_fetch(base_url: str) -> dict:
+        return {"arxiv": {"id": "arxiv", "description": "Papers."}}
+
+    monkeypatch.setattr("app.routes.settings.fetch_sources", _fake_fetch)
+
+    with make_client(_ollama_unreachable) as client:
+        _add_server(client, "arxiv_rag", "http://pop-os:8002/arxiv_rag")
+        _add_server(client, "mystery_rag", "http://pop-os:8002/mystery_rag")
+
+        response = client.post("/settings/sync-descriptions")
+
+    assert response.status_code == 200
+    assert "Updated 1 description." in response.text
+    assert "1 unmatched." in response.text
+
+
+def test_sync_descriptions_reports_unreachable_host(
+    make_client: ClientFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A host whose /sources fetch fails leaves its servers untouched."""
+    async def _fake_fetch(base_url: str) -> None:
+        return None
+
+    monkeypatch.setattr("app.routes.settings.fetch_sources", _fake_fetch)
+
+    with make_client(_ollama_unreachable) as client:
+        _add_server(client, "arxiv_rag", "http://pop-os:8002/arxiv_rag")
+
+        response = client.post("/settings/sync-descriptions")
+
+    assert response.status_code == 200
+    assert "Updated 0 descriptions." in response.text
+    assert "1 on an unreachable host." in response.text
+
+
+def test_sync_descriptions_oob_refreshes_sidebar(
+    make_client: ClientFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The sync response carries the OOB sidebar refresh + result banner."""
+    async def _fake_fetch(base_url: str) -> dict:
+        return {"arxiv": {"id": "arxiv", "description": "Papers."}}
+
+    monkeypatch.setattr("app.routes.settings.fetch_sources", _fake_fetch)
+
+    with make_client(_ollama_unreachable) as client:
+        _add_server(client, "arxiv_rag", "http://pop-os:8002/arxiv_rag")
+        response = client.post("/settings/sync-descriptions")
+
+    assert response.status_code == 200
+    assert 'id="sidebar-reference"' in response.text
+    assert 'hx-swap-oob="true"' in response.text
+    # The OOB result banner targets the #sync-result span by id.
+    assert 'id="sync-result"' in response.text
+
+
+def test_sync_descriptions_fetches_once_per_host(
+    make_client: ClientFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Servers sharing a host trigger a single /sources fetch."""
+    calls: list[str] = []
+
+    async def _fake_fetch(base_url: str) -> dict:
+        calls.append(base_url)
+        return {
+            "arxiv": {"id": "arxiv", "description": "Papers."},
+            "openstax": {"id": "openstax", "description": "Books."},
+        }
+
+    monkeypatch.setattr("app.routes.settings.fetch_sources", _fake_fetch)
+
+    with make_client(_ollama_unreachable) as client:
+        _add_server(client, "arxiv_rag", "http://pop-os:8002/arxiv_rag")
+        _add_server(client, "openstax_rag", "http://pop-os:8002/openstax_rag")
+        client.post("/settings/sync-descriptions")
+
+    # Two servers, one host → exactly one fetch.
+    assert len(calls) == 1
+
+
+def test_settings_renders_sync_button(
+    make_client: ClientFactory,
+) -> None:
+    """The settings page renders the sync button + empty result slot."""
+    with make_client(_ollama_unreachable) as client:
+        response = client.get("/settings", headers={"HX-Request": "true"})
+
+    assert response.status_code == 200
+    assert 'hx-post="/settings/sync-descriptions"' in response.text
+    assert 'id="sync-result"' in response.text
+
+
 def test_settings_delete_server_empty_200(
     make_client: ClientFactory,
 ) -> None:

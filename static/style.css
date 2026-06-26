@@ -1513,6 +1513,34 @@ body {
   align-self: end;
   padding-bottom: var(--space-xs);
 }
+
+/* "Sync descriptions from server" row: the button plus an inline result
+   banner that fills in after the POST. Sits below the add-server form. */
+.settings__sync {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+}
+
+/* Outlined (secondary) button — distinct from the filled "Add server"
+   primary so the destructive-ish overwrite doesn't read as the default. */
+.settings__sync-btn {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  padding: var(--space-xs) var(--space-md);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  margin: 0;
+}
+
+.settings__sync-result {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
 .health-icon__ok   { color: var(--success); }
 .health-icon__fail { color: var(--danger); }
 

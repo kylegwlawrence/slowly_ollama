@@ -3,6 +3,7 @@
 Routes:
     GET    /settings                            — settings page
     POST   /settings/servers                    — add RAG server
+    POST   /settings/sync-descriptions          — sync descriptions from /sources
     GET    /settings/servers/{id}               — fetch row (view or edit)
     PATCH  /settings/servers/{id}               — update description
     DELETE /settings/servers/{id}               — remove RAG server
@@ -23,6 +24,7 @@ from app import queries
 from app import rag_servers as _rag_servers
 from app.dependencies import DB
 from app.rag_health import probe_rag_health
+from app.rag_sources import description_for, fetch_sources, host_root
 from app.routes._helpers import _sidebar_reference_context, _sidebar_reference_oob
 from app.templates import templates
 from app.tools.rag import refresh_query_rag_registration
@@ -130,6 +132,73 @@ async def add_server_endpoint(
         request=request, server=server
     )
     return HTMLResponse(row_html + _sidebar_reference_oob(db))
+
+
+@router.post("/settings/sync-descriptions", response_class=HTMLResponse)
+async def sync_descriptions_endpoint(request: Request, db: DB) -> Response:
+    """Overwrite RAG server descriptions from each host's ``/sources`` endpoint.
+
+    Groups configured servers by host root, fetches ``GET /sources`` once per
+    distinct host, matches each server by its ``_rag``-stripped name to a
+    source ``id``, and rewrites its description to
+    ``"<description> (<timeframe>)"``. The remote is treated as the source of
+    truth, so a matched row is overwritten even if it had a manual value;
+    rows whose description is already current are left untouched (no
+    needless ``updated_at`` bump).
+
+    Re-renders the full servers list (every changed row swaps in at once)
+    plus an OOB sidebar refresh and an OOB result banner summarizing how many
+    rows were updated / left unmatched / sat on an unreachable host.
+
+    On any change, ``refresh_query_rag_registration`` folds the new
+    descriptions into the next chat turn's ``query_rag`` source hint.
+    """
+    servers = _rag_servers.list_servers(db)
+
+    # One /sources fetch per distinct host root; None marks an unreachable
+    # (or malformed) host so its servers count as "host unreachable" below.
+    sources_by_root: dict[str | None, dict | None] = {}
+    for server in servers:
+        root = host_root(server.url)
+        if root not in sources_by_root:
+            sources_by_root[root] = await fetch_sources(server.url)
+
+    updated = 0
+    unmatched = 0
+    unreachable = 0
+    for server in servers:
+        sources = sources_by_root.get(host_root(server.url))
+        if sources is None:
+            unreachable += 1
+            continue
+        new_description = description_for(server.name, sources)
+        if new_description is None:
+            unmatched += 1
+            continue
+        if new_description != server.description:
+            _rag_servers.update_server_description(
+                db, server.id, new_description
+            )
+            updated += 1
+
+    if updated:
+        refresh_query_rag_registration()
+
+    # Re-read so the re-rendered rows carry the freshly-written descriptions.
+    servers = _rag_servers.list_servers(db)
+    rows_html = "".join(
+        templates.get_template("_rag_server_row.html").render(
+            request=request, server=server, editing=False
+        )
+        for server in servers
+    )
+    result_html = templates.get_template("_sync_result.html").render(
+        request=request,
+        updated=updated,
+        unmatched=unmatched,
+        unreachable=unreachable,
+    )
+    return HTMLResponse(rows_html + result_html + _sidebar_reference_oob(db))
 
 
 @router.delete(

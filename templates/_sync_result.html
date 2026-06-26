@@ -1,0 +1,13 @@
+{# OOB result banner for POST /settings/sync-descriptions.
+
+   Swapped by id into the empty <span id="sync-result"> beside the "Sync
+   descriptions from server" button. `aria-live="polite"` (on the target in
+   _settings.html) announces the summary once it lands. The counts are
+   server-level: how many rows had their description rewritten, how many
+   matched no /sources entry, and how many sat on an unreachable host. #}
+<span id="sync-result" class="settings__sync-result" role="status"
+      hx-swap-oob="true">
+  Updated {{ updated }} description{{ "" if updated == 1 else "s" }}.
+  {%- if unmatched %} {{ unmatched }} unmatched.{% endif %}
+  {%- if unreachable %} {{ unreachable }} on an unreachable host.{% endif %}
+</span>
