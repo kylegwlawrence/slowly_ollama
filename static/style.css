@@ -1286,6 +1286,17 @@ body {
   margin: var(--space-xs) 0 0;
 }
 
+/* Title row: section heading on the left, the "Sync descriptions" action
+   pinned to the right. Wraps on narrow widths so the button drops below
+   the title rather than overflowing. */
+.settings__section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+}
+
 .settings__section-title {
   font-size: 16px;
   font-weight: 500;
@@ -1514,8 +1525,9 @@ body {
   padding-bottom: var(--space-xs);
 }
 
-/* "Sync descriptions from server" row: the button plus an inline result
-   banner that fills in after the POST. Sits below the add-server form. */
+/* "Sync descriptions from server": the button plus an inline result
+   banner that fills in after the POST. Sits to the right of the section
+   title (see .settings__section-head). */
 .settings__sync {
   display: flex;
   align-items: center;
@@ -1523,18 +1535,22 @@ body {
   flex-wrap: wrap;
 }
 
-/* Outlined (secondary) button — distinct from the filled "Add server"
-   primary so the destructive-ish overwrite doesn't read as the default. */
+/* Filled primary, identical to the "Add server" submit button (accent
+   fill, accent-on text, accent-hover). Padding/font are left to Pico's
+   default button metrics so the two match exactly; only width:auto and
+   margin:0 are needed because Pico stretches bare <button>s to 100% and
+   this one sits in a flex row, not the form grid. */
 .settings__sync-btn {
-  background: transparent;
-  color: var(--accent);
-  border: 1px solid var(--accent);
-  padding: var(--space-xs) var(--space-md);
-  border-radius: var(--radius-md);
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 500;
+  width: auto;
   margin: 0;
+  background: var(--accent);
+  color: var(--accent-on);
+  border: var(--pico-border-width) solid var(--accent);
+}
+
+.settings__sync-btn:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 
 .settings__sync-result {

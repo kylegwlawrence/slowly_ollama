@@ -15,7 +15,25 @@
   </header>
 
   <section class="settings__section">
-    <h2 class="settings__section-title">RAG servers</h2>
+    {# Title row: the section heading plus the "Sync descriptions" action
+       pinned to its right. Pull descriptions from each RAG host's /sources
+       endpoint so they stay common across apps instead of being hand-typed.
+       POSTs once, then swaps the whole list (innerHTML) with the rewritten
+       rows; the result banner and sidebar ride along as OOB swaps from the
+       same response. Plain <button> — no form, no JS hook needed. #}
+    <div class="settings__section-head">
+      <h2 class="settings__section-title">RAG servers</h2>
+      <div class="settings__sync">
+        <span id="sync-result" class="settings__sync-result" role="status"
+              aria-live="polite"></span>
+        <button type="button" class="settings__sync-btn"
+                hx-post="/settings/sync-descriptions"
+                hx-target="#rag-servers-list"
+                hx-swap="innerHTML">
+          Sync descriptions from server
+        </button>
+      </div>
+    </div>
 
     {# Servers are rendered in stable insertion order (oldest first) so
        the list doesn't shuffle on reload. A newly-added server is
@@ -76,28 +94,6 @@
          writes text, the AT announces it once. #}
       <div id="rag-server-form-error" class="form-error" role="alert" hidden></div>
     </form>
-
-    {# Pull descriptions from the RAG host's /sources endpoint so they stay
-       common across apps instead of being hand-typed. POSTs once, then
-       swaps the whole list (innerHTML) with the rewritten rows; the result
-       banner and sidebar ride along as OOB swaps from the same response.
-       Plain <button> — no form, no JS hook needed. #}
-    <div class="settings__sync">
-      <button type="button" class="settings__sync-btn"
-              hx-post="/settings/sync-descriptions"
-              hx-target="#rag-servers-list"
-              hx-swap="innerHTML">
-        Sync descriptions from server
-      </button>
-      <span id="sync-result" class="settings__sync-result" role="status"
-            aria-live="polite"></span>
-    </div>
-    <p class="settings__section-help">
-      Overwrites each server's description from the matching entry in the
-      host's <code>/sources</code> list (matched by name, ignoring a
-      trailing <code>_rag</code>). The remote is the source of truth, so
-      manual edits are replaced.
-    </p>
   </section>
 
   {# Global default sampling temperature applied to newly-created
