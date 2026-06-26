@@ -1535,22 +1535,25 @@ body {
   flex-wrap: wrap;
 }
 
-/* Filled primary, identical to the "Add server" submit button (accent
-   fill, accent-on text, accent-hover). Padding/font are left to Pico's
-   default button metrics so the two match exactly; only width:auto and
-   margin:0 are needed because Pico stretches bare <button>s to 100% and
-   this one sits in a flex row, not the form grid. */
+/* Filled primary, identical to the "Add server" submit button — same
+   metrics as `.rag-server-form button` (accent fill, accent-on text,
+   13px/500, compact padding). width:auto stops Pico stretching the bare
+   <button> to 100% since this one sits in a flex row, not the form grid. */
 .settings__sync-btn {
   width: auto;
   margin: 0;
   background: var(--accent);
   color: var(--accent-on);
-  border: var(--pico-border-width) solid var(--accent);
+  border: none;
+  padding: var(--space-xs) var(--space-md);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
 }
 
 .settings__sync-btn:hover {
   background: var(--accent-hover);
-  border-color: var(--accent-hover);
 }
 
 .settings__sync-result {
