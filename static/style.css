@@ -1717,16 +1717,53 @@ body {
   gap: var(--space-md);
 }
 
+/* Each group is a <details>: the gap separates the <summary> header from the
+   revealed chip list when open. Collapsed, only the summary shows. */
 .sidebar__ref-group {
   display: flex;
   flex-direction: column;
   gap: var(--space-sm);
 }
 
+/* The <summary> is the clickable header row. Hide the native disclosure
+   triangle (both the standards `list-style` and the WebKit pseudo-element) so
+   our own chevron is the only affordance. */
 .sidebar__ref-header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: var(--space-xs);
+  cursor: pointer;
+  list-style: none;
+}
+
+/* Suppress the native disclosure triangle across engines: `list-style`/`::marker`
+   for standards browsers, `::-webkit-details-marker` for older WebKit/Blink. */
+.sidebar__ref-header::-webkit-details-marker {
+  display: none;
+}
+
+.sidebar__ref-header::marker {
+  content: "";
+}
+
+/* Pico classless injects its own chevron via `details summary::after` (a
+   background-image SVG). We render our own chevron span, so suppress Pico's —
+   otherwise both show (see the same fix on .tool-card__summary). */
+.sidebar__ref-header::after {
+  display: none;
+}
+
+/* Chevron sits at the far right of the summary and rotates from pointing
+   right (collapsed) to down (open). */
+.sidebar__ref-chevron {
+  margin-left: auto;
+  font-size: 18px;
+  color: var(--text-secondary);
+  transition: transform 0.15s ease;
+}
+
+details[open] > .sidebar__ref-header .sidebar__ref-chevron {
+  transform: rotate(90deg);
 }
 
 .sidebar__ref-title {

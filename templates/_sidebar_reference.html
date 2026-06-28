@@ -17,14 +17,22 @@
    Chips reuse .tool-chip + the neutral, non-interactive .sidebar__ref-chip
    modifier (these are labels, not buttons). Server labels drop the `_rag`
    suffix to match the old panel; tool chips carry the tool description as a
-   hover title. #}
+   hover title.
+
+   Each group is a native <details>/<summary> so it collapses by default and
+   expands on click — no JS, no persisted state. The summary IS the header
+   row; a chevron (reusing the vendored `chevron_right` glyph) sits at the far
+   right and rotates 90° when open (see static/style.css). Default-collapsed
+   keeps the sidebar compact as the tool/source counts grow. #}
 <section id="sidebar-reference" class="sidebar__reference"
          {%- if oob|default(false) %} hx-swap-oob="true"{% endif %}>
-  <div class="sidebar__ref-group">
-    <header class="sidebar__ref-header">
+  <details class="sidebar__ref-group">
+    <summary class="sidebar__ref-header">
       <span class="sidebar__ref-title">Sources</span>
       <span class="sidebar__ref-subtitle">{{ sidebar_rag_servers|length }}</span>
-    </header>
+      <span class="material-symbols-outlined sidebar__ref-chevron"
+            aria-hidden="true">chevron_right</span>
+    </summary>
     {% if sidebar_rag_servers %}
     <ul class="sidebar__ref-chips">
       {% for server in sidebar_rag_servers %}
@@ -39,12 +47,14 @@
     {% else %}
     <p class="sidebar__ref-empty">None configured</p>
     {% endif %}
-  </div>
-  <div class="sidebar__ref-group">
-    <header class="sidebar__ref-header">
+  </details>
+  <details class="sidebar__ref-group">
+    <summary class="sidebar__ref-header">
       <span class="sidebar__ref-title">Tools</span>
       <span class="sidebar__ref-subtitle">{{ sidebar_tools|length }}</span>
-    </header>
+      <span class="material-symbols-outlined sidebar__ref-chevron"
+            aria-hidden="true">chevron_right</span>
+    </summary>
     <ul class="sidebar__ref-chips">
       {% for spec in sidebar_tools %}
         <li>
@@ -55,5 +65,5 @@
         </li>
       {% endfor %}
     </ul>
-  </div>
+  </details>
 </section>
