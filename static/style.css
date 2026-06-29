@@ -58,7 +58,7 @@
 
   /* Slight type-scale bump so message text reads more like Claude
      (15px vs Pico's 16px default vs phase 8's 14px). */
-  --font-size-base: 13px;
+  --font-size-base: 14px;
 }
 
 
