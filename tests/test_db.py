@@ -546,6 +546,51 @@ def test_migration_backfills_thinking_column(tmp_path: Path) -> None:
         assert value is None
 
 
+def test_messages_duration_ms_column_present_on_fresh_db(
+    initialized_db: Path,
+) -> None:
+    """A fresh DB's messages table includes the `duration_ms` column."""
+    with _open(initialized_db) as conn:
+        columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(messages);")
+        }
+    assert "duration_ms" in columns
+
+
+def test_migration_backfills_duration_ms_column(tmp_path: Path) -> None:
+    """A messages table that pre-dates this column gets the nullable
+    `duration_ms` column backfilled on init (NULL = no duration recorded).
+    """
+    db = tmp_path / "chats.db"
+    with sqlite3.connect(db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY,
+                conversation_id INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            INSERT INTO messages
+                (conversation_id, role, content, created_at)
+                VALUES (1, 'assistant', 'legacy row', 'now');
+            """
+        )
+
+    initialize_database(db)
+
+    with sqlite3.connect(db) as conn:
+        columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(messages);")
+        }
+        assert "duration_ms" in columns
+        value = conn.execute(
+            "SELECT duration_ms FROM messages WHERE content = 'legacy row';"
+        ).fetchone()[0]
+        assert value is None
+
+
 def test_partial_index_idx_messages_active_present(
     initialized_db: Path,
 ) -> None:

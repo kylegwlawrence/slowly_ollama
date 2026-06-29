@@ -1058,6 +1058,17 @@ body {
   cursor: help;
 }
 
+/* Per-turn response duration, sits directly under the token counts in the
+   same quiet monospaced style. Tighter top margin so it reads as a second
+   line of the same metadata block rather than a separate group. */
+.message__duration {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: var(--space-xs);
+  cursor: help;
+}
+
 /* ===== Message-form layout =============================================== */
 
 .message-form {

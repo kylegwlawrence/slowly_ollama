@@ -138,6 +138,11 @@ class Message:
     # `app.ollama.ChatChunk` for interpretation.
     prompt_tokens: int | None = None
     eval_tokens: int | None = None
+    # Wall-clock generation time for this assistant turn, in milliseconds
+    # (producer start → done, spanning the whole tool loop + stream). NULL on
+    # non-assistant rows, pre-existing rows, and turns that errored before
+    # completing. Rendered under the token counts as a human-readable string.
+    duration_ms: int | None = None
     # A thinking model's streamed reasoning for this assistant turn, or NULL.
     # Populated by `append_message` / `replace_last_assistant_message` from
     # the producer's accumulated `message.thinking` chunks; NULL on

@@ -667,6 +667,10 @@ async def _run_generation(
     system_prompt = "\n\n".join(parts)
 
     turn_id = str(time.monotonic_ns())
+    # Wall-clock start of the turn, for the per-message duration shown under
+    # the token counts. Monotonic so a clock adjustment mid-turn can't skew
+    # it; measured here so it spans the whole tool loop + streaming phase.
+    gen_start_ns = time.monotonic_ns()
     card_id = render.card_id_for(turn_id)
     list_id = f"{card_id}-list"
     summary_id = f"{card_id}-summary"
@@ -827,6 +831,7 @@ async def _run_generation(
                 conversation_id,
                 "assistant",
                 "(Tool-call limit reached; no final answer produced.)",
+                duration_ms=(time.monotonic_ns() - gen_start_ns) // 1_000_000,
             )
             persisted_or_errored = True
             bail_payload = render.render_done_card_oobs(
@@ -939,11 +944,13 @@ async def _run_generation(
         # (not "") on a non-reasoning turn keeps the column NULL and the
         # historic render free of an empty thinking card.
         thinking_text = "".join(thinking_chunks) or None
+        duration_ms = (time.monotonic_ns() - gen_start_ns) // 1_000_000
         if on_complete == "append":
             message = queries.append_message(
                 db, conversation_id, "assistant", full_text,
                 prompt_tokens=prompt_tokens,
                 eval_tokens=eval_tokens,
+                duration_ms=duration_ms,
                 thinking=thinking_text,
             )
         else:  # "replace"
@@ -951,6 +958,7 @@ async def _run_generation(
                 db, conversation_id, full_text,
                 prompt_tokens=prompt_tokens,
                 eval_tokens=eval_tokens,
+                duration_ms=duration_ms,
                 thinking=thinking_text,
             )
         # Persisted — outer finally must not double-write a partial. Set

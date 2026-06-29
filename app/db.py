@@ -96,6 +96,12 @@ CREATE TABLE IF NOT EXISTS messages (
     -- turn's prompt_tokens is "current context size" — summing double-counts.
     prompt_tokens   INTEGER,
     eval_tokens     INTEGER,
+    -- Wall-clock time the assistant turn took to generate, in milliseconds
+    -- (producer start → done, so it spans the whole tool loop + stream).
+    -- NULL on non-assistant rows, pre-existing rows, and turns that errored
+    -- before completing. Rendered under the token counts as a human-readable
+    -- duration (e.g. "32s", "10min 32s").
+    duration_ms     INTEGER,
     -- A thinking model's streamed reasoning for this assistant turn (the
     -- final stream_chat call, after any tool loop). NULL on non-assistant
     -- rows, pre-existing rows, and turns where the model didn't reason
@@ -466,6 +472,26 @@ def _ensure_messages_token_count_columns(conn: sqlite3.Connection) -> None:
         )
 
 
+def _ensure_messages_duration_column(conn: sqlite3.Connection) -> None:
+    """Add ``messages.duration_ms`` on legacy DBs.
+
+    Nullable INTEGER, no default — pre-existing rows read back as NULL (no
+    duration recorded). Mirrors :func:`_ensure_messages_token_count_columns`.
+    Must run AFTER :func:`_migrate_messages_drop_role_check`, which rebuilds
+    ``messages`` from a fixed column list that omits ``duration_ms``.
+
+    Args:
+        conn: Open SQLite connection.
+    """
+    columns = {row[1] for row in conn.execute(
+        "PRAGMA table_info(messages);"
+    )}
+    if "duration_ms" not in columns:
+        conn.execute(
+            "ALTER TABLE messages ADD COLUMN duration_ms INTEGER;"
+        )
+
+
 def _ensure_messages_thinking_column(conn: sqlite3.Connection) -> None:
     """Add ``messages.thinking`` on legacy DBs.
 
@@ -595,6 +621,7 @@ def initialize_database(path: Path | None = None) -> Path:
         # messages table without those columns.
         _migrate_messages_drop_role_check(conn)
         _ensure_messages_token_count_columns(conn)
+        _ensure_messages_duration_column(conn)
         _ensure_messages_thinking_column(conn)
         _ensure_messages_archived_at_column(conn)
         _ensure_rag_servers_description_column(conn)

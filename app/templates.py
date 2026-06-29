@@ -210,6 +210,13 @@ def _render_markdown(text: str) -> str:
 
 templates.env.filters["markdown"] = _render_markdown
 
+# `{{ message.duration_ms | duration }}` → "32s" / "10min 32s" under the
+# token counts on an assistant bubble. Lives here (not inline in the template)
+# so the same helper is unit-testable and reused if other surfaces need it.
+from app.format import format_duration_ms as _format_duration_ms  # noqa: E402
+
+templates.env.filters["duration"] = _format_duration_ms
+
 
 # Expose the backup feature-gate + status as template globals so the
 # backup-status chip can self-gate and self-seed without every chat-panel

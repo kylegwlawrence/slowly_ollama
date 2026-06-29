@@ -37,6 +37,13 @@
     {%- endif %}
   </div>
   {%- endif %}
+  {# Wall-clock generation time, rendered under the token counts in the same
+     quiet monospaced style. Shown whenever it was recorded, independent of
+     the token counts (Ollama can omit those on a prompt-cache hit). #}
+  {%- if message.duration_ms is not none %}
+  <div class="message__duration"
+       title="Wall-clock time this response took to generate.">{{ message.duration_ms | duration }}</div>
+  {%- endif %}
   {# Regenerate is rendered on every assistant bubble; CSS in
      base.html hides it unless the bubble is the last child of
      #messages AND not a streaming placeholder. That way only the

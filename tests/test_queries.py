@@ -327,6 +327,45 @@ def test_list_messages_returns_chronological_order(
 # ---------------------------------------------------------------------------
 
 
+def test_append_message_persists_duration_ms(
+    conn: sqlite3.Connection,
+) -> None:
+    """append_message stores duration_ms and reads it back on the row."""
+    c = create_conversation(conn, "X", "llama3")
+
+    m = append_message(conn, c.id, "assistant", "Hi", duration_ms=32_400)
+
+    assert m.duration_ms == 32_400
+    # Survives a re-fetch, not just the RETURNING row.
+    assert list_messages(conn, c.id)[-1].duration_ms == 32_400
+
+
+def test_append_message_duration_ms_defaults_to_none(
+    conn: sqlite3.Connection,
+) -> None:
+    """A row appended without a duration reads back NULL (e.g. user turns)."""
+    c = create_conversation(conn, "X", "llama3")
+
+    m = append_message(conn, c.id, "user", "Hello")
+
+    assert m.duration_ms is None
+
+
+def test_replace_last_assistant_message_persists_duration_ms(
+    conn: sqlite3.Connection,
+) -> None:
+    """Regenerate overwrites duration_ms with the new turn's value."""
+    c = create_conversation(conn, "X", "llama3")
+    append_message(conn, c.id, "user", "Q")
+    append_message(conn, c.id, "assistant", "Old", duration_ms=1_000)
+
+    replaced = replace_last_assistant_message(
+        conn, c.id, "New", duration_ms=5_000
+    )
+
+    assert replaced.duration_ms == 5_000
+
+
 def test_replace_last_assistant_message_updates_in_place(
     conn: sqlite3.Connection,
 ) -> None:
