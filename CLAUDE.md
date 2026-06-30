@@ -24,7 +24,7 @@ committed to version control.
 
 ## Current state
 
-A single-user local chat app over Ollama. **809 tests passing**, 0 failing.
+A single-user local chat app over Ollama. **883 tests passing**, 0 failing.
 Current feature set:
 
 - **Chat over multiple Ollama hosts.** A multi-host registry (`app/hosts/`,
@@ -103,7 +103,8 @@ Current feature set:
 - **SQLite** — persistence (single shared connection on `app.state.db`)
 - **Pico CSS classless** + hand-written `static/style.css`
 - **Material Symbols Outlined** — vendored woff2 under `static/`
-- **pytest** + **pytest-asyncio** + **pytest-cov** — mock-only Ollama
+- **pytest** + **pytest-asyncio** + **pytest-cov** + **pytest-xdist** — mock-only
+  Ollama; suite runs in parallel by default (`-n auto`, see `pyproject.toml`)
 
 Versions pinned in `requirements.txt`; transitive deps intentionally unpinned.
 
@@ -161,7 +162,10 @@ docs/
 `source .venv/bin/activate` → `pip install -r requirements.txt` →
 `cp .env.example .env` (defaults work if Ollama is on `:11434`) →
 `uvicorn main:app --reload` for local dev. Tests: `pytest` (hermetic, no
-real Ollama). Coverage: `pytest --cov=app --cov=main --cov-report=term-missing`.
+real Ollama; runs parallel via xdist — add `-n0` for a single-test run where
+worker spin-up costs more than it saves, and temp files go to `/dev/shm` when
+available, see `tests/conftest.py`). Coverage: `pytest --cov=app --cov=main
+--cov-report=term-missing` (combines correctly across xdist workers).
 DB lives at `~/Library/Application Support/ollama_slowly/chats.db` by default
 (created on first run); configurable via `DB_PATH` in `.env`.
 
