@@ -897,7 +897,7 @@ async def generate_title(
         "role": "user",
         "content": (
             "Give this conversation a noun-phrase title:"
-            " 4 words or fewer, under 30 characters."
+            " 7 words or fewer, under 50 characters."
             " Reply with only the title, no punctuation."
         ),
     }
