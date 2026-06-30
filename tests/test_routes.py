@@ -556,23 +556,26 @@ def _create_chat_db_only(
     return chat.id
 
 
-def test_index_renders_layout_with_composer(
+def test_empty_state_chats_page_renders_layout_and_composer(
     make_client: ClientFactory,
 ) -> None:
-    """Phase 17b: GET /projects/{pid}/chats renders the unified sidebar
-    (with the projects list) and the empty-state composer in #main.
+    """The empty-state GET /projects/{pid}/chats page, asserted on one render.
 
-    The sidebar's primary list is the projects list (#projects-list),
-    not a chats list. Chats only appear in the main panel when the
-    project has any."""
+    This one read-only request covers what were three separate tests (each
+    rebuilding a client): the page shell + unified sidebar, the composer form
+    contract (POST target, no inherited hx-push-url, required fields), and the
+    model dropdown's load-time /models fetch.
+    """
     with make_client(_ollama_unreachable) as client:
         pid = _default_project_id()
         response = client.get(f"/projects/{pid}/chats")
 
     assert response.status_code == 200
-    # Page shell from base.html.
+
+    # --- Page shell + unified sidebar (was test_index_renders_layout). ---
+    # The sidebar's primary list is the projects list (#projects-list), not a
+    # chats list. Chats only appear in the main panel when the project has any.
     assert "<!DOCTYPE html>" in response.text
-    # Unified sidebar.
     assert 'class="sidebar"' in response.text
     assert 'id="projects-list"' in response.text
     # Composer takes the main area when no chat is loaded.
@@ -581,29 +584,16 @@ def test_index_renders_layout_with_composer(
     # Sidebar "+ New project" affordance lives on every page now.
     assert 'class="sidebar__new-chat"' in response.text
 
-
-def test_index_includes_composer_form(
-    make_client: ClientFactory,
-) -> None:
-    """Phase 17: the composer posts to /projects/{pid}/chats with model + content.
-
-    Phase 11b removed the standalone "Compose" disclosure; phase 17
-    nested the create-chat URL under the project.
-    """
-    with make_client(_ollama_unreachable) as client:
-        pid = _default_project_id()
-        response = client.get(f"/projects/{pid}/chats")
-
+    # --- Composer form contract (was test_index_includes_composer_form). ---
     assert 'class="composer__form"' in response.text
     assert f'hx-post="/projects/{pid}/chats"' in response.text
-    # The composer replaces #main with the new chat panel; the OOB
-    # sidebar row is delivered separately by the server.
+    # The composer replaces #main with the new chat panel; the OOB sidebar row
+    # is delivered separately by the server.
     assert 'hx-target="#main"' in response.text
-    # The composer's <form> MUST NOT carry hx-push-url. HTMX inherits
-    # that attribute onto the descendant <select hx-get="/models">,
-    # which would push `/models?model=` into the address bar on
-    # initial load. URL syncing for chat creation is driven by the
-    # server's HX-Push-Url header instead.
+    # The composer's <form> MUST NOT carry hx-push-url. HTMX inherits that
+    # attribute onto the descendant <select hx-get="/models">, which would push
+    # `/models?model=` into the address bar on initial load. URL syncing for
+    # chat creation is driven by the server's HX-Push-Url header instead.
     composer_start = response.text.index('class="composer__form"')
     composer_end = response.text.index("</form>", composer_start)
     composer_form = response.text[composer_start:composer_end]
@@ -615,20 +605,11 @@ def test_index_includes_composer_form(
     assert 'class="compose__button"' not in response.text
     assert 'class="new-chat-form"' not in response.text
 
-
-def test_composer_model_dropdown_auto_loads_from_models(
-    make_client: ClientFactory,
-) -> None:
-    """The composer's model <select> fetches /models on page load and
-    swaps its innerHTML with the returned <option> tags. Without
-    these attributes the dropdown would be permanently empty."""
-    with make_client(_ollama_unreachable) as client:
-        pid = _default_project_id()
-        response = client.get(f"/projects/{pid}/chats")
-
+    # --- Model dropdown auto-load (was test_composer_model_dropdown_...). ---
     assert "<select" in response.text
     # One model dropdown that loads the initial host's models (host param is
-    # empty for the primary host).
+    # empty for the primary host). Without these attributes the dropdown would
+    # be permanently empty.
     assert 'hx-get="/models?host="' in response.text
     assert 'hx-trigger="load"' in response.text
     # The placeholder is visible until /models responds.
@@ -846,79 +827,71 @@ def test_chat_url_htmx_request_404_for_unknown_id(
 # ---------------------------------------------------------------------------
 
 
-def test_static_mount_serves_htmx(make_client: ClientFactory) -> None:
-    """GET /static/htmx.min.js returns the vendored HTMX bundle.
+def test_static_mount_serves_vendored_assets_and_index_references_them(
+    make_client: ClientFactory,
+) -> None:
+    """The /static mount + base.html's references to it, on one client.
 
-    Guards the StaticFiles mount in main.py — if the mount path or
-    the directory resolution breaks, this test catches it before the
-    UI silently fails to load HTMX.
+    Guards the StaticFiles mount in main.py (serving the right bytes for each
+    vendored asset, not an error/fallback page) and that base.html actually
+    references the vendored URLs — re-commenting the script tags during a
+    refactor would silently break the UI. Four GETs share one client instead of
+    rebuilding it per asset.
     """
     with make_client(_ollama_unreachable) as client:
-        response = client.get("/static/htmx.min.js")
+        # Each asset's first bytes are distinctive enough to confirm we're
+        # serving the real file, not a misconfigured fallback.
+        htmx = client.get("/static/htmx.min.js")
+        assert htmx.status_code == 200
+        assert htmx.text.startswith("var htmx=function()")
 
-    assert response.status_code == 200
-    # The first bytes of the file are distinctive enough to verify
-    # we're serving the right asset (not, e.g., an index.html error
-    # page from a misconfigured fallback).
-    assert response.text.startswith("var htmx=function()")
+        sse = client.get("/static/htmx-ext-sse.js")
+        assert sse.status_code == 200
+        assert "Server Sent Events Extension" in sse.text
+
+        pico = client.get("/static/pico.classless.min.css")
+        assert pico.status_code == 200
+        assert "Pico CSS" in pico.text
+
+        # base.html references the vendored URLs (not CDN/commented-out).
+        index = client.get("/")
+        assert "/static/pico.classless.min.css" in index.text
+        assert "/static/htmx.min.js" in index.text
+        assert "/static/htmx-ext-sse.js" in index.text
+        assert "/static/app.js" in index.text
 
 
-def test_static_mount_serves_sse_extension(
+def test_chat_item_row_affordances(
     make_client: ClientFactory,
 ) -> None:
-    """The htmx-ext-sse extension is served alongside HTMX core."""
-    with make_client(_ollama_unreachable) as client:
-        response = client.get("/static/htmx-ext-sse.js")
+    """A sidebar chat row's affordances, asserted on one rendered /chats.
 
-    assert response.status_code == 200
-    assert "Server Sent Events Extension" in response.text
-
-
-def test_static_mount_serves_pico_css(make_client: ClientFactory) -> None:
-    """Pico CSS is served from the same /static mount."""
-    with make_client(_ollama_unreachable) as client:
-        response = client.get("/static/pico.classless.min.css")
-
-    assert response.status_code == 200
-    assert "Pico CSS" in response.text
-
-
-def test_index_page_references_vendored_assets(
-    make_client: ClientFactory,
-) -> None:
-    """base.html references the vendored URLs (not CDN/commented-out).
-
-    Re-commenting the script tags during a future refactor would
-    silently break the UI; this catches the regression at the route
-    layer rather than at the browser.
-    """
-    with make_client(_ollama_unreachable) as client:
-        response = client.get("/")
-
-    assert "/static/pico.classless.min.css" in response.text
-    assert "/static/htmx.min.js" in response.text
-    assert "/static/htmx-ext-sse.js" in response.text
-    assert "/static/app.js" in response.text
-
-
-def test_chat_item_has_delete_button(
-    make_client: ClientFactory,
-) -> None:
-    """Each sidebar row has a delete button wired to DELETE /chats/{id}.
-
-    Must include hx-confirm (browser prompt) and hx-swap="delete"
-    (remove the row from the DOM). The "navigate away when viewing
-    the deleted chat" behavior used to live in inline JS on this
-    button; it's now server-side (see
-    `test_delete_chat_emits_hx_location_when_viewing_deleted_chat`).
+    One created chat + one GET /chats covers what were three separate tests
+    (each rebuilding a client): the delete button, the nav link (href +
+    hx-push-url), and the rename button.
     """
     with make_client(_ollama_unreachable) as client:
         chat_id = _create_chat_and_get_id(client, "Topic")
         response = client.get("/chats")
 
+    # Delete button: hx-confirm (browser prompt) + hx-swap="delete" (remove the
+    # row). The "navigate away when viewing the deleted chat" behavior is
+    # server-side now (see test_delete_chat_emits_hx_location_...).
     assert f'hx-delete="/chats/{chat_id}"' in response.text
     assert 'hx-swap="delete"' in response.text
     assert "hx-confirm=" in response.text
+
+    # Nav link: the href powers normal browser navigation (and reload); the
+    # hx-push-url tells HTMX to sync the URL with the swap, so both paths
+    # converge on the same observable URL. Rendered links are project-scoped
+    # (the row knows the chat's project via chat.project_id).
+    pid = _default_project_id()
+    assert f'href="/projects/{pid}/chats/{chat_id}"' in response.text
+    assert 'hx-push-url="true"' in response.text
+
+    # Rename button: fetches the edit fragment via GET /chats/{id}/edit.
+    assert "chat-item__rename" in response.text
+    assert f'hx-get="/chats/{chat_id}/edit"' in response.text
 
 
 def test_delete_chat_emits_hx_location_when_viewing_deleted_chat(
@@ -958,39 +931,6 @@ def test_delete_chat_omits_hx_location_when_viewing_different_chat(
 
     assert response.status_code == 200
     assert "HX-Location" not in response.headers
-
-
-def test_chat_item_link_carries_href_and_hx_push_url(
-    make_client: ClientFactory,
-) -> None:
-    """Sidebar links must work both with and without HTMX.
-
-    The href powers normal browser navigation (and page reload). The
-    hx-push-url tells HTMX to sync the URL with the swap, so the two
-    paths converge on the same observable URL.
-    """
-    with make_client(_ollama_unreachable) as client:
-        chat_id = _create_chat_and_get_id(client, "X")
-        response = client.get("/chats")
-
-    # Phase 17: rendered links are project-scoped (the row knows the chat's
-    # project via chat.project_id, even when no `project` is passed).
-    pid = _default_project_id()
-    assert f'href="/projects/{pid}/chats/{chat_id}"' in response.text
-    assert 'hx-push-url="true"' in response.text
-
-
-def test_chat_item_has_rename_button(
-    make_client: ClientFactory,
-) -> None:
-    """Each sidebar row has a rename button that fetches the edit
-    fragment via GET /chats/{id}/edit and swaps the row into edit mode."""
-    with make_client(_ollama_unreachable) as client:
-        chat_id = _create_chat_and_get_id(client, "Topic")
-        response = client.get("/chats")
-
-    assert "chat-item__rename" in response.text
-    assert f'hx-get="/chats/{chat_id}/edit"' in response.text
 
 
 def test_get_chat_edit_returns_edit_fragment(
@@ -2009,59 +1949,42 @@ def test_settings_get_returns_fragment_for_htmx(
     assert 'class="settings"' in response.text
 
 
-def test_settings_renders_default_temperature_input(
+def test_default_temperature_render_persist_clamp_and_composer(
     make_client: ClientFactory,
 ) -> None:
-    """GET /settings shows the default-temperature control seeded with
-    the production default (0.2) before the user changes it."""
+    """Global default temperature, exercised end-to-end on one client.
+
+    The ``app_settings`` row persists across requests on a single client, so
+    one test can assert the full lifecycle without rebuilding the client (and
+    its tempfile DB) four times: rendered default (0.2), PATCH persistence,
+    out-of-range clamp to [0.0, 2.0], and empty-state composer reflection.
+    """
     with make_client(_ollama_unreachable) as client:
+        # Rendered default before any change.
         response = client.get("/settings", headers={"HX-Request": "true"})
+        assert response.status_code == 200
+        assert 'hx-patch="/settings/default-temperature"' in response.text
+        assert 'id="default-temperature"' in response.text
+        assert 'value="0.2"' in response.text
 
-    assert response.status_code == 200
-    assert 'hx-patch="/settings/default-temperature"' in response.text
-    assert 'id="default-temperature"' in response.text
-    assert 'value="0.2"' in response.text
-
-
-def test_set_default_temperature_persists(
-    make_client: ClientFactory,
-) -> None:
-    """PATCH /settings/default-temperature returns 204 and the new value
-    is reflected on a subsequent /settings render."""
-    with make_client(_ollama_unreachable) as client:
+        # PATCH persists the new value.
         patch = client.patch(
             "/settings/default-temperature", data={"temperature": "1.3"}
         )
         assert patch.status_code == 204
-
         settings = client.get("/settings", headers={"HX-Request": "true"})
-    assert 'value="1.3"' in settings.text
+        assert 'value="1.3"' in settings.text
 
-
-def test_set_default_temperature_clamps(
-    make_client: ClientFactory,
-) -> None:
-    """An out-of-range PATCH is clamped to [0.0, 2.0] before storage."""
-    with make_client(_ollama_unreachable) as client:
-        client.patch(
-            "/settings/default-temperature", data={"temperature": "9"}
-        )
+        # An out-of-range value clamps to the [0.0, 2.0] ceiling.
+        client.patch("/settings/default-temperature", data={"temperature": "9"})
         settings = client.get("/settings", headers={"HX-Request": "true"})
-    assert 'value="2.0"' in settings.text
+        assert 'value="2.0"' in settings.text
 
-
-def test_new_composer_reflects_default_temperature(
-    make_client: ClientFactory,
-) -> None:
-    """The empty-state composer seeds its Temp input from the stored
-    global default, so a new chat starts at the configured value."""
-    with make_client(_ollama_unreachable) as client:
-        client.patch(
-            "/settings/default-temperature", data={"temperature": "0.3"}
-        )
+        # The empty-state composer seeds its Temp input from the stored default.
+        client.patch("/settings/default-temperature", data={"temperature": "0.3"})
         composer = client.get(f"/projects/{_default_project_id()}/chats/new")
-    assert 'id="composer-temperature"' in composer.text
-    assert 'value="0.3"' in composer.text
+        assert 'id="composer-temperature"' in composer.text
+        assert 'value="0.3"' in composer.text
 
 
 def test_host_overrides_respects_remote_toggle(tmp_path: Path) -> None:
@@ -2207,162 +2130,109 @@ def test_composer_host_context_falls_back_when_host_removed(
             HOSTS["gone"] = saved
 
 
-def test_settings_renders_default_tool_cap_input(
+def test_default_tool_cap_render_persist_clamp_and_composer(
     make_client: ClientFactory,
 ) -> None:
-    """GET /settings shows the default-tool-cap control seeded with
-    the production default (5) before the user changes it."""
+    """Global default tool-iteration cap, exercised end-to-end on one client.
+
+    Covers the rendered default (5), PATCH persistence, out-of-range clamp to
+    [1, 10], and the empty-state composer's Tool cap input (its name/id slot
+    plus reflection of the stored default).
+    """
     with make_client(_ollama_unreachable) as client:
+        # Rendered default before any change.
         response = client.get("/settings", headers={"HX-Request": "true"})
+        assert response.status_code == 200
+        assert 'hx-patch="/settings/default-tool-cap"' in response.text
+        assert 'id="default-tool-cap"' in response.text
+        assert 'value="5"' in response.text
 
-    assert response.status_code == 200
-    assert 'hx-patch="/settings/default-tool-cap"' in response.text
-    assert 'id="default-tool-cap"' in response.text
-    assert 'value="5"' in response.text
-
-
-def test_set_default_tool_cap_persists(
-    make_client: ClientFactory,
-) -> None:
-    """PATCH /settings/default-tool-cap returns 204 and the new value
-    is reflected on a subsequent /settings render."""
-    with make_client(_ollama_unreachable) as client:
+        # PATCH persists the new value.
         patch = client.patch(
             "/settings/default-tool-cap", data={"tool_iteration_cap": "7"}
         )
         assert patch.status_code == 204
-
         settings = client.get("/settings", headers={"HX-Request": "true"})
-    assert 'value="7"' in settings.text
+        assert 'value="7"' in settings.text
 
-
-def test_set_default_tool_cap_clamps(
-    make_client: ClientFactory,
-) -> None:
-    """An out-of-range PATCH is clamped to [1, 10] before storage."""
-    with make_client(_ollama_unreachable) as client:
-        client.patch(
-            "/settings/default-tool-cap", data={"tool_iteration_cap": "99"}
-        )
+        # An out-of-range value clamps to the [1, 10] ceiling.
+        client.patch("/settings/default-tool-cap", data={"tool_iteration_cap": "99"})
         settings = client.get("/settings", headers={"HX-Request": "true"})
-    assert 'value="10"' in settings.text
+        assert 'value="10"' in settings.text
 
-
-def test_new_composer_reflects_default_tool_cap(
-    make_client: ClientFactory,
-) -> None:
-    """The empty-state composer seeds its Tool cap input from the stored
-    global default, so a new chat starts at the configured value."""
-    with make_client(_ollama_unreachable) as client:
-        client.patch(
-            "/settings/default-tool-cap", data={"tool_iteration_cap": "3"}
-        )
+        # The empty-state composer exposes the Tool cap input and seeds it from
+        # the stored default.
+        client.patch("/settings/default-tool-cap", data={"tool_iteration_cap": "3"})
         composer = client.get(f"/projects/{_default_project_id()}/chats/new")
-    assert 'id="composer-tool-iteration-cap"' in composer.text
-    assert 'value="3"' in composer.text
+        assert 'id="composer-tool-iteration-cap"' in composer.text
+        assert 'name="tool_iteration_cap"' in composer.text
+        assert 'value="3"' in composer.text
 
 
-def test_new_composer_renders_tool_iteration_cap_input(
+def test_default_model_render_persist_clear_and_composer(
     make_client: ClientFactory,
 ) -> None:
-    """The empty-state composer exposes a Tool cap input defaulting to 5."""
-    with make_client(_ollama_unreachable) as client:
-        composer = client.get(f"/projects/{_default_project_id()}/chats/new")
-    assert 'id="composer-tool-iteration-cap"' in composer.text
-    assert 'name="tool_iteration_cap"' in composer.text
+    """Global default model, exercised end-to-end on one client.
 
-
-def test_settings_renders_default_model_select(
-    make_client: ClientFactory,
-) -> None:
-    """GET /settings shows the default-model select (no value set yet)."""
+    Covers the rendered select, PATCH persistence (as ``data-default``),
+    empty-state composer reflection, and the clear-on-missing-field path (the
+    browser's empty-option case).
+    """
     with make_client(_ollama_unreachable) as client:
+        # Rendered select, no value set yet.
         response = client.get("/settings", headers={"HX-Request": "true"})
+        assert response.status_code == 200
+        assert 'hx-patch="/settings/default-model"' in response.text
+        assert 'name="model"' in response.text
 
-    assert response.status_code == 200
-    assert 'hx-patch="/settings/default-model"' in response.text
-    assert 'name="model"' in response.text
-
-
-def test_set_default_model_persists(
-    make_client: ClientFactory,
-) -> None:
-    """PATCH /settings/default-model returns 204 and the new value
-    is reflected as data-default on a subsequent /settings render."""
-    with make_client(_ollama_unreachable) as client:
+        # PATCH persists the new value as data-default.
         patch = client.patch(
             "/settings/default-model", data={"model": "granite4.1:8b"}
         )
         assert patch.status_code == 204
-
         settings = client.get("/settings", headers={"HX-Request": "true"})
-    assert 'data-default="granite4.1:8b"' in settings.text
+        assert 'data-default="granite4.1:8b"' in settings.text
 
+        # The empty-state composer seeds its model select from the global
+        # default (no project default set).
+        composer = client.get(f"/projects/{_default_project_id()}/chats/new")
+        assert 'data-default="granite4.1:8b"' in composer.text
 
-def test_set_default_model_clears_on_missing_field(
-    make_client: ClientFactory,
-) -> None:
-    """Posting without a model field (the empty-option case from the
-    browser select) clears the setting."""
-    with make_client(_ollama_unreachable) as client:
-        client.patch("/settings/default-model", data={"model": "granite4.1:8b"})
+        # Posting without a model field clears the setting.
         patch = client.patch("/settings/default-model", data={})
         assert patch.status_code == 204
         settings = client.get("/settings", headers={"HX-Request": "true"})
-    assert 'data-default=""' in settings.text
+        assert 'data-default=""' in settings.text
 
 
-def test_new_composer_reflects_global_default_model(
+def test_default_num_ctx_render_persist_and_clamp(
     make_client: ClientFactory,
 ) -> None:
-    """The empty-state composer seeds its model select data-default from
-    the global default when no project default is set."""
-    with make_client(_ollama_unreachable) as client:
-        client.patch("/settings/default-model", data={"model": "granite4.1:8b"})
-        composer = client.get(f"/projects/{_default_project_id()}/chats/new")
-    assert 'data-default="granite4.1:8b"' in composer.text
+    """Global default num_ctx, exercised end-to-end on one client.
 
-
-def test_settings_renders_default_num_ctx_input(
-    make_client: ClientFactory,
-) -> None:
-    """GET /settings shows the default-num-ctx control seeded with the
-    production default (16384) before the user changes it."""
+    Covers the rendered default (16384), PATCH persistence, and out-of-range
+    clamp to NUM_CTX_MAX (1048576).
+    """
     with make_client(_ollama_unreachable) as client:
+        # Rendered default before any change.
         response = client.get("/settings", headers={"HX-Request": "true"})
+        assert response.status_code == 200
+        assert 'hx-patch="/settings/default-num-ctx"' in response.text
+        assert 'id="default-num-ctx"' in response.text
+        assert 'value="16384"' in response.text
 
-    assert response.status_code == 200
-    assert 'hx-patch="/settings/default-num-ctx"' in response.text
-    assert 'id="default-num-ctx"' in response.text
-    assert 'value="16384"' in response.text
-
-
-def test_set_default_num_ctx_persists(
-    make_client: ClientFactory,
-) -> None:
-    """PATCH /settings/default-num-ctx returns 204 and the new value is
-    reflected on a subsequent /settings render."""
-    with make_client(_ollama_unreachable) as client:
+        # PATCH persists the new value.
         patch = client.patch(
             "/settings/default-num-ctx", data={"num_ctx": "32768"}
         )
         assert patch.status_code == 204
-
         settings = client.get("/settings", headers={"HX-Request": "true"})
-    assert 'value="32768"' in settings.text
+        assert 'value="32768"' in settings.text
 
-
-def test_set_default_num_ctx_clamps(
-    make_client: ClientFactory,
-) -> None:
-    """An out-of-range PATCH is clamped to NUM_CTX_MAX before storage."""
-    with make_client(_ollama_unreachable) as client:
-        client.patch(
-            "/settings/default-num-ctx", data={"num_ctx": "9999999"}
-        )
+        # An out-of-range value clamps to NUM_CTX_MAX. 1_048_576 is NUM_CTX_MAX.
+        client.patch("/settings/default-num-ctx", data={"num_ctx": "9999999"})
         settings = client.get("/settings", headers={"HX-Request": "true"})
-    # 1_048_576 is NUM_CTX_MAX.
-    assert 'value="1048576"' in settings.text
+        assert 'value="1048576"' in settings.text
 
 
 def test_chat_panel_renders_tool_iteration_cap_for_capable_model(
@@ -3470,16 +3340,10 @@ def test_stream_runs_tool_then_streams_final(
     # Past-tense flip lands in the done payload.
     assert "used 1 tool" in text
 
-    # Verify rows persisted by reading them back through the public
-    # route — the chat panel renders all message rows.
-    with make_client(handler) as client_for_read:
-        panel = client_for_read.get(f"/chats/{chat_id}")
-    # Both tool roles should appear in the rendered messages list.
-    # _chat_panel.html prints data-role for every message; the
-    # placeholder template doesn't exist for tool_call/tool_result
-    # yet (12e deliverable), but the message dataclasses are visible
-    # via the DB directly. Verify via the raw DB instead so we don't
-    # depend on the 12e template existing.
+    # Verify the rows persisted by reading them back from the DB directly
+    # (the SSE response asserted above already covered the rendered UI). The
+    # tool_call/tool_result roles are visible via the message rows regardless
+    # of whether a dedicated render template exists.
     db_path = os.environ["DB_PATH"]
     with sqlite3.connect(db_path) as conn:
         roles = [
