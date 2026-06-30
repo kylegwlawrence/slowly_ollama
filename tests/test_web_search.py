@@ -159,7 +159,9 @@ async def test_web_search_truncates_long_snippet(
 ) -> None:
     """An over-long snippet is truncated with an ellipsis."""
     monkeypatch.setenv("SEARXNG_URL", "http://fake:8888")
-    long_snippet = "z" * 1000
+    # Must exceed _PER_RESULT_SNIPPET_CAP (1000) — at exactly the cap,
+    # truncate_with_ellipsis returns the string unchanged (no ellipsis).
+    long_snippet = "z" * 2000
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

@@ -17,11 +17,37 @@ the exception in this codebase, and any addition warrants a deliberate
 update here.
 """
 
+import os
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
 from app import generation, ollama
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Point pytest's tmp dirs at a RAM disk when one is available.
+
+    Every route/integration test builds a fresh tempfile SQLite DB, and
+    ``initialize_database`` writes the schema + WAL to disk. On this box the
+    project DB lives on an SD card, where those per-test writes dominate the
+    suite's wall-clock (~165ms/test). Redirecting pytest's basetemp to a
+    tmpfs mount (``/dev/shm`` on Linux) keeps those writes in RAM and roughly
+    halves the disk-bound portion.
+
+    Portable + safe: skips silently when no RAM disk exists (e.g. macOS, where
+    ``/dev/shm`` is absent) and when the user already passed ``--basetemp``, so
+    it never overrides an explicit choice. xdist workers create their own
+    ``gw*`` subdirs underneath, so a shared basetemp is fine.
+    """
+    if config.option.basetemp:
+        return
+    ramdisk = Path("/dev/shm")
+    if not ramdisk.is_dir() or not os.access(ramdisk, os.W_OK):
+        return
+    basetemp = ramdisk / "slollillama-pytest"
+    config.option.basetemp = str(basetemp)
 from app.tools import TOOLS
 from app.tools import builtins as _builtins  # noqa: F401 — registers file tools
 

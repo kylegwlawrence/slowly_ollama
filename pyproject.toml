@@ -1,0 +1,13 @@
+[tool.pytest.ini_options]
+# Run the suite in parallel across all logical CPUs (pytest-xdist). The tests
+# are process-isolation-safe — each builds its own tempfile DB and the autouse
+# fixture in tests/conftest.py snapshots/restores the few module-level globals
+# — so workers never share state. On this box (4 cores) this roughly halves
+# wall-clock; combined with the RAM-disk basetemp hook in conftest it cuts the
+# full suite from ~128s to ~48s. Override with `-n0` for a single-test run,
+# where worker spin-up costs more than it saves.
+addopts = "-n auto"
+testpaths = ["tests"]
+# asyncio tests opt in explicitly via @pytest.mark.asyncio (strict mode, the
+# pytest-asyncio default) — do NOT set asyncio_mode here or those markers
+# would become redundant and auto-mode would try to run sync helpers as async.
