@@ -58,7 +58,7 @@
 
   /* Slight type-scale bump so message text reads more like Claude
      (15px vs Pico's 16px default vs phase 8's 14px). */
-  --font-size-base: 14px;
+  --font-size-base: 16px;
 }
 
 
@@ -113,7 +113,7 @@ body {
 }
 
 .sidebar {
-  width: 224px;
+  width: 200px;
   flex-shrink: 0;
   background: var(--bg);
   border-right: 1px solid var(--border);
@@ -129,7 +129,7 @@ body {
    margin/padding reset moved in here. */
 .sidebar__logo {
   font-size: 24px;
-  font-weight: 400;
+  font-weight: 300;
   color: var(--accent-tonal-text);
   letter-spacing: -0.5px;
   margin: 0;
