@@ -37,7 +37,7 @@ WorkingDirectory=<repo>
 # network (reverse proxy or VPN; see the plan doc). Never add --reload in
 # production.
 ExecStart=<repo>/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000
-Restart=on-failure
+Restart=always
 RestartSec=3
 # Unbuffered stdout/stderr so journalctl shows logs in real time.
 Environment=PYTHONUNBUFFERED=1
