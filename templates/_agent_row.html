@@ -1,0 +1,67 @@
+{# One row in the Agents list (Phase 29). Mirrors _rag_server_row.html:
+
+   The <li>'s id is the swap target for the delete button (hx-swap="delete"
+   removes just this row) and for the inline editor (which swaps the whole
+   <li> outerHTML between view and edit modes).
+
+   Reused as the POST /settings/agents response body (appended into
+   #agents-list via beforeend). In that path (and the list-render loop)
+   `editing` is undefined → falsy, so the row defaults to view mode. The GET
+   /settings/agents/{id}?edit=1 route sets `editing=True`.
+
+   Context: `agent`, `editing`, `agent_name_max_chars`,
+   `system_prompt_max_chars`. #}
+<li id="agent-row-{{ agent.id }}" class="agent-row">
+  <div class="agent-row__name">{{ agent.name }}</div>
+  {% if editing %}
+    {# Edit mode: name, system prompt, and preferred model are all editable.
+       Save PATCHes all three and swaps back the view-mode row; Cancel re-GETs
+       the row (view mode) so an in-progress edit is discarded. #}
+    <form class="agent-row__edit"
+          hx-patch="/settings/agents/{{ agent.id }}"
+          hx-target="#agent-row-{{ agent.id }}"
+          hx-swap="outerHTML">
+      <input type="text" name="name" value="{{ agent.name }}" required
+             maxlength="{{ agent_name_max_chars }}"
+             aria-label="Agent name" placeholder="e.g. Researcher">
+      <textarea name="system_prompt" rows="4"
+                maxlength="{{ system_prompt_max_chars }}"
+                aria-label="System prompt for {{ agent.name }}"
+                placeholder="The persona's system prompt (stacked before the project prompt).">{{ agent.system_prompt }}</textarea>
+      <input type="text" name="default_model"
+             value="{{ agent.default_model or '' }}"
+             aria-label="Preferred model for {{ agent.name }}"
+             placeholder="Preferred model (optional, informational)">
+      <div class="agent-row__edit-error form-error" role="alert" hidden></div>
+      <div class="agent-row__edit-actions">
+        <button type="submit" class="agent-row__save">Save</button>
+        <button type="button" class="agent-row__cancel"
+                hx-get="/settings/agents/{{ agent.id }}"
+                hx-target="#agent-row-{{ agent.id }}"
+                hx-swap="outerHTML">Cancel</button>
+      </div>
+    </form>
+  {% else %}
+    <button type="button" class="agent-row__edit-btn"
+            aria-label="Edit agent {{ agent.name }}"
+            hx-get="/settings/agents/{{ agent.id }}?edit=1"
+            hx-target="#agent-row-{{ agent.id }}"
+            hx-swap="outerHTML">
+      <span class="material-symbols-outlined">edit</span>
+    </button>
+    <button type="button" class="agent-row__delete"
+            aria-label="Delete agent"
+            hx-delete="/settings/agents/{{ agent.id }}"
+            hx-target="#agent-row-{{ agent.id }}"
+            hx-swap="delete"
+            hx-confirm="Delete agent '{{ agent.name }}'? Chats using it revert to Normal.">
+      <span class="material-symbols-outlined">delete</span>
+    </button>
+    <div class="agent-row__prompt">
+      {{ agent.system_prompt or "(no system prompt)" }}
+    </div>
+    {% if agent.default_model %}
+    <div class="agent-row__model">Model: {{ agent.default_model }}</div>
+    {% endif %}
+  {% endif %}
+</li>

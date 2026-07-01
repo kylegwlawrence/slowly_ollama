@@ -96,6 +96,53 @@
     </form>
   </section>
 
+  {# Phase 29: reusable agents (personas). A named system prompt any chat can
+     attach to; global, so it's reusable across projects. The agent prompt
+     stacks BEFORE the project prompt each turn. Mirrors the RAG-server CRUD
+     above. The create form's lifecycle (reset on success, surface the error
+     on failure) is the `.agent-form` branch in static/app.js. #}
+  <section class="settings__section">
+    <div class="settings__section-head">
+      <h2 class="settings__section-title">Agents</h2>
+    </div>
+    <p class="settings__section-help">
+      A reusable persona — a named system prompt (optionally a preferred model)
+      that any chat can attach to from its <strong>Agent</strong> picker. The
+      agent prompt is stacked <em>before</em> the project's system prompt, so
+      it layers on top rather than replacing it. The preferred model is
+      informational for now (it isn't auto-applied when you attach the agent).
+    </p>
+    <ul id="agents-list" class="agents">
+      {% for agent in agents %}
+        {% include "_agent_row.html" %}
+      {% endfor %}
+    </ul>
+    <form class="agent-form"
+          hx-post="/settings/agents"
+          hx-target="#agents-list"
+          hx-swap="beforeend">
+      <label>
+        Name
+        <input type="text" name="name" required
+               maxlength="{{ agent_name_max_chars }}"
+               placeholder="e.g. Researcher">
+      </label>
+      <label class="agent-form__model">
+        Preferred model (optional)
+        <input type="text" name="default_model"
+               placeholder="e.g. qwen3:latest">
+      </label>
+      <label class="agent-form__prompt">
+        System prompt
+        <textarea name="system_prompt" rows="3"
+                  maxlength="{{ system_prompt_max_chars }}"
+                  placeholder="Who is this persona? e.g. 'You are a meticulous research assistant who always cites sources.'"></textarea>
+      </label>
+      <button type="submit">Add agent</button>
+      <div id="agent-form-error" class="form-error" role="alert" hidden></div>
+    </form>
+  </section>
+
   {# Global default sampling temperature applied to newly-created
      chats. Existing chats keep their own per-chat temperature; this
      only seeds the composer for the next new chat. PATCHes on `change`

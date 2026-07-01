@@ -85,6 +85,8 @@ def test_initialize_is_idempotent(initialized_db: Path) -> None:
         "projects",
         # Generic per-chat host→model store (replaced the slowly_model column).
         "chat_host_models",
+        # Phase 29 added the reusable-agents (personas) table.
+        "agents",
     }
 
 
@@ -305,6 +307,52 @@ def test_migration_backfills_think_mode_column(tmp_path: Path) -> None:
             "SELECT think_mode FROM conversations WHERE name = 'legacy';"
         ).fetchone()[0]
         assert mode == "default"
+
+
+def test_migration_backfills_agent_id_column_and_agents_table(
+    tmp_path: Path,
+) -> None:
+    """A legacy DB with no ``agents`` table and no ``conversations.agent_id``
+    gains both on init (phase 29), idempotently, and existing chats read back
+    ``agent_id`` NULL (Normal)."""
+    db = tmp_path / "chats.db"
+    with sqlite3.connect(db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE conversations (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                model TEXT NOT NULL,
+                name_locked INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO conversations
+                (name, model, name_locked, created_at, updated_at)
+                VALUES ('legacy', 'm', 0, 'now', 'now');
+            """
+        )
+
+    initialize_database(db)
+    # Running a second time must be a no-op (idempotent migration).
+    initialize_database(db)
+
+    with sqlite3.connect(db) as conn:
+        # The agents table now exists (created by _SCHEMA_SQL).
+        agents_table = conn.execute(
+            "SELECT name FROM sqlite_master"
+            " WHERE type='table' AND name='agents';"
+        ).fetchone()
+        assert agents_table is not None
+        columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(conversations);")
+        }
+        assert "agent_id" in columns
+        # The pre-existing row backfills to NULL (Normal — no agent).
+        value = conn.execute(
+            "SELECT agent_id FROM conversations WHERE name = 'legacy';"
+        ).fetchone()[0]
+        assert value is None
 
 
 def test_migration_backfills_active_host_column(tmp_path: Path) -> None:

@@ -776,6 +776,132 @@ async def test_generation_combines_project_prompt_with_tool_nudge_when_tools_pre
         assert msgs[0] == {"role": "system", "content": expected}
 
 
+def _attach_agent(
+    db_path: Path, conv_id: int, name: str, system_prompt: str
+) -> None:
+    """Helper: create an agent and attach it to ``conv_id`` (Phase 29)."""
+    with open_connection(db_path) as conn:
+        agent = queries.create_agent(conn, name, system_prompt=system_prompt)
+        queries.set_conversation_agent(conn, conv_id, agent.id)
+
+
+@pytest.mark.asyncio
+async def test_generation_stacks_agent_before_project_prompt(tmp_path, monkeypatch):
+    """With BOTH an agent and a project prompt (no tools), the system message
+    is date → agent → project, and the agent prompt precedes the project one."""
+    db_path = tmp_path / "chats.db"
+    conv_id = _setup_chat(db_path)
+    monkeypatch.setenv("DB_PATH", str(db_path))
+    # Lock the name so the auto-titler doesn't fire a separate (system-less)
+    # /api/chat call that would pollute `captured`.
+    with open_connection(db_path) as conn:
+        queries.rename_conversation(conn, conv_id, "locked")
+    _set_default_project_system_prompt(db_path, "Speak like a pirate.")
+    _attach_agent(db_path, conv_id, "Researcher", "You cite your sources.")
+
+    captured: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content or b"{}")
+        captured.append(body)
+        if body.get("stream"):
+            return httpx.Response(
+                200,
+                content=(
+                    b'{"message":{"content":"hi"},"done":false}\n'
+                    b'{"message":{"content":""},"done":true}\n'
+                ),
+            )
+        return httpx.Response(200, json={"message": {"content": "", "tool_calls": []}})
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://test"
+    )
+
+    async def _not_capable(*args, **kwargs):
+        return False
+
+    monkeypatch.setattr(ollama, "model_supports_tools", _not_capable)
+
+    with open_connection(db_path) as db:
+        state = await generation.start_generation(
+            client=client,
+            db=db,
+            conversation_id=conv_id,
+            model="llama3",
+            history=queries.list_messages(db, conv_id),
+            on_complete="append",
+        )
+        await state.task
+
+    assert captured, "expected at least one /api/chat call"
+    expected = (
+        f"Current date: {today_utc()} (UTC)."
+        + "\n\nYou cite your sources."
+        + "\n\nSpeak like a pirate."
+    )
+    for body in captured:
+        content = (body.get("messages") or [])[0]["content"]
+        assert content == expected
+        # Explicit ordering guard: agent identity precedes project situation.
+        assert content.index("You cite your sources.") < content.index(
+            "Speak like a pirate."
+        )
+
+
+@pytest.mark.asyncio
+async def test_generation_agent_only_no_project_prompt(tmp_path, monkeypatch):
+    """An agent with no project prompt (no tools) stacks date → agent only."""
+    db_path = tmp_path / "chats.db"
+    conv_id = _setup_chat(db_path)
+    monkeypatch.setenv("DB_PATH", str(db_path))
+    with open_connection(db_path) as conn:
+        queries.rename_conversation(conn, conv_id, "locked")
+    _attach_agent(db_path, conv_id, "Terse", "Be brief.")
+
+    captured: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content or b"{}")
+        captured.append(body)
+        if body.get("stream"):
+            return httpx.Response(
+                200,
+                content=(
+                    b'{"message":{"content":"hi"},"done":false}\n'
+                    b'{"message":{"content":""},"done":true}\n'
+                ),
+            )
+        return httpx.Response(200, json={"message": {"content": "", "tool_calls": []}})
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://test"
+    )
+
+    async def _not_capable(*args, **kwargs):
+        return False
+
+    monkeypatch.setattr(ollama, "model_supports_tools", _not_capable)
+
+    with open_connection(db_path) as db:
+        state = await generation.start_generation(
+            client=client,
+            db=db,
+            conversation_id=conv_id,
+            model="llama3",
+            history=queries.list_messages(db, conv_id),
+            on_complete="append",
+        )
+        await state.task
+
+    expected = f"Current date: {today_utc()} (UTC).\n\nBe brief."
+    for body in captured:
+        assert (body.get("messages") or [])[0] == {
+            "role": "system",
+            "content": expected,
+        }
+
+
 @pytest.mark.asyncio
 async def test_generation_passes_think_flag_into_ollama_payload(
     tmp_path, monkeypatch

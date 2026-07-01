@@ -458,6 +458,11 @@ async def project_chat_panel_endpoint(
             "active_host_spec": active_host_spec,
             "effective_model": effective_model,
             "model_loaded": model_loaded,
+            # `agents` (the picker options) comes from _project_context; this
+            # resolves the currently-attached agent for the header chip.
+            "conversation_agent": queries.get_agent_for_conversation(
+                db, conversation.id
+            ),
         },
     )
 
@@ -582,6 +587,10 @@ async def create_project_chat_endpoint(
         # /api/ps round trip and render the chip in its loaded colour.
         model_loaded=True,
         project=project,
+        # Agent picker options + the (empty) current selection: a brand-new
+        # chat has no agent, so the header chip stays clean.
+        agents=queries.list_agents(db),
+        conversation_agent=None,
     )
 
     # OOB-prepended sidebar row, wrapped in <ul>: non-outerHTML OOB modes

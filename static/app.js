@@ -399,6 +399,39 @@ document.body.addEventListener('htmx:afterRequest', (e) => {
     }
   }
 
+  if (form.matches('.agent-form')) {
+    // Phase 29: reusable-agent create form. Mirrors .rag-server-form but with
+    // no health icon and its own error slot. Reset only on success so a failed
+    // POST (422 empty name / 409 duplicate) keeps the typed values.
+    const err = document.getElementById('agent-form-error');
+    if (e.detail.successful) {
+      form.reset();
+      if (err) {
+        err.hidden = true;
+        err.textContent = '';
+      }
+    } else if (err) {
+      // 4xx bodies are plain text — textContent is the right escape boundary.
+      err.textContent =
+        e.detail.xhr.responseText || 'Failed to add agent.';
+      err.hidden = false;
+    }
+  }
+
+  if (form.matches('.agent-row__edit')) {
+    // On failure HTMX leaves the edit form in place; surface the plain-text
+    // reason in the inline error div. On success HTMX swaps the whole <li>
+    // back to view mode, so no cleanup is needed here.
+    if (!e.detail.successful) {
+      const err = form.querySelector('.agent-row__edit-error');
+      if (err) {
+        err.textContent =
+          e.detail.xhr.responseText || 'Failed to save agent.';
+        err.hidden = false;
+      }
+    }
+  }
+
   if (form.matches('.rag-server__edit')) {
     // On failure (4xx/5xx) HTMX leaves the edit form in place; surface
     // the plain-text reason in the inline error div so the user knows

@@ -5,6 +5,7 @@ public surface so ``from app.queries import X`` works for every X.
 
 Submodules:
     :mod:`app.queries._models` — shared dataclasses + Role literal + sentinel.
+    :mod:`app.queries.agents` — reusable-agent (persona) CRUD.
     :mod:`app.queries.conversations` — conversations CRUD.
     :mod:`app.queries.messages` — messages CRUD + token-count helpers.
     :mod:`app.queries.projects` — projects CRUD + slugifier.
@@ -17,12 +18,22 @@ ISO 8601 UTC TEXT and converted to/from ``datetime`` at the boundary.
 """
 
 from app.queries._models import (
+    Agent,
     Conversation,
     Message,
     Project,
     Role,
     _Unset,
     _UNSET,
+)
+from app.queries.agents import (
+    AGENT_NAME_MAX_CHARS,
+    create_agent,
+    delete_agent,
+    get_agent,
+    get_agent_for_conversation,
+    list_agents,
+    update_agent,
 )
 from app.queries.chat_hosts import (
     get_chat_host_model,
@@ -37,6 +48,7 @@ from app.queries.conversations import (
     list_conversations_in_project,
     rename_conversation,
     set_active_host,
+    set_conversation_agent,
     set_conversation_temperature,
     set_conversation_think_mode,
     set_conversation_tool_iteration_cap,
@@ -82,12 +94,21 @@ from app.queries.settings import (
 
 __all__ = [
     # Models
+    "Agent",
     "Conversation",
     "Message",
     "Project",
     "Role",
     "_UNSET",
     "_Unset",
+    # Agents (reusable personas)
+    "AGENT_NAME_MAX_CHARS",
+    "create_agent",
+    "delete_agent",
+    "get_agent",
+    "get_agent_for_conversation",
+    "list_agents",
+    "update_agent",
     # Conversations
     "clear_unknown_active_hosts",
     "create_conversation",
@@ -97,6 +118,7 @@ __all__ = [
     "list_conversations_in_project",
     "rename_conversation",
     "set_active_host",
+    "set_conversation_agent",
     "set_conversation_temperature",
     "set_conversation_think_mode",
     "set_conversation_tool_iteration_cap",

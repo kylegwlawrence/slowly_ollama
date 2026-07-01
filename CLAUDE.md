@@ -24,7 +24,7 @@ committed to version control.
 
 ## Current state
 
-A single-user local chat app over Ollama. **883 tests passing**, 0 failing.
+A single-user local chat app over Ollama. **922 tests passing**, 0 failing.
 Current feature set:
 
 - **Chat over multiple Ollama hosts.** A multi-host registry (`app/hosts/`,
@@ -43,6 +43,15 @@ Current feature set:
 - **Projects → chats.** Projects sit above chats, each with a per-project
   workspace subdir under `FILE_TOOL_ROOT`, a default model, and a ≤2000-char
   system prompt injected on Normal turns. URL spine: `/projects/{id}/chats/{id}`.
+- **Reusable agents (personas).** An `agents` row = `name` + `system_prompt` +
+  optional `default_model`. Global (not project-scoped), CRUD'd on `/settings`
+  (mirrors RAG-server CRUD). A chat attaches one via `conversations.agent_id`
+  (nullable FK, `ON DELETE SET NULL`): a per-chat **Agent** picker +
+  OOB-swappable header chip, `PATCH /chats/{id}/agent`. On a turn the agent
+  prompt **stacks before** the project prompt — order is `date → agent →
+  project → tool-nudge` (identity, then situation, then tools); it doesn't
+  replace the project prompt. `default_model` is informational in v1 (shown,
+  not auto-applied on attach).
 - **Manual compaction.** A Compact button summarizes old turns into a `summary`
   row; originals are soft-archived (`messages.archived_at`). Generation reads
   `list_active_messages`; `KEEP_RECENT = 2`.
@@ -120,10 +129,11 @@ app/
   format.py            # Formatting helpers
   hosts/               # Multi-host Ollama registry
   queries/             # All SQL; Role literal; dataclasses; helpers
-    _models.py         # Message, Conversation, Project dataclasses + Role
-    conversations.py   # Conversation CRUD
+    _models.py         # Message, Conversation, Project, Agent dataclasses + Role
+    conversations.py   # Conversation CRUD (incl. set_conversation_agent)
     messages.py        # Message CRUD; list_active_messages; archive helpers
     projects.py        # Project CRUD + slugify_project_name
+    agents.py          # Reusable-agent (persona) CRUD + get_agent_for_conversation
     chat_hosts.py      # Per-chat host/model selection queries
     settings.py        # app_settings key/value store
   dependencies.py      # `DB` / `OllamaClient` Annotated aliases
@@ -216,3 +226,14 @@ index 0. Each turn persists its own message row (`role` ∈ `user` / `assistant`
 - **`think: true` 400s on a non-thinking model.** Ollama rejects `think: true`
   without the capability; `think: false` is safe anywhere. `_resolve_think`
   never sends `True` — it sends `False` or omits the flag.
+- **`projects.default_agent` is a MISNOMER — it stores a host, not an agent.**
+  Left over from the pre–Phase-23 "agent registry" → "host registry" rename;
+  `_helpers.py` reads `project.default_agent` as the composer's initial host.
+  The Phase-29 reusable-agent feature deliberately does NOT touch this column
+  (it added its own `agents` table + `conversations.agent_id`). Rename it to
+  `default_host` (copy `_ensure_conversations_active_host_column`'s in-place
+  `RENAME COLUMN` pattern) before wiring a project-default *agent*.
+- **Agent-prompt stacking order is load-bearing.** `_run_generation` builds the
+  system prompt as `date → agent → project → tool-nudge`; a no-agent chat is
+  byte-identical to before Phase 29. Tests assert the ordering
+  (`.index(agent) < .index(project)`), so don't reorder the `parts` list.

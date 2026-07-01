@@ -1,0 +1,21 @@
+{# Header chip naming the reusable agent (persona) driving this chat, beside
+   the host·model chip. Display-only — unlike the host chip, it isn't
+   clickable; the agent is changed via the picker in the chat controls.
+
+   The outer <span> ALWAYS carries the stable id so PATCH /chats/{id}/agent
+   can OOB-swap it; the inner chip renders only when an agent is attached, so a
+   Normal chat's header stays clean. Pass `oob=True` from the PATCH endpoint to
+   add `hx-swap-oob`; the initial header render leaves it off.
+
+   Context: `conversation`, `conversation_agent` (the resolved Agent or None),
+   `oob`. #}
+<span id="agent-indicator-{{ conversation.id }}"
+      {% if oob %}hx-swap-oob="true" {% endif %}>
+  {% if conversation_agent %}
+  <span class="chat-panel__agent" data-role="agent-indicator"
+        title="Agent: {{ conversation_agent.name }}">
+    <span class="material-symbols-outlined">smart_toy</span>
+    {{ conversation_agent.name }}
+  </span>
+  {% endif %}
+</span>

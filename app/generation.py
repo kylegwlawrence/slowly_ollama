@@ -650,16 +650,26 @@ async def _run_generation(
         # Defensive: every chat should have a project. Degrade to None so the
         # turn still runs without project-scoped extras.
         _project = None
+    # The chat's attached reusable agent (persona), or None = Normal. Never
+    # raises — "no agent" is the common case (see get_agent_for_conversation).
+    _agent = queries.get_agent_for_conversation(db, conversation_id)
 
-    # System prompt = current date + project prompt (when set) + tool-use
-    # nudge (only when tools are sent). The date is injected unconditionally,
-    # fresh each turn, so the model never answers time-sensitive questions
-    # from its frozen training knowledge — it doesn't have to *recognise* a
-    # question as date-dependent, the date is simply always in context. This
-    # gives up the former "no system message on bare plain chat" property,
-    # but the line is factual rather than behavioural, so it's unlikely to
-    # shift small-model behaviour.
+    # System prompt = current date + agent prompt (when attached) + project
+    # prompt (when set) + tool-use nudge (only when tools are sent). Order is
+    # date → agent → project → tool-nudge: identity ("who I am") before
+    # situation ("what I'm working on") before tool mechanics. The agent
+    # STACKS before the project prompt rather than replacing it (Phase 29).
+    #
+    # The date is injected unconditionally, fresh each turn, so the model
+    # never answers time-sensitive questions from its frozen training
+    # knowledge — it doesn't have to *recognise* a question as date-dependent,
+    # the date is simply always in context. This gives up the former "no
+    # system message on bare plain chat" property, but the line is factual
+    # rather than behavioural, so it's unlikely to shift small-model behaviour.
+    # A no-agent chat is byte-identical to before this feature.
     parts: list[str] = [f"Current date: {today_utc()} (UTC)."]
+    if _agent is not None and _agent.system_prompt:
+        parts.append(_agent.system_prompt)
     if _project is not None and _project.system_prompt:
         parts.append(_project.system_prompt)
     if tools_payload is not None:

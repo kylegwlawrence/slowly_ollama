@@ -50,6 +50,24 @@ CREATE TABLE IF NOT EXISTS projects (
     updated_at        TEXT NOT NULL
 );
 
+-- A reusable persona: a named system prompt (optionally a preferred model)
+-- that any chat can attach to. Global, not project-scoped, so it can be
+-- reused across projects. Created before `conversations` so the FK parent
+-- exists at create time (SQLite tolerates forward refs, but this is cleanest).
+-- See Phase 29.
+CREATE TABLE IF NOT EXISTS agents (
+    id            INTEGER PRIMARY KEY,
+    name          TEXT NOT NULL UNIQUE,
+    -- Stacked BEFORE the project system prompt on every turn (agent = "who I
+    -- am", project = "what I'm working on"). '' = none. Capped at
+    -- SYSTEM_PROMPT_MAX_CHARS in the query + route layers.
+    system_prompt TEXT NOT NULL DEFAULT '',
+    -- Preferred model. Informational in Phase 29 (not auto-applied on attach).
+    default_model TEXT,
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS conversations (
     id           INTEGER PRIMARY KEY,
     name         TEXT NOT NULL,
@@ -75,6 +93,10 @@ CREATE TABLE IF NOT EXISTS conversations (
     -- exists before enforcing this.
     project_id   INTEGER NOT NULL
         REFERENCES projects(id) ON DELETE CASCADE,
+    -- Attached reusable agent (persona), or NULL = "Normal" (no agent).
+    -- ON DELETE SET NULL: deleting an agent reverts its chats to Normal
+    -- rather than cascade-deleting the chats.
+    agent_id     INTEGER REFERENCES agents(id) ON DELETE SET NULL,
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL
 );
@@ -231,6 +253,34 @@ def _ensure_conversations_think_mode_column(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE conversations"
             " ADD COLUMN think_mode TEXT NOT NULL DEFAULT 'default';"
+        )
+
+
+def _ensure_conversations_agent_id_column(conn: sqlite3.Connection) -> None:
+    """Add ``conversations.agent_id`` on legacy DBs (nullable FK → agents).
+
+    NULL = no agent ("Normal"). ``ON DELETE SET NULL`` so removing an agent
+    reverts its chats instead of cascade-deleting them. The ``agents`` table is
+    created by ``_SCHEMA_SQL`` (``CREATE TABLE IF NOT EXISTS``) on the same
+    ``executescript`` run, so the FK parent exists by the time this runs.
+
+    ``ALTER TABLE ADD COLUMN ... REFERENCES`` is legal here because the column
+    is nullable with a NULL default; SQLite only rejects a non-NULL default on
+    an added FK column. Must run AFTER the project_id rebuild, which recreates
+    the table from a fixed column list that omits ``agent_id`` (same reason
+    ``think_mode`` runs late). See :func:`_ensure_name_locked_column`.
+
+    Args:
+        conn: Open SQLite connection.
+    """
+    columns = {row[1] for row in conn.execute(
+        "PRAGMA table_info(conversations);"
+    )}
+    if "agent_id" not in columns:
+        conn.execute(
+            "ALTER TABLE conversations"
+            " ADD COLUMN agent_id INTEGER"
+            " REFERENCES agents(id) ON DELETE SET NULL;"
         )
 
 
@@ -634,6 +684,10 @@ def initialize_database(path: Path | None = None) -> Path:
         # After the project_id rebuild — it would otherwise drop a think_mode
         # added beforehand (fixed column list).
         _ensure_conversations_think_mode_column(conn)
+        # After the project_id rebuild too (same fixed-column-list reason). The
+        # `agents` table exists from _SCHEMA_SQL above, so the FK parent is
+        # present by the time this ALTER runs.
+        _ensure_conversations_agent_id_column(conn)
         # After the project_id rebuild — that step carries slowly_model
         # forward, and this one reads then drops it.
         _ensure_chat_host_models(conn)

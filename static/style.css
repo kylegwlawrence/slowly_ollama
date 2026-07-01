@@ -550,6 +550,25 @@ body {
   filter: brightness(0.95);
 }
 
+/* Reusable-agent (persona) chip, beside the host·model chip. Display-only
+   (not a button) so it uses a neutral tonal surface distinct from the sage
+   model chip. Renders only when an agent is attached. */
+.chat-panel__agent {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  background: var(--surface-hover);
+  color: var(--text-primary);
+  padding: 0 var(--space-sm);
+  border-radius: var(--radius-lg);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.chat-panel__agent .material-symbols-outlined {
+  font-size: 16px;
+}
+
 /* Unloaded state: the user clicked the chip and Ollama dropped the model
    from memory. Light grey surface + dark grey text in BOTH themes — the
    colours are deliberately neutral so the chip reads as "off" rather than
@@ -1603,6 +1622,159 @@ body {
   color: var(--text-secondary);
   margin: 0;
 }
+
+/* ===== Phase 29: reusable agents (personas) on the settings page ==========
+   Mirrors the RAG-server list/row/form styling, with agent fields (name +
+   system prompt + optional preferred model). Kept as a self-contained block
+   rather than grouped into the .rag-server selectors, since the row shape
+   differs. */
+.agents {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.agent-row {
+  display: grid;
+  /* Row 1: name, edit button, delete button. Prompt + model span all columns
+     on the rows below (view mode); the edit form spans them too. */
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: var(--space-xs) var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.agent-row__name { font-weight: 500; }
+
+.agent-row__prompt {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.agent-row__model {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-family: ui-monospace, SFMono-Regular, monospace;
+}
+
+.agent-row__edit-btn,
+.agent-row__delete {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-secondary);
+  padding: var(--space-xs);
+  border-radius: var(--radius-sm);
+  width: auto;
+}
+.agent-row__edit-btn:hover { background: var(--surface-hover); color: var(--accent); }
+.agent-row__delete:hover { background: var(--surface-hover); color: var(--danger); }
+
+.agent-row__edit {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin: 0;
+}
+
+.agent-row__edit input[type="text"],
+.agent-row__edit textarea {
+  font-size: 13px;
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text-primary);
+  height: auto;
+  margin: 0;
+}
+.agent-row__edit textarea { resize: vertical; }
+
+.agent-row__edit-actions {
+  display: flex;
+  gap: var(--space-sm);
+}
+
+.agent-row__save,
+.agent-row__cancel {
+  padding: var(--space-xs) var(--space-md);
+  border: none;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  margin: 0;
+  width: auto;
+}
+.agent-row__save { background: var(--accent); color: var(--accent-on); }
+.agent-row__save:hover { background: var(--accent-hover); }
+.agent-row__cancel { background: none; color: var(--text-secondary); }
+.agent-row__cancel:hover { background: var(--surface-hover); }
+
+/* The "add agent" form. Two-column grid: name + preferred model on row 1,
+   the system-prompt textarea + submit + error spanning below. */
+.agent-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-sm);
+  align-items: end;
+  padding: var(--space-md);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.agent-form label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.agent-form input,
+.agent-form textarea {
+  font-size: 14px;
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text-primary);
+  height: auto;
+  margin: 0;
+}
+
+.agent-form__prompt { grid-column: 1 / -1; }
+.agent-form textarea { resize: vertical; }
+
+.agent-form button {
+  background: var(--accent);
+  color: var(--accent-on);
+  border: none;
+  padding: var(--space-xs) var(--space-md);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  margin: 0;
+  width: auto;
+  justify-self: start;
+  grid-column: 1 / -1;
+}
+.agent-form button:hover { background: var(--accent-hover); }
 
 /* Read-only collapsible viewer for each agent's system prompt on the
    settings page. */

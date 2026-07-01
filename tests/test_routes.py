@@ -2984,6 +2984,203 @@ def test_settings_get_lists_existing_servers(
     assert response.text.index("first") < response.text.index("second")
 
 
+# ---------------------------------------------------------------------------
+# Phase 29: /settings/agents CRUD (reusable personas)
+# ---------------------------------------------------------------------------
+
+
+def test_settings_add_agent_returns_row(make_client: ClientFactory) -> None:
+    """POST /settings/agents returns the new <li> for beforeend swap."""
+    with make_client(_ollama_unreachable) as client:
+        response = client.post(
+            "/settings/agents",
+            data={
+                "name": "Researcher",
+                "system_prompt": "Cite your sources.",
+                "default_model": "qwen3",
+            },
+        )
+    assert response.status_code == 200
+    assert "Researcher" in response.text
+    assert 'id="agent-row-' in response.text
+    assert 'hx-delete="/settings/agents/' in response.text
+
+
+def test_settings_add_agent_empty_name_returns_422(
+    make_client: ClientFactory,
+) -> None:
+    """A whitespace-only name is rejected with 422 (route surfaces the error)."""
+    with make_client(_ollama_unreachable) as client:
+        response = client.post(
+            "/settings/agents", data={"name": "   ", "system_prompt": "x"}
+        )
+    assert response.status_code == 422
+    assert "required" in response.text
+
+
+def test_settings_add_agent_duplicate_name_returns_409(
+    make_client: ClientFactory,
+) -> None:
+    """A second agent with the same name surfaces as 409."""
+    with make_client(_ollama_unreachable) as client:
+        first = client.post("/settings/agents", data={"name": "Dup"})
+        assert first.status_code == 200
+        response = client.post("/settings/agents", data={"name": "Dup"})
+    assert response.status_code == 409
+    assert "already in use" in response.text
+
+
+def test_settings_add_agent_empty_default_model_stored_null(
+    make_client: ClientFactory,
+) -> None:
+    """An empty default_model field stores NULL, not ''."""
+    db_path = os.environ["DB_PATH"]
+    with make_client(_ollama_unreachable) as client:
+        client.post(
+            "/settings/agents",
+            data={"name": "NoModel", "system_prompt": "hi", "default_model": ""},
+        )
+    with open_connection(db_path) as conn:
+        agent = queries.list_agents(conn)[0]
+    assert agent.default_model is None
+
+
+def test_settings_get_agent_edit_mode_renders_form(
+    make_client: ClientFactory,
+) -> None:
+    """GET /settings/agents/{id}?edit=1 returns the row with an editable form."""
+    db_path = os.environ["DB_PATH"]
+    with make_client(_ollama_unreachable) as client:
+        client.post("/settings/agents", data={"name": "Editable"})
+        with open_connection(db_path) as conn:
+            agent_id = queries.list_agents(conn)[0].id
+        response = client.get(f"/settings/agents/{agent_id}?edit=1")
+    assert response.status_code == 200
+    assert 'name="system_prompt"' in response.text
+    assert f'hx-patch="/settings/agents/{agent_id}"' in response.text
+
+
+def test_settings_get_agent_view_mode_has_edit_button(
+    make_client: ClientFactory,
+) -> None:
+    """GET /settings/agents/{id} (no edit flag) returns the view-mode row."""
+    db_path = os.environ["DB_PATH"]
+    with make_client(_ollama_unreachable) as client:
+        client.post("/settings/agents", data={"name": "Viewable"})
+        with open_connection(db_path) as conn:
+            agent_id = queries.list_agents(conn)[0].id
+        response = client.get(f"/settings/agents/{agent_id}")
+    assert response.status_code == 200
+    assert f'hx-get="/settings/agents/{agent_id}?edit=1"' in response.text
+
+
+def test_settings_get_agent_missing_id_returns_404(
+    make_client: ClientFactory,
+) -> None:
+    """GET a non-existent agent id returns 404 (stale row stays put)."""
+    with make_client(_ollama_unreachable) as client:
+        response = client.get("/settings/agents/9999")
+    assert response.status_code == 404
+
+
+def test_settings_update_agent_persists(make_client: ClientFactory) -> None:
+    """PATCH /settings/agents/{id} rewrites all three fields, returns view row."""
+    db_path = os.environ["DB_PATH"]
+    with make_client(_ollama_unreachable) as client:
+        client.post(
+            "/settings/agents",
+            data={"name": "Old", "system_prompt": "old prompt", "default_model": "m1"},
+        )
+        with open_connection(db_path) as conn:
+            agent_id = queries.list_agents(conn)[0].id
+        response = client.patch(
+            f"/settings/agents/{agent_id}",
+            data={"name": "New", "system_prompt": "new prompt", "default_model": ""},
+        )
+    assert response.status_code == 200
+    assert "New" in response.text
+    with open_connection(db_path) as conn:
+        agent = queries.get_agent(conn, agent_id)
+    assert agent.name == "New"
+    assert agent.system_prompt == "new prompt"
+    assert agent.default_model is None  # emptied field clears to NULL
+
+
+def test_settings_update_agent_name_collision_returns_409(
+    make_client: ClientFactory,
+) -> None:
+    """PATCH to a name another agent already holds returns 409."""
+    db_path = os.environ["DB_PATH"]
+    with make_client(_ollama_unreachable) as client:
+        client.post("/settings/agents", data={"name": "Taken"})
+        client.post("/settings/agents", data={"name": "Mine"})
+        with open_connection(db_path) as conn:
+            mine = [a for a in queries.list_agents(conn) if a.name == "Mine"][0]
+        response = client.patch(
+            f"/settings/agents/{mine.id}", data={"name": "Taken"}
+        )
+    assert response.status_code == 409
+
+
+def test_settings_update_agent_empty_name_returns_422(
+    make_client: ClientFactory,
+) -> None:
+    """PATCH with a whitespace-only name is rejected with 422."""
+    db_path = os.environ["DB_PATH"]
+    with make_client(_ollama_unreachable) as client:
+        client.post("/settings/agents", data={"name": "Named"})
+        with open_connection(db_path) as conn:
+            agent_id = queries.list_agents(conn)[0].id
+        response = client.patch(
+            f"/settings/agents/{agent_id}", data={"name": "   "}
+        )
+    assert response.status_code == 422
+    assert "required" in response.text
+
+
+def test_settings_update_agent_missing_id_returns_404(
+    make_client: ClientFactory,
+) -> None:
+    """PATCH a non-existent agent id returns 404."""
+    with make_client(_ollama_unreachable) as client:
+        response = client.patch("/settings/agents/9999", data={"name": "x"})
+    assert response.status_code == 404
+
+
+def test_settings_delete_agent_200_and_idempotent(
+    make_client: ClientFactory,
+) -> None:
+    """DELETE /settings/agents/{id} returns 200; re-delete / missing id no-op."""
+    db_path = os.environ["DB_PATH"]
+    with make_client(_ollama_unreachable) as client:
+        client.post("/settings/agents", data={"name": "Doomed"})
+        with open_connection(db_path) as conn:
+            agent_id = queries.list_agents(conn)[0].id
+        first = client.delete(f"/settings/agents/{agent_id}")
+        again = client.delete(f"/settings/agents/{agent_id}")
+        missing = client.delete("/settings/agents/9999")
+    assert first.status_code == 200
+    assert again.status_code == 200
+    assert missing.status_code == 200
+    with open_connection(db_path) as conn:
+        assert queries.list_agents(conn) == []
+
+
+def test_settings_get_lists_existing_agents(
+    make_client: ClientFactory,
+) -> None:
+    """The settings page renders previously-added agents (name-sorted)."""
+    with make_client(_ollama_unreachable) as client:
+        client.post("/settings/agents", data={"name": "Zeta"})
+        client.post("/settings/agents", data={"name": "Alpha"})
+        response = client.get("/settings")
+    assert response.status_code == 200
+    assert "Alpha" in response.text
+    assert "Zeta" in response.text
+    # Name-sorted (case-insensitive): Alpha before Zeta.
+    assert response.text.index("Alpha") < response.text.index("Zeta")
+
+
 def test_sidebar_includes_settings_link(
     make_client: ClientFactory,
 ) -> None:
@@ -3597,6 +3794,118 @@ def test_chat_panel_hides_think_chip_for_non_thinking_model(
         chat_id = _create_chat_db_only("no think")
         panel = client.get(f"/chats/{chat_id}", headers={"HX-Request": "true"})
     assert "/think-mode" not in panel.text
+
+
+# ---------------------------------------------------------------------------
+# Phase 29: PATCH /chats/{id}/agent (attach/detach reusable agent)
+# ---------------------------------------------------------------------------
+
+
+def _make_agent(name: str = "Researcher", system_prompt: str = "cite sources") -> int:
+    """Create an agent row directly in the test DB; return its id."""
+    db_path = os.environ["DB_PATH"]
+    with open_connection(db_path) as conn:
+        return queries.create_agent(conn, name, system_prompt=system_prompt).id
+
+
+def test_set_chat_agent_attaches_and_returns_oob_chip(
+    make_client: ClientFactory,
+) -> None:
+    """PATCH /chats/{id}/agent with a valid id → 200, OOB chip naming the agent,
+    and persists the selection."""
+    db_path = os.environ["DB_PATH"]
+    with make_client(_ollama_unreachable) as client:
+        chat_id = _create_chat_db_only("agent chat")
+        agent_id = _make_agent("Researcher")
+        response = client.patch(
+            f"/chats/{chat_id}/agent", data={"agent_id": str(agent_id)}
+        )
+
+    assert response.status_code == 200
+    assert f'id="agent-indicator-{chat_id}"' in response.text
+    assert 'data-role="agent-indicator"' in response.text
+    assert "Researcher" in response.text
+    assert "hx-swap-oob" in response.text
+    with open_connection(db_path) as conn:
+        assert queries.get_conversation(conn, chat_id).agent_id == agent_id
+
+
+def test_set_chat_agent_empty_detaches_and_empties_chip(
+    make_client: ClientFactory,
+) -> None:
+    """Posting the empty (none) value clears the chat's agent; the returned
+    chip carries the stable id but no inner agent-indicator span."""
+    db_path = os.environ["DB_PATH"]
+    with make_client(_ollama_unreachable) as client:
+        chat_id = _create_chat_db_only("agent chat")
+        agent_id = _make_agent("Researcher")
+        client.patch(f"/chats/{chat_id}/agent", data={"agent_id": str(agent_id)})
+        response = client.patch(f"/chats/{chat_id}/agent", data={"agent_id": ""})
+
+    assert response.status_code == 200
+    assert f'id="agent-indicator-{chat_id}"' in response.text
+    # Chip emptied — the inner indicator span is gone.
+    assert 'data-role="agent-indicator"' not in response.text
+    with open_connection(db_path) as conn:
+        assert queries.get_conversation(conn, chat_id).agent_id is None
+
+
+def test_set_chat_agent_unknown_id_detaches_without_error(
+    make_client: ClientFactory,
+) -> None:
+    """A garbage / stale (since-deleted) agent id detaches rather than 500ing."""
+    db_path = os.environ["DB_PATH"]
+    with make_client(_ollama_unreachable) as client:
+        chat_id = _create_chat_db_only("agent chat")
+        # Non-numeric and non-existent numeric both coerce to detach.
+        garbage = client.patch(
+            f"/chats/{chat_id}/agent", data={"agent_id": "not-a-number"}
+        )
+        missing = client.patch(
+            f"/chats/{chat_id}/agent", data={"agent_id": "99999"}
+        )
+
+    assert garbage.status_code == 200
+    assert missing.status_code == 200
+    assert 'data-role="agent-indicator"' not in missing.text
+    with open_connection(db_path) as conn:
+        assert queries.get_conversation(conn, chat_id).agent_id is None
+
+
+def test_set_chat_agent_404_for_missing_chat(
+    make_client: ClientFactory,
+) -> None:
+    """PATCHing an unknown conversation id returns 404."""
+    with make_client(_ollama_unreachable) as client:
+        response = client.patch(
+            "/chats/999999/agent", data={"agent_id": ""}
+        )
+    assert response.status_code == 404
+
+
+def test_chat_panel_renders_agent_picker_and_chip(
+    make_client: ClientFactory,
+) -> None:
+    """The chat panel shows the agent picker (with the created agent as an
+    option) and, when one is attached, the header chip naming it."""
+    db_path = os.environ["DB_PATH"]
+    with make_client(_ollama_unreachable) as client:
+        chat_id = _create_chat_db_only("agent panel")
+        agent_id = _make_agent("Researcher")
+        with open_connection(db_path) as conn:
+            queries.set_conversation_agent(conn, chat_id, agent_id)
+        panel = client.get(f"/chats/{chat_id}", headers={"HX-Request": "true"})
+
+    # Picker form + option present.
+    assert f'hx-patch="/chats/{chat_id}/agent"' in panel.text
+    assert f'id="agent-select-{chat_id}"' in panel.text
+    assert f'<option value="{agent_id}"' in panel.text
+    # The attached agent is pre-selected in the picker.
+    opt_idx = panel.text.index(f'<option value="{agent_id}"')
+    assert "selected" in panel.text[opt_idx:opt_idx + 40]
+    # Header chip names the attached agent.
+    assert 'data-role="agent-indicator"' in panel.text
+    assert "Researcher" in panel.text
 
 
 def test_host_overrides_carries_think_off(tmp_path: Path) -> None:

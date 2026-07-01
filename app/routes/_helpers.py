@@ -262,4 +262,7 @@ def _project_context(
         # remote host disappears from the picker without rebuilding the
         # registry.
         "hosts": enabled_hosts(db),
+        # Reusable agents (personas) for the per-chat picker in _chat_panel.
+        # Global (not project-scoped); the same list every project render.
+        "agents": queries.list_agents(db),
     }

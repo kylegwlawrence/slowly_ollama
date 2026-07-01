@@ -7,6 +7,10 @@ Routes:
     GET    /settings/servers/{id}               — fetch row (view or edit)
     PATCH  /settings/servers/{id}               — update description
     DELETE /settings/servers/{id}               — remove RAG server
+    POST   /settings/agents                     — add reusable agent (persona)
+    GET    /settings/agents/{id}                — fetch agent row (view or edit)
+    PATCH  /settings/agents/{id}                — update agent
+    DELETE /settings/agents/{id}                — remove agent
     PATCH  /settings/default-temperature        — set global default temp
     PATCH  /settings/default-tool-cap           — set global default tool cap
     PATCH  /settings/default-num-ctx            — set global default num_ctx
@@ -51,6 +55,11 @@ def settings_endpoint(request: Request, db: DB) -> Response:
         "default_tool_iteration_cap": default_tool_iteration_cap,
         "default_model": default_model,
         "default_num_ctx": default_num_ctx,
+        # Phase 29: reusable agents (personas) + their field caps, surfaced to
+        # the create form + inline-edit rows so maxlength stays in sync.
+        "agents": queries.list_agents(db),
+        "agent_name_max_chars": queries.AGENT_NAME_MAX_CHARS,
+        "system_prompt_max_chars": queries.SYSTEM_PROMPT_MAX_CHARS,
     }
     if request.headers.get("HX-Request"):
         return templates.TemplateResponse(
@@ -296,6 +305,147 @@ async def update_server_endpoint(
         request=request, server=server, editing=False
     )
     return HTMLResponse(row_html + _sidebar_reference_oob(db))
+
+
+# ---------------------------------------------------------------------------
+# Phase 29: reusable agents (personas) CRUD — mirrors the RAG-server endpoints
+# above (add / get row / update / delete), folded into the same /settings page.
+# ---------------------------------------------------------------------------
+
+
+def _render_agent_row(request: Request, agent, *, editing: bool = False) -> str:
+    """Render one ``_agent_row.html`` with the field-cap context it needs.
+
+    Single place that threads ``AGENT_NAME_MAX_CHARS`` /
+    ``SYSTEM_PROMPT_MAX_CHARS`` into the row's ``maxlength`` attrs, so every
+    render site (POST / GET / PATCH) stays in sync.
+    """
+    return templates.get_template("_agent_row.html").render(
+        request=request,
+        agent=agent,
+        editing=editing,
+        agent_name_max_chars=queries.AGENT_NAME_MAX_CHARS,
+        system_prompt_max_chars=queries.SYSTEM_PROMPT_MAX_CHARS,
+    )
+
+
+@router.post("/settings/agents", response_class=HTMLResponse)
+async def add_agent_endpoint(
+    request: Request,
+    db: DB,
+    name: Annotated[str, Form()],
+    system_prompt: Annotated[str, Form()] = "",
+    default_model: Annotated[str, Form()] = "",
+) -> Response:
+    """Add a reusable agent; return the new row for ``hx-swap="beforeend"``.
+
+    An empty/whitespace name returns 422 and a duplicate name returns 409;
+    both are plain-text bodies the ``.agent-form`` branch in app.js pipes into
+    ``#agent-form-error``. HTMX won't swap a non-2xx, so the list stays intact
+    and the form keeps the typed values. ``system_prompt`` / ``name`` are
+    clamped server-side; an empty ``default_model`` stores NULL.
+    """
+    name_clean = name.strip()[:queries.AGENT_NAME_MAX_CHARS]
+    if not name_clean:
+        return HTMLResponse(
+            "Agent name is required.",
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        )
+    system_prompt_clean = system_prompt.strip()[:queries.SYSTEM_PROMPT_MAX_CHARS]
+    default_model_clean = default_model.strip() or None
+
+    try:
+        agent = queries.create_agent(
+            db,
+            name=name_clean,
+            system_prompt=system_prompt_clean,
+            default_model=default_model_clean,
+        )
+    except sqlite3.IntegrityError:
+        return HTMLResponse(
+            f"Agent name '{html.escape(name_clean)}' already in use.",
+            status_code=status.HTTP_409_CONFLICT,
+        )
+    return HTMLResponse(_render_agent_row(request, agent))
+
+
+@router.get("/settings/agents/{agent_id}", response_class=HTMLResponse)
+def get_agent_endpoint(
+    agent_id: int,
+    request: Request,
+    db: DB,
+    edit: bool = False,
+) -> Response:
+    """Return one agent row, in view or edit mode.
+
+    Backs the inline editor: the edit pencil GETs with ``?edit=1`` to swap in
+    a form; Cancel GETs without it to swap back. A missing id returns 404 so
+    HTMX leaves the stale row in place rather than blanking it.
+    """
+    try:
+        agent = queries.get_agent(db, agent_id)
+    except LookupError:
+        return Response(content="", status_code=status.HTTP_404_NOT_FOUND)
+    return HTMLResponse(_render_agent_row(request, agent, editing=edit))
+
+
+@router.patch("/settings/agents/{agent_id}", response_class=HTMLResponse)
+async def update_agent_endpoint(
+    agent_id: int,
+    request: Request,
+    db: DB,
+    name: Annotated[str, Form()],
+    system_prompt: Annotated[str, Form()] = "",
+    default_model: Annotated[str, Form()] = "",
+) -> Response:
+    """Update an agent's name, system prompt, and preferred model.
+
+    Returns the view-mode row on success. An empty name returns 422; a name
+    collision with another agent returns 409; a missing id returns 404 (a
+    stale row from another tab's delete isn't replaced). An empty
+    ``default_model`` clears it (stores NULL).
+    """
+    name_clean = name.strip()[:queries.AGENT_NAME_MAX_CHARS]
+    if not name_clean:
+        return HTMLResponse(
+            "Agent name is required.",
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        )
+    system_prompt_clean = system_prompt.strip()[:queries.SYSTEM_PROMPT_MAX_CHARS]
+    default_model_clean = default_model.strip() or None
+
+    try:
+        agent = queries.update_agent(
+            db,
+            agent_id,
+            name=name_clean,
+            system_prompt=system_prompt_clean,
+            default_model=default_model_clean,
+        )
+    except LookupError:
+        return Response(content="", status_code=status.HTTP_404_NOT_FOUND)
+    except sqlite3.IntegrityError:
+        return HTMLResponse(
+            f"Agent name '{html.escape(name_clean)}' already in use.",
+            status_code=status.HTTP_409_CONFLICT,
+        )
+    return HTMLResponse(_render_agent_row(request, agent))
+
+
+@router.delete(
+    "/settings/agents/{agent_id}",
+    response_class=HTMLResponse,
+    status_code=status.HTTP_200_OK,
+)
+def delete_agent_endpoint(agent_id: int, db: DB) -> Response:
+    """Delete an agent; return 200 for ``hx-swap="delete"``.
+
+    Idempotent at the query layer (missing ids are silently accepted). Any
+    chat pointing at it reverts to Normal via ``ON DELETE SET NULL``.
+    """
+    queries.delete_agent(db, agent_id)
+    # hx-swap="delete" removes the row and ignores the (empty) body.
+    return HTMLResponse(content="")
 
 
 @router.patch(

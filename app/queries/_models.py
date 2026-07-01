@@ -51,6 +51,9 @@ class Conversation:
         think_mode: Thinking lever. 'default' omits Ollama's ``think`` key
             (model decides); 'off' sends ``think=false`` to suppress a
             reasoning model's <think> phase.
+        agent_id: Attached reusable agent (persona), or None = "Normal" (no
+            agent). Its system prompt stacks before the project prompt each
+            turn. FK to ``agents``; ``ON DELETE SET NULL`` reverts to Normal.
     """
 
     id: int
@@ -64,6 +67,7 @@ class Conversation:
     updated_at: datetime
     active_host: str | None = None
     think_mode: str = "default"
+    agent_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -100,6 +104,32 @@ class Project:
     created_at: datetime
     updated_at: datetime
     system_prompt: str = ""
+
+
+@dataclass(frozen=True)
+class Agent:
+    """One row of the ``agents`` table — a reusable persona.
+
+    An agent is a named system prompt (optionally a preferred model) that any
+    chat can attach to, global rather than project-scoped so it can be reused
+    across projects. When a chat has both an agent and a project prompt, they
+    stack (date → agent → project → tool-nudge); the agent does not replace
+    the project prompt. See Phase 29.
+
+    Attributes:
+        id: Auto-assigned primary key.
+        name: Display name, unique across the table (shown in the chip + picker).
+        system_prompt: Stacked BEFORE the project prompt each turn; ``""`` = none.
+        default_model: Preferred model. Informational in Phase 29 (not applied).
+        created_at, updated_at: ISO 8601 UTC timestamps.
+    """
+
+    id: int
+    name: str
+    system_prompt: str
+    default_model: str | None
+    created_at: datetime
+    updated_at: datetime
 
 
 class _Unset:

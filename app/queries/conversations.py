@@ -25,6 +25,7 @@ def _row_to_conversation(row: sqlite3.Row) -> Conversation:
         updated_at=datetime.fromisoformat(row["updated_at"]),
         active_host=row["active_host"],
         think_mode=row["think_mode"],
+        agent_id=row["agent_id"],
     )
 
 
@@ -88,7 +89,7 @@ def create_conversation(
             "  think_mode, active_host, project_id, created_at, updated_at)"
             " VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?)"
             " RETURNING id, name, model, name_locked, temperature, tool_iteration_cap,"
-            "          active_host, project_id, created_at, updated_at, think_mode;",
+            "          active_host, project_id, created_at, updated_at, think_mode, agent_id;",
             (
                 name, model, temperature, tool_iteration_cap, think_mode,
                 active_host, project_id, now, now,
@@ -114,7 +115,7 @@ def get_conversation(
     """
     row = conn.execute(
         "SELECT id, name, model, name_locked, temperature, tool_iteration_cap,"
-        " active_host, project_id, created_at, updated_at, think_mode"
+        " active_host, project_id, created_at, updated_at, think_mode, agent_id"
         " FROM conversations WHERE id = ?;",
         (conversation_id,),
     ).fetchone()
@@ -135,7 +136,7 @@ def list_conversations(conn: sqlite3.Connection) -> list[Conversation]:
     """
     rows = conn.execute(
         "SELECT id, name, model, name_locked, temperature, tool_iteration_cap,"
-        " active_host, project_id, created_at, updated_at, think_mode"
+        " active_host, project_id, created_at, updated_at, think_mode, agent_id"
         " FROM conversations"
         " ORDER BY updated_at DESC, id DESC;"
     ).fetchall()
@@ -159,7 +160,7 @@ def list_conversations_in_project(
     """
     rows = conn.execute(
         "SELECT id, name, model, name_locked, temperature, tool_iteration_cap,"
-        " active_host, project_id, created_at, updated_at, think_mode"
+        " active_host, project_id, created_at, updated_at, think_mode, agent_id"
         " FROM conversations"
         " WHERE project_id = ?"
         " ORDER BY updated_at DESC, id DESC;",
@@ -195,7 +196,7 @@ def rename_conversation(
             " SET name = ?, name_locked = 1, updated_at = ?"
             " WHERE id = ?"
             " RETURNING id, name, model, name_locked, temperature, tool_iteration_cap,"
-            "          active_host, project_id, created_at, updated_at, think_mode;",
+            "          active_host, project_id, created_at, updated_at, think_mode, agent_id;",
             (new_name, now, conversation_id),
         ).fetchone()
     if row is None:
@@ -230,7 +231,7 @@ def set_name_auto(
             " SET name = ?, updated_at = ?"
             " WHERE id = ? AND name_locked = 0"
             " RETURNING id, name, model, name_locked, temperature, tool_iteration_cap,"
-            "          active_host, project_id, created_at, updated_at, think_mode;",
+            "          active_host, project_id, created_at, updated_at, think_mode, agent_id;",
             (new_name, now, conversation_id),
         ).fetchone()
     return _row_to_conversation(row) if row is not None else None
@@ -275,7 +276,7 @@ def set_conversation_temperature(
             " SET temperature = ?"
             " WHERE id = ?"
             " RETURNING id, name, model, name_locked, temperature, tool_iteration_cap,"
-            "          active_host, project_id, created_at, updated_at, think_mode;",
+            "          active_host, project_id, created_at, updated_at, think_mode, agent_id;",
             (temperature, conversation_id),
         ).fetchone()
     if row is None:
@@ -305,7 +306,7 @@ def set_conversation_tool_iteration_cap(
             " SET tool_iteration_cap = ?"
             " WHERE id = ?"
             " RETURNING id, name, model, name_locked, temperature, tool_iteration_cap,"
-            "          active_host, project_id, created_at, updated_at, think_mode;",
+            "          active_host, project_id, created_at, updated_at, think_mode, agent_id;",
             (tool_iteration_cap, conversation_id),
         ).fetchone()
     if row is None:
@@ -340,7 +341,7 @@ def set_active_host(
             " SET active_host = ?"
             " WHERE id = ?"
             " RETURNING id, name, model, name_locked, temperature, tool_iteration_cap,"
-            "          active_host, project_id, created_at, updated_at, think_mode;",
+            "          active_host, project_id, created_at, updated_at, think_mode, agent_id;",
             (host_name, conversation_id),
         ).fetchone()
     if row is None:
@@ -410,8 +411,41 @@ def set_conversation_think_mode(
             " SET think_mode = ?"
             " WHERE id = ?"
             " RETURNING id, name, model, name_locked, temperature, tool_iteration_cap,"
-            "          active_host, project_id, created_at, updated_at, think_mode;",
+            "          active_host, project_id, created_at, updated_at, think_mode, agent_id;",
             (think_mode, conversation_id),
+        ).fetchone()
+    if row is None:
+        raise LookupError(f"Conversation {conversation_id} not found.")
+    return _row_to_conversation(row)
+
+
+def set_conversation_agent(
+    conn: sqlite3.Connection, conversation_id: int, agent_id: int | None
+) -> Conversation:
+    """Attach ``agent_id`` to a chat, or clear it (None → Normal).
+
+    Does NOT bump ``updated_at`` (same as the other setters here) — switching
+    agents isn't a message event, so it shouldn't reorder the sidebar.
+
+    Args:
+        conn: Open SQLite connection.
+        conversation_id: Chat to update.
+        agent_id: Agent id to attach, or None to detach. Caller validates the
+            agent exists (an unknown id is coerced to None at the route).
+
+    Returns:
+        The updated Conversation.
+
+    Raises:
+        LookupError: If no conversation exists with that id.
+    """
+    with conn:
+        row = conn.execute(
+            "UPDATE conversations SET agent_id = ?"
+            " WHERE id = ?"
+            " RETURNING id, name, model, name_locked, temperature, tool_iteration_cap,"
+            "          active_host, project_id, created_at, updated_at, think_mode, agent_id;",
+            (agent_id, conversation_id),
         ).fetchone()
     if row is None:
         raise LookupError(f"Conversation {conversation_id} not found.")

@@ -13,6 +13,7 @@ Routes:
     GET    /chats/{id}/stream                — SSE assistant stream
     POST   /chats/{id}/regenerate            — regenerate assistant reply
     POST   /chats/{id}/host                  — set/clear selected Ollama host
+    PATCH  /chats/{id}/agent                 — attach/detach reusable agent
     POST   /chats/{id}/compact                — summarize older turns
     GET    /chats/{id}/archived               — archived rows for disclosure
     PATCH  /chats/{id}/temperature           — set per-chat temperature
@@ -538,6 +539,45 @@ async def set_chat_host_endpoint(
     )
 
     return HTMLResponse(content=indicator_html)
+
+
+@router.patch("/chats/{conversation_id}/agent", response_class=HTMLResponse)
+async def set_chat_agent_endpoint(
+    conversation_id: int,
+    db: DB,
+    agent_id: Annotated[str, Form()] = "",
+) -> Response:
+    """Attach/detach a reusable agent (persona); OOB-swap the header agent chip.
+
+    Called by the in-chat agent picker on change (``hx-patch`` +
+    ``hx-swap="none"`` — the response is OOB-only). ``agent_id`` is the id as a
+    string, or ""/garbage/unknown → detach (coerced to None, like a stale host
+    resolves to primary). The selection persists across reloads and turns.
+
+    Raises:
+        HTTPException 404: When the conversation is unknown.
+    """
+    try:
+        queries.get_conversation(db, conversation_id)
+    except LookupError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
+
+    resolved: int | None = None
+    if agent_id.strip():
+        try:
+            candidate = int(agent_id)
+            queries.get_agent(db, candidate)  # LookupError if unknown
+            resolved = candidate
+        except (ValueError, LookupError):
+            # Garbage / stale (since-deleted) id → detach, like a stale host.
+            resolved = None
+
+    conversation = queries.set_conversation_agent(db, conversation_id, resolved)
+    agent = queries.get_agent(db, resolved) if resolved is not None else None
+    html = templates.get_template("_agent_indicator.html").render(
+        conversation=conversation, conversation_agent=agent, oob=True,
+    )
+    return HTMLResponse(content=html)
 
 
 @router.post(

@@ -397,3 +397,124 @@ def test_host_picker_journey(agent_client: TestClient) -> None:
             HOSTS["host2"] = saved
 
 
+# ---------------------------------------------------------------------------
+# Phase 29: reusable agents (personas) end-to-end
+# ---------------------------------------------------------------------------
+
+
+def test_reusable_agent_journey(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Create an agent on /settings, attach it to a chat, verify the header
+    chip + picker selection, then send a turn and confirm the agent prompt
+    stacks BEFORE the project prompt in the /api/chat system message."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "chats.db"))
+    monkeypatch.setenv("OLLAMA_HOST", "http://test")
+    monkeypatch.delenv("FILE_TOOL_ROOT", raising=False)
+
+    import json as _json
+    import os
+
+    from app import queries
+    from app.connection import open_connection
+
+    captured: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [{"name": "llama3"}]})
+        if request.url.path == "/api/show":
+            return httpx.Response(
+                200, json={"capabilities": ["completion", "tools"]}
+            )
+        body = _json.loads(request.content or b"{}")
+        captured.append(body)
+        if not body.get("stream"):
+            return httpx.Response(
+                200, json={"message": {"content": "", "tool_calls": []}}
+            )
+        return httpx.Response(200, content=_ndjson_chat(["Done."]))
+
+    mock_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://test"
+    )
+
+    from main import app
+
+    saved_overrides = dict(app.dependency_overrides)
+    app.dependency_overrides[get_ollama_client] = lambda: mock_client
+    try:
+        with TestClient(app) as client:
+            # Default project id + give it a distinctive system prompt.
+            with open_connection(os.environ["DB_PATH"]) as conn:
+                pid = conn.execute(
+                    "SELECT id FROM projects ORDER BY id LIMIT 1;"
+                ).fetchone()[0]
+                queries.update_project(
+                    conn, pid, system_prompt="PROJECT_SITUATION"
+                )
+
+            # 1. Create an agent via the settings CRUD.
+            add = client.post(
+                "/settings/agents",
+                data={"name": "Journey", "system_prompt": "AGENT_IDENTITY"},
+            )
+            assert add.status_code == 200
+            with open_connection(os.environ["DB_PATH"]) as conn:
+                agent_id = queries.list_agents(conn)[0].id
+
+            # 2. Create a chat (its first turn runs Normal — drain the stream).
+            created = client.post(
+                f"/projects/{pid}/chats",
+                data={"model": "llama3", "content": "hi"},
+            )
+            chat_id = int(
+                re.search(r'data-chat-id="(\d+)"', created.text).group(1)
+            )
+            client.get(f"/chats/{chat_id}/stream")
+
+            # 3. Attach the agent — the OOB chip names it.
+            attach = client.patch(
+                f"/chats/{chat_id}/agent", data={"agent_id": str(agent_id)}
+            )
+            assert attach.status_code == 200
+            assert 'data-role="agent-indicator"' in attach.text
+            assert "Journey" in attach.text
+
+            # 4. Reload the panel: header chip present, picker option selected.
+            panel = client.get(
+                f"/projects/{pid}/chats/{chat_id}",
+                headers={"HX-Request": "true"},
+            )
+            assert 'data-role="agent-indicator"' in panel.text
+            opt_idx = panel.text.index(f'<option value="{agent_id}"')
+            assert "selected" in panel.text[opt_idx:opt_idx + 40]
+
+            # 5. Send a NEW message → generation now runs WITH the agent.
+            captured.clear()
+            send = client.post(
+                f"/chats/{chat_id}/messages", data={"content": "again"}
+            )
+            assert send.status_code == 200
+            client.get(f"/chats/{chat_id}/stream")
+
+            # 6. The streaming call's system message stacks agent BEFORE project.
+            system_msgs = [
+                b["messages"][0]["content"]
+                for b in captured
+                if b.get("stream")
+                and (b.get("messages") or [])
+                and b["messages"][0].get("role") == "system"
+            ]
+            assert system_msgs, "expected a system message in the stream body"
+            content = system_msgs[-1]
+            assert "AGENT_IDENTITY" in content
+            assert "PROJECT_SITUATION" in content
+            assert content.index("AGENT_IDENTITY") < content.index(
+                "PROJECT_SITUATION"
+            )
+    finally:
+        app.dependency_overrides.clear()
+        app.dependency_overrides.update(saved_overrides)
+
+
