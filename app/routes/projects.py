@@ -483,12 +483,16 @@ async def create_project_chat_endpoint(
     tool_iteration_cap: Annotated[int | None, Form()] = None,
     think_mode: Annotated[str | None, Form()] = None,
     host: Annotated[str | None, Form()] = None,
+    agent_id: Annotated[str, Form()] = "",
 ) -> Response:
     """Create a chat inside a project AND save its first message.
 
     Persists the chat, spawns the generation task, and returns the chat
     panel + OOB sidebar row in one body. ``HX-Push-Url`` syncs the address
-    bar to the canonical project-scoped URL.
+    bar to the canonical project-scoped URL. ``agent_id`` optionally attaches
+    a reusable agent (persona) to the chat-to-be before its first turn runs;
+    ""/garbage/unknown → Normal (no agent), same coercion as the per-chat
+    picker.
 
     Raises:
         HTTPException 404: When the project does not exist.
@@ -537,6 +541,20 @@ async def create_project_chat_endpoint(
     # /models loads) → skip, so the host uses its default_model.
     if not host_spec.is_primary and model:
         queries.set_chat_host_model(db, chat.id, host_spec.name, model)
+    # Attach the composer-selected agent BEFORE the first turn spawns, so its
+    # system prompt is in play from message one. ""/garbage/stale id → Normal
+    # (no agent), matching PATCH /chats/{id}/agent's coercion. `chat` is
+    # re-read so the header chip + picker render the selection.
+    resolved_agent: int | None = None
+    if agent_id.strip():
+        try:
+            candidate = int(agent_id)
+            queries.get_agent(db, candidate)  # LookupError if unknown
+            resolved_agent = candidate
+        except (ValueError, LookupError):
+            resolved_agent = None
+    if resolved_agent is not None:
+        chat = queries.set_conversation_agent(db, chat.id, resolved_agent)
     queries.append_message(db, chat.id, "user", content)
 
     messages = queries.list_messages(db, chat.id)
@@ -587,10 +605,14 @@ async def create_project_chat_endpoint(
         # /api/ps round trip and render the chip in its loaded colour.
         model_loaded=True,
         project=project,
-        # Agent picker options + the (empty) current selection: a brand-new
-        # chat has no agent, so the header chip stays clean.
+        # Agent picker options + the current selection (None unless the
+        # composer picked one), so the header chip + picker reflect the choice.
         agents=queries.list_agents(db),
-        conversation_agent=None,
+        conversation_agent=(
+            queries.get_agent(db, resolved_agent)
+            if resolved_agent is not None
+            else None
+        ),
     )
 
     # OOB-prepended sidebar row, wrapped in <ul>: non-outerHTML OOB modes

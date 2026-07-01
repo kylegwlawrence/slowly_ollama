@@ -64,6 +64,19 @@
               hx-swap="innerHTML">
         <option value="">Loading models…</option>
       </select>
+      {# Phase 29: reusable-agent (persona) picker for the chat-to-be. Submits
+         as the `agent_id` form field with POST /chats; the endpoint attaches
+         it to the new conversation before the first turn runs, so the agent's
+         system prompt is in play from message one. Defaults to (none) — a
+         brand-new chat is Normal unless the user picks one. `agents` comes
+         from _project_context; `|default([])` guards a stray render. #}
+      <label class="composer__toolbar-label" for="composer-agent">Agent</label>
+      <select id="composer-agent" name="agent_id">
+        <option value="" selected>(none)</option>
+        {% for a in agents|default([]) %}
+        <option value="{{ a.id }}">{{ a.name }}</option>
+        {% endfor %}
+      </select>
       <div class="tool-chip tool-chip--on temp-chip">
         <span class="tool-chip__label">Temp</span>
         <input id="composer-temperature" type="number" name="temperature"

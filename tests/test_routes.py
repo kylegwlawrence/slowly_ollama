@@ -3908,6 +3908,63 @@ def test_chat_panel_renders_agent_picker_and_chip(
     assert "Researcher" in panel.text
 
 
+def test_composer_renders_agent_picker_defaulting_to_none(
+    make_client: ClientFactory,
+) -> None:
+    """The empty-state composer shows the Agent picker with (none) selected by
+    default and any created agents as options."""
+    with make_client(_ollama_unreachable) as client:
+        _make_agent("Researcher")
+        pid = _default_project_id()
+        resp = client.get(f"/projects/{pid}/chats/new")
+    assert resp.status_code == 200
+    assert 'id="composer-agent"' in resp.text
+    assert 'name="agent_id"' in resp.text
+    assert "Researcher" in resp.text
+    # (none) is the default-selected option.
+    none_idx = resp.text.index(">(none)<")
+    assert "selected" in resp.text[none_idx - 30:none_idx]
+
+
+def test_create_chat_with_agent_attaches_before_first_turn(
+    make_client: ClientFactory,
+) -> None:
+    """POST /projects/{pid}/chats with agent_id attaches it to the new chat and
+    the returned panel shows the header chip."""
+    db_path = os.environ["DB_PATH"]
+    with make_client(_tool_capable_handler) as client:
+        agent_id = _make_agent("Researcher")
+        resp = client.post(
+            f"/projects/{_default_project_id()}/chats",
+            data={"model": "llama3", "content": "hi", "agent_id": str(agent_id)},
+        )
+    assert resp.status_code == 201
+    import re as _re
+    chat_id = int(_re.search(r'data-chat-id="(\d+)"', resp.text).group(1))
+    assert 'data-role="agent-indicator"' in resp.text
+    assert "Researcher" in resp.text
+    with open_connection(db_path) as conn:
+        assert queries.get_conversation(conn, chat_id).agent_id == agent_id
+
+
+def test_create_chat_with_unknown_agent_is_normal(
+    make_client: ClientFactory,
+) -> None:
+    """A garbage/unknown agent_id creates a Normal chat (agent_id None)."""
+    db_path = os.environ["DB_PATH"]
+    with make_client(_tool_capable_handler) as client:
+        resp = client.post(
+            f"/projects/{_default_project_id()}/chats",
+            data={"model": "llama3", "content": "hi", "agent_id": "99999"},
+        )
+    assert resp.status_code == 201
+    import re as _re
+    chat_id = int(_re.search(r'data-chat-id="(\d+)"', resp.text).group(1))
+    assert 'data-role="agent-indicator"' not in resp.text
+    with open_connection(db_path) as conn:
+        assert queries.get_conversation(conn, chat_id).agent_id is None
+
+
 def test_host_overrides_carries_think_off(tmp_path: Path) -> None:
     """`_host_overrides` resolves a chat's think_mode='off' to think=False on
     the primary host (and omits it as None for 'default')."""

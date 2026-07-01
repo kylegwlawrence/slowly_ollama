@@ -24,7 +24,7 @@ committed to version control.
 
 ## Current state
 
-A single-user local chat app over Ollama. **922 tests passing**, 0 failing.
+A single-user local chat app over Ollama. **925 tests passing**, 0 failing.
 Current feature set:
 
 - **Chat over multiple Ollama hosts.** A multi-host registry (`app/hosts/`,
@@ -47,8 +47,11 @@ Current feature set:
 - **Reusable agents (personas).** An `agents` row = `name` + `system_prompt` +
   optional `default_model`. Global (not project-scoped), CRUD'd on `/settings`
   (mirrors RAG-server CRUD). A chat attaches one via `conversations.agent_id`
-  (nullable FK, `ON DELETE SET NULL`): a per-chat **Agent** picker +
-  OOB-swappable header chip, `PATCH /chats/{id}/agent`. On a turn the agent
+  (nullable FK, `ON DELETE SET NULL`): pick it in the **composer** before
+  starting the chat (an `agent_id` select beside the model picker, defaulting
+  to none — `create_project_chat_endpoint` attaches it before the first turn),
+  or change it later via the per-chat **Agent** picker + OOB-swappable header
+  chip (`PATCH /chats/{id}/agent`). On a turn the agent
   prompt **stacks before** the project prompt — order is `date → agent →
   project → tool-nudge` (identity, then situation, then tools); it doesn't
   replace the project prompt. `default_model` is informational in v1 (shown,
