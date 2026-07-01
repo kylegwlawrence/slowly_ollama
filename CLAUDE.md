@@ -41,8 +41,9 @@ Current feature set:
   app makes no *direct* cloud calls — SearXNG does the internet-facing work).
   Tool calls render as tool-card UI.
 - **Projects → chats.** Projects sit above chats, each with a per-project
-  workspace subdir under `FILE_TOOL_ROOT`, a default model, and a ≤2000-char
-  system prompt injected on Normal turns. URL spine: `/projects/{id}/chats/{id}`.
+  workspace subdir under `FILE_TOOL_ROOT`, a default model, and a
+  ≤`SYSTEM_PROMPT_MAX_CHARS` (8000) system prompt injected on Normal turns
+  (the same cap reusable agents share). URL spine: `/projects/{id}/chats/{id}`.
 - **Reusable agents (personas).** An `agents` row = `name` + `system_prompt` +
   optional `default_model`. Global (not project-scoped), CRUD'd on `/settings`
   (mirrors RAG-server CRUD). A chat attaches one via `conversations.agent_id`

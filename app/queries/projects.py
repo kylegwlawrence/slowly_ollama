@@ -14,10 +14,11 @@ _PROJECT_COLS = (
     " num_ctx, system_prompt, created_at, updated_at"
 )
 
-# Max length of a project's system prompt. Enforced server-side here and in the
-# route layer, and surfaced to the textarea's ``maxlength`` via route context, so
-# all three stay in sync from one source of truth.
-SYSTEM_PROMPT_MAX_CHARS = 4000
+# Max length of a system prompt — shared by projects AND reusable agents
+# (Phase 29), so the two caps stay unified from one source of truth. Enforced
+# server-side here and in the route layer, and surfaced to the textarea's
+# ``maxlength`` via route context, so all three stay in sync.
+SYSTEM_PROMPT_MAX_CHARS = 8000
 
 
 def _row_to_project(row: sqlite3.Row) -> Project:
